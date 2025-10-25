@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream URL Test - Taubenschiesser</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .url-test {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            background: #fafafa;
+        }
+        .video-container {
+            width: 100%;
+            height: 300px;
+            background: #000;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .url-display {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Stream URL Test - Taubenschiesser</h1>
+        
+        <div class="url-test">
+            <h3>RTSP-URL Test</h3>
+            <p>Teste verschiedene RTSP-URL-Formate:</p>
+            
+            <div class="url-display" id="rtsp-urls">
+                <strong>Verfügbare RTSP-URLs:</strong><br>
+                <span id="rtsp-list">Lade URLs...</span>
+            </div>
+            
+            <button class="btn-primary" onclick="loadDevices()">Geräte laden</button>
+            <button class="btn-success" onclick="testAllStreams()">Alle Streams testen</button>
+        </div>
+
+        <div class="url-test">
+            <h3>HLS-Stream Test</h3>
+            <p>Teste HLS-Stream-URLs:</p>
+            
+            <div class="url-display" id="hls-urls">
+                <strong>HLS-Stream-URLs:</strong><br>
+                <span id="hls-list">Keine Streams aktiv</span>
+            </div>
+            
+            <button class="btn-primary" onclick="checkActiveStreams()">Aktive Streams prüfen</button>
+        </div>
+
+        <div class="url-test">
+            <h3>Video-Test</h3>
+            <p>Teste Video-Element mit verschiedenen URLs:</p>
+            
+            <div class="video-container" id="video-test">
+                <div>Kein Video geladen</div>
+            </div>
+            
+            <button class="btn-primary" onclick="testVideo('rtsp://test:test@192.168.1.100:554/stream1')">RTSP Test</button>
+            <button class="btn-success" onclick="testVideo('http://localhost:8080/streams/test.m3u8')">HLS Test</button>
+            <button class="btn-danger" onclick="clearVideo()">Video löschen</button>
+        </div>
+
+        <div class="url-test">
+            <h3>URL-Generierung Test</h3>
+            <p>Teste URL-Generierung für verschiedene Kamera-Typen:</p>
+            
+            <div id="url-generation-test">
+                <button class="btn-primary" onclick="testTapoUrl()">Tapo URL generieren</button>
+                <button class="btn-success" onclick="testDirectUrl()">Direkte URL testen</button>
+            </div>
+            
+            <div class="url-display" id="generated-urls">
+                <strong>Generierte URLs:</strong><br>
+                <span id="url-results">Klicke auf einen Button um URLs zu generieren</span>
+            </div>
+        </div>
+        
+        <div class="log" id="debug-log">
+            <strong>Debug-Log:</strong><br>
+            <span id="log-content">Initialisierung...</span>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5001';
+        let token = null;
+        let devices = [];
+
+        // Debug-Log
+        function log(message) {
+            const logContent = document.getElementById('log-content');
+            const timestamp = new Date().toLocaleTimeString();
+            logContent.innerHTML += `[${timestamp}] ${message}<br>`;
+            logContent.scrollTop = logContent.scrollHeight;
+            console.log(message);
+        }
+
+        // Login
+        async function login() {
+            try {
+                log('🔐 Anmeldung...');
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'admin@example.com',
+                        password: 'admin123'
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    token = data.token;
+                    log('✅ Anmeldung erfolgreich');
+                    return true;
+                } else {
+                    log('❌ Anmeldung fehlgeschlagen');
+                    return false;
+                }
+            } catch (error) {
+                log(`❌ Login-Fehler: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Geräte laden
+        async function loadDevices() {
+            try {
+                log('📱 Geräte laden...');
+                const response = await fetch(`${API_BASE}/api/devices`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (response.ok) {
+                    devices = await response.json();
+                    log(`✅ ${devices.length} Geräte geladen`);
+                    displayRtspUrls();
+                } else {
+                    log('❌ Fehler beim Laden der Geräte');
+                }
+            } catch (error) {
+                log(`❌ Geräte-Fehler: ${error.message}`);
+            }
+        }
+
+        // RTSP-URLs anzeigen
+        function displayRtspUrls() {
+            const rtspList = document.getElementById('rtsp-list');
+            rtspList.innerHTML = devices.map(device => {
+                let rtspUrl = 'Nicht konfiguriert';
+                
+                if (device.camera) {
+                    if (device.camera.type === 'tapo' && device.camera.tapo) {
+                        const { ip, username, password, stream } = device.camera.tapo;
+                        if (ip && username && password && stream) {
+                            rtspUrl = `rtsp://${username}:${password}@${ip}:554/${stream}`;
+                        }
+                    } else if (device.camera.directUrl) {
+                        rtspUrl = device.camera.directUrl;
+                    } else if (device.camera.rtspUrl) {
+                        rtspUrl = device.camera.rtspUrl;
+                    }
+                }
+                
+                return `<div><strong>${device.name}:</strong><br>${rtspUrl}</div>`;
+            }).join('<br>');
+        }
+
+        // Alle Streams testen
+        async function testAllStreams() {
+            if (devices.length === 0) {
+                log('❌ Keine Geräte geladen. Bitte zuerst Geräte laden.');
+                return;
+            }
+
+            for (const device of devices) {
+                log(`🎮 Teste Stream für Gerät: ${device.name}`);
+                
+                try {
+                    // Stream starten
+                    const startResponse = await fetch(`${API_BASE}/api/device-control/${device._id}/stream`, {
+                        method: 'POST',
+                        headers: { 
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ action: 'start' })
+                    });
+                    
+                    if (startResponse.ok) {
+                        log(`✅ Stream gestartet für ${device.name}`);
+                        
+                        // Stream-Status abrufen
+                        setTimeout(async () => {
+                            const statusResponse = await fetch(`${API_BASE}/api/device-control/${device._id}/stream-status`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                            });
+                            
+                            if (statusResponse.ok) {
+                                const status = await statusResponse.json();
+                                log(`📊 Stream-Status für ${device.name}: ${JSON.stringify(status, null, 2)}`);
+                                
+                                if (status.streamStatus && status.streamStatus.active) {
+                                    log(`🔗 Stream-URL: ${status.streamStatus.streamUrl}`);
+                                }
+                            }
+                        }, 3000);
+                        
+                    } else {
+                        const error = await startResponse.json();
+                        log(`❌ Stream-Fehler für ${device.name}: ${error.error}`);
+                    }
+                } catch (error) {
+                    log(`❌ Stream-Test-Fehler für ${device.name}: ${error.message}`);
+                }
+            }
+        }
+
+        // Aktive Streams prüfen
+        async function checkActiveStreams() {
+            try {
+                log('📊 Aktive Streams prüfen...');
+                const response = await fetch(`${API_BASE}/api/device-control/streams/active`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    log(`✅ ${result.count} aktive Streams gefunden`);
+                    
+                    const hlsList = document.getElementById('hls-list');
+                    if (result.activeStreams.length > 0) {
+                        hlsList.innerHTML = result.activeStreams.map(stream => 
+                            `<div><strong>Gerät ${stream.deviceId}:</strong><br>${stream.streamUrl}</div>`
+                        ).join('<br>');
+                    } else {
+                        hlsList.innerHTML = 'Keine aktiven Streams';
+                    }
+                } else {
+                    log('❌ Fehler beim Abrufen der aktiven Streams');
+                }
+            } catch (error) {
+                log(`❌ Stream-Status-Fehler: ${error.message}`);
+            }
+        }
+
+        // Video testen
+        function testVideo(url) {
+            log(`🎥 Teste Video-URL: ${url}`);
+            
+            const videoContainer = document.getElementById('video-test');
+            videoContainer.innerHTML = `
+                <video src="${url}" 
+                       controls autoplay muted 
+                       style="width: 100%; height: 100%; object-fit: cover;"
+                       onerror="log('❌ Video-Fehler: ' + this.error)"
+                       onloadstart="log('🔄 Video lädt...')"
+                       oncanplay="log('✅ Video kann abgespielt werden')">
+                    Ihr Browser unterstützt das Video-Element nicht.
+                </video>
+            `;
+        }
+
+        // Video löschen
+        function clearVideo() {
+            document.getElementById('video-test').innerHTML = '<div>Kein Video geladen</div>';
+        }
+
+        // Tapo URL generieren
+        function testTapoUrl() {
+            const urlResults = document.getElementById('url-results');
+            const testConfigs = [
+                { ip: '192.168.1.100', username: 'admin', password: 'password', stream: 'stream1' },
+                { ip: '192.168.1.101', username: 'user', password: 'pass123', stream: 'stream2' }
+            ];
+            
+            urlResults.innerHTML = testConfigs.map(config => {
+                const url = `rtsp://${config.username}:${config.password}@${config.ip}:554/${config.stream}`;
+                return `<div><strong>Tapo ${config.ip}:</strong><br>${url}</div>`;
+            }).join('<br>');
+        }
+
+        // Direkte URL testen
+        function testDirectUrl() {
+            const urlResults = document.getElementById('url-results');
+            const testUrls = [
+                'rtsp://192.168.1.100:554/stream1',
+                'rtsp://user:pass@192.168.1.101:554/stream2',
+                'rtsp://192.168.1.102:8554/live'
+            ];
+            
+            urlResults.innerHTML = testUrls.map(url => 
+                `<div><strong>Direkte URL:</strong><br>${url}</div>`
+            ).join('<br>');
+        }
+
+        // Initialisierung
+        async function init() {
+            log('🚀 Initialisierung...');
+            
+            if (await login()) {
+                log('✅ Bereit für Tests');
+            }
+        }
+
+        // Start
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+aiohttp==3.9.1
+opencv-python==4.8.1.78
+numpy>=1.24.3
+asyncio-mqtt==0.16.1
+paho-mqtt==1.6.1

@@ -1,0 +1,12 @@
+# Copy this file to terraform.tfvars and fill in your values
+
+aws_region = "eu-central-1"
+project_name = "taubenschiesser"
+environment = "production"
+
+# Generate strong secrets for production
+jwt_secret = "your-super-secret-jwt-key-change-this"
+docdb_password = "your-docdb-password-change-this"
+
+# ECR repository URL (will be created by the deployment script)
+ecr_repository_url = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/taubenschiesser"

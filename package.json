@@ -1,0 +1,22 @@
+{
+  "name": "taubenschiesser-cloud",
+  "version": "1.0.0",
+  "description": "Cloud-based Taubenschiesser hardware management system",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "cd server && npm run dev",
+    "client:dev": "cd client && npm start",
+    "build": "cd client && npm run build",
+    "start": "cd server && npm start",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "keywords": ["taubenschiesser", "hardware", "iot", "computer-vision", "cloud"],
+  "author": "Fabian Bosch",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

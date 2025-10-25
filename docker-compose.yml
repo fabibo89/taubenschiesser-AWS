@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: taubenschiesser-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: taubenschiesser
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - taubenschiesser-network
+
+  # Node.js API Server
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/taubenschiesser?authSource=admin
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      CLIENT_URL: http://localhost:3000
+      CV_SERVICE_URL: http://cv-service:8000
+    ports:
+      - "5001:5000"
+    depends_on:
+      - mongodb
+      - cv-service
+    networks:
+      - taubenschiesser-network
+
+  # Computer Vision Service
+  cv-service:
+    build:
+      context: ./cv-service
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-cv
+    restart: unless-stopped
+    environment:
+      MODEL_PATH: /app/models/yolov8l.onnx
+      CLASSES_PATH: /app/models/yolov8l.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro
+    networks:
+      - taubenschiesser-network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-frontend
+    restart: unless-stopped
+    environment:
+      REACT_APP_API_URL: http://localhost:5001
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - taubenschiesser-network
+
+  # Hardware Monitor Service
+  hardware-monitor:
+    build:
+      context: ./hardware-monitor
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-hardware-monitor
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:5000
+      MQTT_BROKER: mqtt://mosquitto:1883
+    depends_on:
+      - api
+      - mosquitto
+    networks:
+      - taubenschiesser-network
+
+  # MQTT Broker for hardware communication
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: taubenschiesser-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - taubenschiesser-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  taubenschiesser-network:
+    driver: bridge
