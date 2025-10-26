@@ -205,11 +205,11 @@ terraform plan
 terraform apply
 ```
 
-Siehe [DEPLOYMENT.md](DEPLOYMENT.md) für Details.
+Siehe [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) für Details.
 
 ## 📚 Weitere Dokumentation
 
-- [DEPLOYMENT.md](DEPLOYMENT.md) - AWS Deployment Guide
+- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Deployment Guide (Entwicklung, Lokal, AWS)
 - [README-DEV.md](README-DEV.md) - Entwickler-Guide
 - [DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md) - Hardware-Setup
 - [MQTT_SETUP.md](MQTT_SETUP.md) - MQTT-Konfiguration

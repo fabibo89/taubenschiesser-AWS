@@ -88,20 +88,22 @@ start_mongodb() {
 }
 
 # Function to start MQTT broker if not running
-start_mqtt() {
-    if check_port 1883; then
-        print_warning "MQTT broker is already running on port 1883"
-    else
-        print_status "Starting MQTT broker..."
-        docker run -d \
-            --name taubenschiesser-mqtt-dev \
-            -p 1883:1883 \
-            -p 9001:9001 \
-            eclipse-mosquitto:2.0 > /dev/null 2>&1
-        
-        wait_for_service localhost 1883 "MQTT broker"
-    fi
-}
+# DEAKTIVIERT - Nutze deinen vorhandenen Mosquitto-Server in der Wohnung
+# Konfiguriere die IP im Dashboard: Profil -> Einstellungen -> MQTT
+# start_mqtt() {
+#     if check_port 1883; then
+#         print_warning "MQTT broker is already running on port 1883"
+#     else
+#         print_status "Starting MQTT broker..."
+#         docker run -d \
+#             --name taubenschiesser-mqtt-dev \
+#             -p 1883:1883 \
+#             -p 9001:9001 \
+#             eclipse-mosquitto:2.0 > /dev/null 2>&1
+#         
+#         wait_for_service localhost 1883 "MQTT broker"
+#     fi
+# }
 
 # Function to start CV service if not running
 start_cv_service() {
@@ -213,7 +215,8 @@ start_application() {
     export CLIENT_URL=http://localhost:3000
     export CV_SERVICE_URL=http://localhost:8000
     export API_URL=http://localhost:5001
-    export MQTT_BROKER=mqtt://localhost:1883
+    # MQTT_BROKER wird über Dashboard konfiguriert (Profil -> Einstellungen)
+    # export MQTT_BROKER=mqtt://YOUR_MOSQUITTO_IP:1883
     
     # Start the application using the npm script
     print_success "Starting development servers..."
@@ -222,7 +225,7 @@ start_application() {
     print_status "CV Service will be available at: http://localhost:8000"
     print_status "Hardware Monitor is running (check logs: tail -f hardware-monitor.log)"
     print_status "MongoDB will be available at: localhost:27017"
-    print_status "MQTT will be available at: localhost:1883"
+    print_status "MQTT: Nutze deinen Mosquitto-Server (konfiguriere im Dashboard)"
     print_status ""
     print_status "Press Ctrl+C to stop all services"
     print_status ""
@@ -255,8 +258,9 @@ cleanup() {
     fi
     
     # Stop Docker containers (but keep them for data persistence)
-    docker stop taubenschiesser-mongodb-dev taubenschiesser-mqtt-dev 2>/dev/null || true
+    docker stop taubenschiesser-mongodb-dev 2>/dev/null || true
     # Note: We don't remove containers to preserve data
+    # MQTT container nicht mehr verwendet - nutze deinen eigenen Server
     
     print_success "Cleanup completed"
     exit 0

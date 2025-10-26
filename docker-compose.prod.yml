@@ -1,0 +1,156 @@
+version: '3.8'
+
+# Produktions-Setup für lokalen Server
+# Nutzen mit: docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: taubenschiesser-mongodb-prod
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-password123}  # Besser: aus .env lesen
+      MONGO_INITDB_DATABASE: taubenschiesser
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - taubenschiesser-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Node.js API Server
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-api-prod
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:${MONGO_PASSWORD:-password123}@mongodb:27017/taubenschiesser?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+      CV_SERVICE_URL: http://cv-service:8000
+      # AWS IoT (optional, falls genutzt)
+      AWS_IOT_ENDPOINT: ${AWS_IOT_ENDPOINT:-}
+      AWS_REGION: ${AWS_REGION:-eu-central-1}
+    ports:
+      - "5001:5000"
+    depends_on:
+      - mongodb
+      - cv-service
+    networks:
+      - taubenschiesser-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Computer Vision Service
+  cv-service:
+    build:
+      context: ./cv-service
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-cv-prod
+    restart: always
+    environment:
+      MODEL_PATH: /app/models/yolov8l.onnx
+      CLASSES_PATH: /app/models/yolov8l.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models:ro
+    networks:
+      - taubenschiesser-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:5001}
+    container_name: taubenschiesser-frontend-prod
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - taubenschiesser-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Hardware Monitor Service
+  hardware-monitor:
+    build:
+      context: ./hardware-monitor
+      dockerfile: Dockerfile
+    container_name: taubenschiesser-hardware-monitor-prod
+    restart: always
+    environment:
+      API_URL: http://api:5000
+      SERVICE_TOKEN: hardware-monitor-service-token
+    depends_on:
+      - api
+    networks:
+      - taubenschiesser-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # HINWEIS: MQTT-Settings werden automatisch von der API geladen
+    # aus den User-Settings (Dashboard: Profil -> Einstellungen -> MQTT)
+
+  # Optional: Nginx Reverse Proxy
+  # Auskommentieren falls du einen Reverse Proxy nutzen willst
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: taubenschiesser-nginx
+  #   restart: always
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/ssl:/etc/nginx/ssl:ro
+  #   depends_on:
+  #     - api
+  #     - frontend
+  #   networks:
+  #     - taubenschiesser-network
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+
+networks:
+  taubenschiesser-network:
+    driver: bridge
+

@@ -62,6 +62,7 @@ app.use('/api/stream', require('./routes/stream'));
 app.use('/api/cv', cvRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/hardware', require('./routes/hardware'));
+app.use('/api/iot', require('./routes/iot'));
 
 // Health check
 app.get('/health', (req, res) => {

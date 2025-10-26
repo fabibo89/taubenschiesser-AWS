@@ -81,27 +81,13 @@ services:
     restart: unless-stopped
     environment:
       API_URL: http://api:5000
-      MQTT_BROKER: mqtt://mosquitto:1883
+      SERVICE_TOKEN: hardware-monitor-service-token
     depends_on:
       - api
-      - mosquitto
     networks:
       - taubenschiesser-network
-
-  # MQTT Broker for hardware communication
-  mosquitto:
-    image: eclipse-mosquitto:2.0
-    container_name: taubenschiesser-mqtt
-    restart: unless-stopped
-    ports:
-      - "1883:1883"
-      - "9001:9001"
-    volumes:
-      - ./mosquitto/config:/mosquitto/config
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
-    networks:
-      - taubenschiesser-network
+    # HINWEIS: MQTT-Settings werden automatisch von der API geladen
+    # aus den User-Settings (Dashboard: Profil -> Einstellungen -> MQTT)
 
 volumes:
   mongodb_data:

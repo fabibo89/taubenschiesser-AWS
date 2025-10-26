@@ -1,15 +1,24 @@
 const mqtt = require('mqtt');
 const axios = require('axios');
 const logger = require('./logger');
+const awsIotHelper = require('./awsIotHelper');
 
 class HardwareHelper {
   constructor() {
     this.mqttClients = new Map();
     this.CV_SERVICE_URL = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+    this.useAwsIot = awsIotHelper.isEnabled();
+    
+    if (this.useAwsIot) {
+      logger.info('Hardware Helper initialized with AWS IoT Core support');
+    } else {
+      logger.info('Hardware Helper initialized with local MQTT support');
+    }
   }
 
   /**
    * Get or create MQTT client for a user
+   * Falls back to local MQTT if AWS IoT is not available
    */
   async getMqttClient(userId, settings) {
     const clientKey = `user_${userId}`;
@@ -51,6 +60,7 @@ class HardwareHelper {
 
   /**
    * Move device to specific position
+   * Supports both AWS IoT Core and local MQTT
    */
   async moveToPosition(device, rotation, tilt) {
     try {
@@ -58,16 +68,6 @@ class HardwareHelper {
       if (!deviceIp) {
         throw new Error('Device IP not found');
       }
-
-      // Get user settings to connect to MQTT
-      const User = require('../models/User');
-      const user = await User.findById(device.owner);
-      
-      if (!user) {
-        throw new Error('Device owner not found');
-      }
-
-      const mqttClient = await this.getMqttClient(device.owner, user.settings);
 
       const command = {
         type: 'move',
@@ -78,9 +78,26 @@ class HardwareHelper {
         speed: 1  // Speed 1 for faster, precise positioning (like bird targeting)
       };
 
+      // Use AWS IoT Core if available and device has a name
+      if (this.useAwsIot && device.name) {
+        logger.info(`Sending move command via AWS IoT to ${device.name}:`, command);
+        await awsIotHelper.publishCommand(device.name, command, 'commands');
+        logger.info('Move command sent successfully via AWS IoT');
+        return;
+      }
+
+      // Fall back to local MQTT
+      const User = require('../models/User');
+      const user = await User.findById(device.owner);
+      
+      if (!user) {
+        throw new Error('Device owner not found');
+      }
+
+      const mqttClient = await this.getMqttClient(device.owner, user.settings);
       const topic = `taubenschiesser/${deviceIp}`;
       
-      logger.info(`Sending move command to ${topic}:`, command);
+      logger.info(`Sending move command via local MQTT to ${topic}:`, command);
       
       return new Promise((resolve, reject) => {
         mqttClient.publish(topic, JSON.stringify(command), (error) => {
@@ -88,7 +105,7 @@ class HardwareHelper {
             logger.error('Failed to publish MQTT message:', error);
             reject(error);
           } else {
-            logger.info('Move command sent successfully');
+            logger.info('Move command sent successfully via local MQTT');
             resolve();
           }
         });

@@ -12,6 +12,10 @@ from yolov8 import YOLOv8, utils
 import boto3
 from botocore.exceptions import ClientError
 import json
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(title="Taubenschiesser CV Service", version="1.0.0")
 

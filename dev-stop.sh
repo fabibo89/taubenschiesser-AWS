@@ -79,15 +79,15 @@ stop_docker_containers() {
         print_warning "MongoDB container was not running"
     fi
     
-    # Stop and remove MQTT container
-    if docker ps -q -f name=taubenschiesser-mqtt-dev | grep -q .; then
-        print_status "Stopping MQTT container..."
-        docker stop taubenschiesser-mqtt-dev
-        docker rm taubenschiesser-mqtt-dev
-        print_success "MQTT container stopped and removed"
-    else
-        print_warning "MQTT container was not running"
-    fi
+    # MQTT container nicht mehr verwendet - nutze deinen eigenen Mosquitto-Server
+    # if docker ps -q -f name=taubenschiesser-mqtt-dev | grep -q .; then
+    #     print_status "Stopping MQTT container..."
+    #     docker stop taubenschiesser-mqtt-dev
+    #     docker rm taubenschiesser-mqtt-dev
+    #     print_success "MQTT container stopped and removed"
+    # else
+    #     print_warning "MQTT container was not running"
+    # fi
 }
 
 # Function to kill any remaining Node.js processes

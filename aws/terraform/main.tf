@@ -255,6 +255,14 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "CV_SERVICE_URL"
           value = "http://${aws_service_discovery_service.cv.name}.${aws_service_discovery_private_dns_namespace.main.name}"
+        },
+        {
+          name  = "AWS_IOT_ENDPOINT"
+          value = data.aws_iot_endpoint.mqtt.endpoint_address
+        },
+        {
+          name  = "AWS_REGION"
+          value = var.aws_region
         }
       ]
 
@@ -392,6 +400,44 @@ resource "aws_iam_role" "ecs_task_role" {
         Principal = {
           Service = "ecs-tasks.amazonaws.com"
         }
+      }
+    ]
+  })
+}
+
+# IAM Policy for ECS tasks to interact with IoT Core
+resource "aws_iam_role_policy" "ecs_task_iot" {
+  name = "${var.project_name}-ecs-iot-policy"
+  role = aws_iam_role.ecs_task_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "iot:Connect",
+          "iot:Publish",
+          "iot:Subscribe",
+          "iot:Receive",
+          "iot:GetThingShadow",
+          "iot:UpdateThingShadow",
+          "iot:DeleteThingShadow"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iot:CreateThing",
+          "iot:UpdateThing",
+          "iot:DescribeThing",
+          "iot:ListThings",
+          "iot:CreateKeysAndCertificate",
+          "iot:AttachThingPrincipal",
+          "iot:AttachPolicy"
+        ]
+        Resource = "*"
       }
     ]
   })

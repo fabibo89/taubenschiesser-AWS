@@ -57,6 +57,17 @@ debug_*.html
 .aws/
 docker-compose.override.yml
 
+# AWS IoT Certificates (NEVER commit these!)
+aws/scripts/certs/
+*.pem
+*.key
+*.crt
+*-certificate.pem.crt
+*-private.pem.key
+*-public.pem.key
+AmazonRootCA*.pem
+device-config.json
+
 # Models (large files)
 *.onnx
 *.pt

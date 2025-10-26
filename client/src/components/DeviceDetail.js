@@ -56,6 +56,7 @@ import {
   addCoordinate,
   updateCoordinate
 } from '../utils/routeUtils';
+import RouteVisualization from './RouteVisualization';
 
 // API URL with fallback for development proxy
 // Use empty string for relative URLs (works with proxy in package.json)
@@ -526,109 +527,7 @@ const DeviceDetail = () => {
                 <Typography variant="h6" gutterBottom>
                   Route-Visualisierung
                 </Typography>
-                <Box 
-                  sx={{ 
-                    width: '100%', 
-                    height: 300, 
-                    border: '1px solid #e0e0e0',
-                    borderRadius: 1,
-                    position: 'relative',
-                    backgroundColor: '#f9f9f9',
-                    overflow: 'hidden'
-                  }}
-                >
-                  {/* Route-Punkte und Verbindungslinien */}
-                  {actionsConfig.route.coordinates.map((coord, index) => {
-                    // Verwende Utility-Funktion für Position-Berechnung
-                    const { xPercent, yPercent } = calculateRoutePosition(coord);
-                    
-                    return (
-                      <Box key={index}>
-                        {/* Verbindungslinie zum nächsten Punkt */}
-                        {index < actionsConfig.route.coordinates.length - 1 && (() => {
-                          const nextCoord = actionsConfig.route.coordinates[index + 1];
-                          const { xPercent: nextXPercent, yPercent: nextYPercent } = calculateRoutePosition(nextCoord);
-                          
-                          return (
-                            <svg
-                              style={{
-                                position: 'absolute',
-                                left: 0,
-                                top: 0,
-                                width: '100%',
-                                height: '100%',
-                                zIndex: 1,
-                                pointerEvents: 'none'
-                              }}
-                            >
-                              <line
-                                x1={`${xPercent}%`}
-                                y1={`${yPercent}%`}
-                                x2={`${nextXPercent}%`}
-                                y2={`${nextYPercent}%`}
-                                stroke="#1976d2"
-                                strokeWidth="2"
-                                strokeDasharray="5,5"
-                              />
-                            </svg>
-                          );
-                        })()}
-                        
-                        {/* Route-Punkt */}
-                        <Box
-                          sx={{
-                            position: 'absolute',
-                            left: `${xPercent}%`,
-                            top: `${yPercent}%`,
-                            transform: 'translate(-50%, -50%)',
-                            width: 24,
-                            height: 24,
-                            borderRadius: '50%',
-                            backgroundColor: index === 0 ? '#4caf50' : '#1976d2',
-                            border: '2px solid white',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '12px',
-                            fontWeight: 'bold',
-                            color: 'white',
-                            zIndex: 2,
-                            boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                          }}
-                        >
-                          {index + 1}
-                        </Box>
-                      </Box>
-                    );
-                  })}
-                  
-                  {/* Achsen-Labels */}
-                  <Typography 
-                    variant="caption" 
-                    sx={{ 
-                      position: 'absolute', 
-                      left: 10, 
-                      top: 10, 
-                      color: '#666',
-                      fontWeight: 'bold'
-                    }}
-                  >
-                    Start
-                  </Typography>
-                  
-                  <Typography 
-                    variant="caption" 
-                    sx={{ 
-                      position: 'absolute', 
-                      right: 10, 
-                      bottom: 10, 
-                      color: '#666',
-                      fontWeight: 'bold'
-                    }}
-                  >
-                    {actionsConfig.route.coordinates.length} Punkte
-                  </Typography>
-                </Box>
+                <RouteVisualization coordinates={actionsConfig.route.coordinates} />
               </CardContent>
             </Card>
           </Grid>
