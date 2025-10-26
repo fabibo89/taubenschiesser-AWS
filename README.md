@@ -110,21 +110,17 @@ python cv-service/app.py      # CV Service
 **Lokaler Server mit externer MongoDB:**
 
 ```bash
-# 1. Stelle sicher, dass MongoDB auf dem Host läuft
-sudo systemctl status mongod
+# Erst-Installation
+./deploy-local.sh
+# Wähle: 2 (Produktion)
 
-# 2. Erstelle .env.prod Konfiguration
-cp docs/env.prod.template .env.prod
-nano .env.prod  # MONGODB_URI und Secrets anpassen
+# Updates von GitHub
+./update-prod.sh
 
-# 3. Container starten
-docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
-
-# 4. Logs anzeigen
-docker-compose -f docker-compose.prod.yml logs -f
-
-# 5. Services stoppen
-docker-compose -f docker-compose.prod.yml down
+# Manuell:
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d   # Starten
+docker-compose -f docker-compose.prod.yml logs -f                      # Logs
+docker-compose -f docker-compose.prod.yml down                         # Stoppen
 ```
 
 📖 **Vollständige Anleitung**: Siehe [docs/QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md)

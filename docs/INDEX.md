@@ -62,6 +62,15 @@ START HIER
 | [CHANGELOG_MONGODB.md](CHANGELOG_MONGODB.md) | MongoDB-Migration Dokumentation | Migration von Docker → Host MongoDB |
 | [INDEX.md](INDEX.md) | Diese Datei - Dokumentations-Übersicht | Navigation |
 
+### 🔧 Scripts (im Root-Verzeichnis)
+
+| Script | Zweck | Verwendung |
+|--------|-------|------------|
+| [../deploy-local.sh](../deploy-local.sh) | Deployment-Script (Erst-Installation) | `./deploy-local.sh` |
+| [../update-prod.sh](../update-prod.sh) | Update-Script (GitHub → Server) | `./update-prod.sh` |
+| [../dev-start.sh](../dev-start.sh) | Development-Umgebung starten | `./dev-start.sh` |
+| [../dev-stop.sh](../dev-stop.sh) | Development-Umgebung stoppen | `./dev-stop.sh` |
+
 ## 🔍 Schnell-Referenz
 
 ### "Ich möchte..."

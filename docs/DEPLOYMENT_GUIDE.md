@@ -453,9 +453,16 @@ MONGODB_URI=mongodb://admin:DEIN_MONGO_PASSWORT@host.docker.internal:27017/taube
 # Sichere Passwörter!
 JWT_SECRET=mindestens-32-zeichen-langer-schluessel
 
-# Server-IP eintragen
-CLIENT_URL=http://192.168.1.100:3000
-REACT_APP_API_URL=http://192.168.1.100:5001
+# Server-Adresse (WICHTIG für Zugriff von anderen Geräten!)
+# Option A: Hostname (einfacher zu merken)
+CLIENT_URL=http://casahosch:3000
+REACT_APP_API_URL=http://casahosch:5001
+
+# Option B: IP-Adresse (zuverlässiger)
+# CLIENT_URL=http://192.168.1.100:3000
+# REACT_APP_API_URL=http://192.168.1.100:5001
+
+# ⚠️ NICHT "localhost" verwenden wenn du von Handy/Notebook zugreifen willst!
 
 # Computer Vision
 CV_SERVICE=yolov8
@@ -595,15 +602,52 @@ sudo systemctl status taubenschiesser
 
 ### Verwaltung
 
+#### Updates von GitHub
+
+**Mit update-prod.sh (empfohlen):**
+
+```bash
+# Update-Script ausführbar machen (einmalig)
+chmod +x update-prod.sh
+
+# Updates holen und deployen
+./update-prod.sh
+```
+
+**Was das Script macht:**
+1. ✅ Prüft Git-Status
+2. ✅ Holt Updates von GitHub (`git pull`)
+3. ✅ Baut Docker Images neu
+4. ✅ Startet Services neu
+5. ✅ Führt Health Checks durch
+6. ✅ Zeigt Status und Logs
+
+**Ausgabe:**
+```
+✓ Updates erfolgreich geholt
+✓ Docker Images erfolgreich gebaut
+✓ Services neu gestartet
+
+📊 Service Status:
+✓ API:         http://localhost:5001 - OK
+✓ CV-Service:  http://localhost:8000 - OK
+✓ Frontend:    http://localhost:3000 - OK
+
+MongoDB Connected: host.docker.internal
+
+🎉 Update erfolgreich abgeschlossen!
+```
+
 #### Schnellbefehle mit deploy-local.sh
 
 ```bash
-# Neu deployen / Updaten
+# Komplettes Neu-Deployment (z.B. nach Konfigurationsänderung)
 ./deploy-local.sh
 # Wähle: 2 (Produktion)
 
 # Das Script macht automatisch:
 # - Prüft MongoDB-Verbindung
+# - Erstellt .env.prod (falls nicht vorhanden)
 # - Baut neue Images
 # - Startet Services neu
 # - Zeigt Status und nächste Schritte
@@ -1044,6 +1088,30 @@ docker-compose -f docker-compose.prod.yml logs api
 docker inspect taubenschiesser-api-prod
 ```
 
+**Socket.io Fehler / "Verbindung zum Server konnte nicht hergestellt werden":**
+
+**Ursache:** Frontend versucht sich mit `localhost:5001` zu verbinden, aber du greifst von anderem Gerät zu!
+
+**Lösung:**
+```bash
+# 1. .env.prod prüfen
+cat .env.prod | grep REACT_APP_API_URL
+
+# Falls es "localhost" zeigt:
+nano .env.prod
+
+# Ändere zu:
+# REACT_APP_API_URL=http://DEIN_HOSTNAME:5001
+# ODER
+# REACT_APP_API_URL=http://DEINE_IP:5001
+
+# 2. WICHTIG: Frontend NEU BAUEN!
+docker-compose -f docker-compose.prod.yml build frontend
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+# 3. Im Browser: Seite neu laden (Ctrl+Shift+R)
+```
+
 **MongoDB-Verbindung fehlschlägt:**
 ```bash
 # 1. Prüfe ob MongoDB läuft
@@ -1059,7 +1127,7 @@ mongosh "mongodb://admin:PASSWORT@localhost:27017/taubenschiesser?authSource=adm
 sudo netstat -tuln | grep 27017
 
 # 5. Ausführliche Anleitung:
-cat MONGODB_CONFIG.md
+cat docs/MONGODB_CONFIG.md
 ```
 
 **Nach Update nicht funktioniert:**
@@ -1108,14 +1176,22 @@ docker-compose logs -f      # Logs
 
 ### Lokaler Server (Produktion)
 
-**Mit deploy-local.sh (empfohlen):**
+**Updates von GitHub:**
 ```bash
-./deploy-local.sh           # Deployen / Updaten (wähle: 2)
-# Das Script macht alles: Build, Start, Checks
+./update-prod.sh            # Updates holen und deployen
+```
+
+**Deployment:**
+```bash
+./deploy-local.sh           # Erst-Installation / Neu-Deployment (wähle: 2)
 ```
 
 **Manuell:**
 ```bash
+# Updates holen und neu bauen
+git pull
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
 # Starten
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 

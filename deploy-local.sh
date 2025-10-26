@@ -56,11 +56,36 @@ if [ ! -f ".env.prod" ]; then
         
         echo ""
         echo -e "${YELLOW}Server-Konfiguration:${NC}"
-        read -p "Server IP-Adresse [localhost]: " SERVER_IP
-        SERVER_IP=${SERVER_IP:-localhost}
+        echo "Gib die Server-Adresse ein, über die die App erreichbar sein soll."
+        echo ""
+        echo "Optionen:"
+        echo "  1) Hostname (z.B. 'casahosch' oder 'meinserver')"
+        echo "  2) IP-Adresse (z.B. '192.168.1.100')"
+        echo "  3) localhost (nur vom Server selbst erreichbar)"
+        echo ""
+        echo "💡 Tipp: Hostname ist einfacher zu merken, IP ist zuverlässiger"
+        echo ""
         
-        CLIENT_URL="http://${SERVER_IP}:3000"
-        REACT_APP_API_URL="http://${SERVER_IP}:5001"
+        # Finde Server-Hostname und IP
+        SERVER_HOSTNAME=$(hostname)
+        SERVER_IPS=$(hostname -I 2>/dev/null | awk '{print $1}')
+        
+        echo "Erkannte Werte:"
+        echo "  Hostname: $SERVER_HOSTNAME"
+        echo "  IP-Adresse: $SERVER_IPS"
+        echo ""
+        
+        read -p "Server-Adresse [${SERVER_HOSTNAME}]: " SERVER_ADDR
+        SERVER_ADDR=${SERVER_ADDR:-$SERVER_HOSTNAME}
+        
+        CLIENT_URL="http://${SERVER_ADDR}:3000"
+        REACT_APP_API_URL="http://${SERVER_ADDR}:5001"
+        
+        echo ""
+        echo -e "${GREEN}URLs werden sein:${NC}"
+        echo "  Frontend: ${CLIENT_URL}"
+        echo "  API:      ${REACT_APP_API_URL}"
+        echo ""
         
         # Create .env.prod
         cat > .env.prod << EOF
@@ -95,8 +120,13 @@ EOF
         echo -e "${YELLOW}📝 Gespeicherte Einstellungen:${NC}"
         echo "  MongoDB: ${MONGO_HOST}:${MONGO_PORT}"
         echo "  Datenbank: ${MONGO_DB}"
+        echo "  Server: ${SERVER_ADDR}"
         echo "  Frontend: ${CLIENT_URL}"
         echo "  API: ${REACT_APP_API_URL}"
+        echo ""
+        echo -e "${GREEN}🌐 Zugriff auf die App:${NC}"
+        echo "  Von diesem Server:    http://localhost:3000"
+        echo "  Von anderen Geräten:  ${CLIENT_URL}"
         echo ""
         echo "Du kannst die Datei später bearbeiten mit: nano .env.prod"
         echo ""

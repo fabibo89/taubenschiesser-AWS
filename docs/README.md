@@ -29,10 +29,11 @@ Willkommen in der Dokumentation des Taubenschiesser-Projekts!
 
 ## 🔍 Was suchst du?
 
-| Ich möchte... | Lies diese Datei |
-|---------------|------------------|
+| Ich möchte... | Lies diese Datei / Nutze Script |
+|---------------|----------------------------------|
 | Development lokal starten | [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) → Abschnitt 1 |
-| Auf meinem Server deployen | [QUICKSTART_MONGODB.md](QUICKSTART_MONGODB.md) |
+| Auf meinem Server deployen | [QUICKSTART_MONGODB.md](QUICKSTART_MONGODB.md) oder `./deploy-local.sh` |
+| Updates von GitHub holen | `./update-prod.sh` |
 | In der AWS Cloud deployen | [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) → Abschnitt 3 |
 | MongoDB einrichten | [MONGODB_CONFIG.md](MONGODB_CONFIG.md) |
 | ESP32-Gerät konfigurieren | [DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md) |

@@ -23,9 +23,21 @@ nano .env.prod
 ```env
 MONGODB_URI=mongodb://admin:DEIN_MONGO_PASSWORT@host.docker.internal:27017/taubenschiesser?authSource=admin
 JWT_SECRET=GENERIERE_EINEN_32_ZEICHEN_SCHLUESSEL
-CLIENT_URL=http://DEINE_SERVER_IP:3000
-REACT_APP_API_URL=http://DEINE_SERVER_IP:5001
+
+# Server-Adresse für Zugriff von anderen Geräten:
+# Option A: Hostname (z.B. "casahosch")
+CLIENT_URL=http://DEIN_HOSTNAME:3000
+REACT_APP_API_URL=http://DEIN_HOSTNAME:5001
+
+# Option B: IP-Adresse (z.B. "192.168.1.100")
+# CLIENT_URL=http://DEINE_IP:3000
+# REACT_APP_API_URL=http://DEINE_IP:5001
 ```
+
+⚠️ **WICHTIG:** Verwende **NICHT** `localhost` wenn du von Handy/Notebook zugreifen willst!
+- ✅ Hostname: `http://casahosch:3000`
+- ✅ IP: `http://192.168.1.100:3000`
+- ❌ localhost: Nur vom Server selbst erreichbar!
 
 ### 3. Starte Services
 
@@ -132,6 +144,20 @@ sudo systemctl restart mongod
 
 ## 🚀 Häufige Befehle
 
+### Updates von GitHub
+
+```bash
+# Updates holen und automatisch deployen
+chmod +x update-prod.sh  # Einmalig
+./update-prod.sh
+
+# Das Script macht:
+# - git pull
+# - Docker Images neu bauen
+# - Services neu starten
+# - Health Checks
+```
+
 ### Services verwalten
 
 ```bash
@@ -234,6 +260,49 @@ hostname -I
 # MONGODB_URI=mongodb://admin:PASSWORT@192.168.1.100:27017/taubenschiesser?authSource=admin
 ```
 
+### Problem: "Socket connection error" oder "Verbindung zum Server konnte nicht hergestellt werden"
+
+**Ursache:** Frontend verbindet sich mit `localhost:5001`, aber du greifst von Handy/Notebook zu
+
+**Lösung:**
+
+```bash
+# 1. Prüfe .env.prod
+cat .env.prod | grep REACT_APP_API_URL
+
+# 2. Ändere von localhost auf Hostname oder IP
+nano .env.prod
+
+# Setze:
+REACT_APP_API_URL=http://casahosch:5001
+# ODER
+REACT_APP_API_URL=http://192.168.178.45:5001
+
+# 3. Frontend NEU BAUEN (wichtig!)
+docker-compose -f docker-compose.prod.yml build frontend
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+# 4. Browser-Cache löschen und Seite neu laden (Ctrl+Shift+R)
+```
+
+### Problem: "413 Request Entity Too Large" bei Bildanalyse
+
+**Ursache:** Bild ist zu groß für Upload (Standard: 1MB)
+
+**Lösung:** Bereits gefixt in neuester Version!
+- Nginx: 50MB Limit
+- Express: 50MB Limit
+
+```bash
+# Updates holen
+./update-prod.sh
+
+# Oder manuell:
+git pull
+docker-compose -f docker-compose.prod.yml build frontend api
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
+```
+
 ### Problem: "Authentication failed"
 
 **Lösung**:
@@ -295,4 +364,47 @@ exit
 ---
 
 **Fragen?** Siehe [MONGODB_CONFIG.md](MONGODB_CONFIG.md) für ausführliche Hilfe!
+
+---
+
+## 🔄 Updates einspielen
+
+Wenn du später Updates vom GitHub-Repository holen möchtest:
+
+### Mit update-prod.sh (empfohlen)
+
+```bash
+# Einmalig: Script ausführbar machen
+chmod +x update-prod.sh
+
+# Updates holen und deployen
+./update-prod.sh
+```
+
+**Das Script macht automatisch:**
+- ✅ Prüft ob lokale Änderungen vorhanden sind
+- ✅ Holt Updates von GitHub (`git pull`)
+- ✅ Baut alle Docker Images neu
+- ✅ Startet Services neu
+- ✅ Führt Health Checks durch
+- ✅ Zeigt Status und mögliche Fehler
+
+### Manuell
+
+```bash
+# Updates holen
+git pull
+
+# Neu bauen und starten
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+# Status prüfen
+docker-compose -f docker-compose.prod.yml ps
+
+# Health Checks
+curl http://localhost:5001/health
+curl http://localhost:8000/
+```
+
+**Tipp:** Nutze `./update-prod.sh` - es ist sicherer und macht automatisch alle notwendigen Schritte!
 
