@@ -242,16 +242,26 @@ docker-compose logs -f mongodb
 
 Für stabilen Dauerbetrieb auf deinem eigenen Server.
 
+### ⚠️ WICHTIG: MongoDB-Konfiguration
+
+Dieses Setup nutzt eine **bereits laufende MongoDB** auf dem Host-System statt eines Docker-Containers.
+
+**Voraussetzung**: MongoDB muss auf dem Server installiert und gestartet sein.
+
+Siehe **[MONGODB_CONFIG.md](MONGODB_CONFIG.md)** für eine vollständige Anleitung.
+
 ### Quick Start
 
 ```bash
 cd taubenschiesser_AWS
 
-# Produktions-Config erstellen
-cp .env.prod.example .env.prod
-nano .env.prod  # Passwörter ändern!
+# 1. Stelle sicher, dass MongoDB läuft
+sudo systemctl status mongod
 
-# Deploy Script
+# 2. Produktions-Config erstellen
+nano .env.prod  # Siehe Beispiel unten
+
+# 3. Deploy Script
 chmod +x deploy-local.sh
 ./deploy-local.sh
 # Wähle: 2 (Produktion)
@@ -259,18 +269,53 @@ chmod +x deploy-local.sh
 
 ### Detaillierte Schritte
 
-#### 2.1 Produktions-Config
+#### 2.1 MongoDB vorbereiten
+
+**Falls MongoDB noch nicht installiert:**
 
 ```bash
-cp .env.prod.example .env.prod
+# Ubuntu/Debian
+sudo apt update
+sudo apt install mongodb-org
+sudo systemctl start mongod
+sudo systemctl enable mongod
+
+# macOS
+brew install mongodb-community
+brew services start mongodb-community
+```
+
+**MongoDB User erstellen:**
+
+```bash
+mongosh
+
+# In MongoDB Shell:
+use admin
+db.createUser({
+  user: "admin",
+  pwd: "DEIN_SICHERES_PASSWORT",
+  roles: [ { role: "root", db: "admin" } ]
+})
+exit
+```
+
+Detaillierte Anleitung: **[MONGODB_CONFIG.md](MONGODB_CONFIG.md)**
+
+#### 2.2 Produktions-Config erstellen
+
+```bash
 nano .env.prod
 ```
 
 **Wichtig - UNBEDINGT ändern:**
 
 ```env
+# MongoDB Konfiguration (auf Host-System)
+# WICHTIG: "host.docker.internal" verweist auf den Host
+MONGODB_URI=mongodb://admin:DEIN_MONGO_PASSWORT@host.docker.internal:27017/taubenschiesser?authSource=admin
+
 # Sichere Passwörter!
-MONGO_PASSWORD=dein-langes-sicheres-passwort
 JWT_SECRET=mindestens-32-zeichen-langer-schluessel
 
 # Server-IP eintragen
@@ -282,14 +327,20 @@ REACT_APP_API_URL=http://192.168.1.100:5001
 # AWS_REGION=eu-central-1
 ```
 
-#### 2.2 Docker Images bauen
+**MongoDB-URI Optionen:**
+
+- **Standard**: `mongodb://admin:PASSWORT@host.docker.internal:27017/taubenschiesser?authSource=admin`
+- **Andere Server-IP**: `mongodb://admin:PASSWORT@192.168.1.100:27017/taubenschiesser?authSource=admin`
+- **Ohne Auth** (nicht empfohlen): `mongodb://host.docker.internal:27017/taubenschiesser`
+
+#### 2.3 Docker Images bauen
 
 ```bash
 # Images bauen (kann 5-10 Min dauern)
 docker-compose -f docker-compose.prod.yml --env-file .env.prod build
 ```
 
-#### 2.3 Services starten
+#### 2.4 Services starten
 
 ```bash
 # Starten
@@ -298,11 +349,12 @@ docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 # Status prüfen
 docker-compose -f docker-compose.prod.yml ps
 
-# Logs ansehen
-docker-compose -f docker-compose.prod.yml logs -f
+# Logs ansehen (achte auf erfolgreiche MongoDB-Verbindung)
+docker-compose -f docker-compose.prod.yml logs -f api
+# Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
 ```
 
-#### 2.4 Health Check
+#### 2.5 Health Check
 
 ```bash
 # Warte 30 Sekunden, dann:
@@ -313,7 +365,7 @@ curl http://localhost:8000/health
 open http://localhost:3000
 ```
 
-#### 2.5 User erstellen
+#### 2.6 User erstellen
 
 ```bash
 # In API Container
@@ -322,7 +374,7 @@ node create_user.js
 exit
 ```
 
-#### 2.6 Autostart bei Server-Neustart
+#### 2.7 Autostart bei Server-Neustart
 
 **Systemd Service erstellen:**
 
@@ -369,9 +421,10 @@ docker-compose -f docker-compose.prod.yml restart api
 git pull
 docker-compose -f docker-compose.prod.yml up -d --build
 
-# Backup erstellen
-docker exec taubenschiesser-mongodb-prod mongodump --out /dump
-docker cp taubenschiesser-mongodb-prod:/dump ./backup-$(date +%Y%m%d)
+# MongoDB Backup erstellen (auf Host-System)
+# WICHTIG: MongoDB läuft auf dem Host, nicht in Docker!
+mongodump --uri="mongodb://admin:PASSWORT@localhost:27017/taubenschiesser?authSource=admin" --out=./backup-$(date +%Y%m%d)
+# Siehe MONGODB_CONFIG.md für mehr Backup-Optionen
 
 # Stoppen
 docker-compose -f docker-compose.prod.yml down
@@ -730,10 +783,18 @@ docker system prune -a  # Aufräumen
 docker-compose down -v  # Alles löschen (inkl. Daten!)
 ```
 
-**MongoDB Verbindung:**
+**MongoDB Verbindung (Host-System):**
 ```bash
-docker-compose logs mongodb
-docker exec -it taubenschiesser-mongodb mongosh -u admin -p password123
+# MongoDB Status prüfen
+sudo systemctl status mongod
+
+# MongoDB Logs
+sudo journalctl -u mongod -f
+
+# MongoDB Shell
+mongosh "mongodb://admin:PASSWORT@localhost:27017/taubenschiesser?authSource=admin"
+
+# Siehe MONGODB_CONFIG.md für Troubleshooting-Details
 ```
 
 ### Entwicklung
@@ -767,6 +828,24 @@ python app.py
 ```bash
 docker-compose -f docker-compose.prod.yml logs api
 docker inspect taubenschiesser-api-prod
+```
+
+**MongoDB-Verbindung fehlschlägt:**
+```bash
+# 1. Prüfe ob MongoDB läuft
+sudo systemctl status mongod
+
+# 2. Prüfe MongoDB Logs
+sudo journalctl -u mongod -n 50
+
+# 3. Teste Verbindung vom Host
+mongosh "mongodb://admin:PASSWORT@localhost:27017/taubenschiesser?authSource=admin"
+
+# 4. Prüfe ob MongoDB auf richtigem Interface lauscht
+sudo netstat -tuln | grep 27017
+
+# 5. Ausführliche Anleitung:
+cat MONGODB_CONFIG.md
 ```
 
 **Nach Update nicht funktioniert:**
@@ -836,11 +915,12 @@ aws logs tail /ecs/taubenschiesser-api --follow
 
 ## Weiterführende Dokumentation
 
+- **MongoDB Konfiguration**: Siehe [MONGODB_CONFIG.md](MONGODB_CONFIG.md) ⭐ NEU
 - **AWS IoT Setup**: Siehe [AWS_IOT_SETUP.md](AWS_IOT_SETUP.md)
 - **MQTT Konfiguration**: Siehe [MQTT_SETUP.md](MQTT_SETUP.md)
 - **Dashboard Guide**: Siehe [DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)
 - **Device Config**: Siehe [DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md)
-- **Server ENV**: Siehe [server/ENV_CONFIGURATION.md](server/ENV_CONFIGURATION.md)
+- **Server ENV**: Siehe [../server/ENV_CONFIGURATION.md](../server/ENV_CONFIGURATION.md)
 
 ---
 

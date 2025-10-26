@@ -107,8 +107,32 @@ python cv-service/app.py      # CV Service
 
 ### Docker Deployment (Production)
 
+**Lokaler Server mit externer MongoDB:**
+
 ```bash
-# Container bauen und starten
+# 1. Stelle sicher, dass MongoDB auf dem Host läuft
+sudo systemctl status mongod
+
+# 2. Erstelle .env.prod Konfiguration
+cp docs/env.prod.template .env.prod
+nano .env.prod  # MONGODB_URI und Secrets anpassen
+
+# 3. Container starten
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+# 4. Logs anzeigen
+docker-compose -f docker-compose.prod.yml logs -f
+
+# 5. Services stoppen
+docker-compose -f docker-compose.prod.yml down
+```
+
+📖 **Vollständige Anleitung**: Siehe [docs/QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md)
+
+**Entwicklungs-Setup mit Docker-MongoDB:**
+
+```bash
+# Container bauen und starten (MongoDB im Container)
 docker-compose up -d
 
 # Logs anzeigen
@@ -205,15 +229,27 @@ terraform plan
 terraform apply
 ```
 
-Siehe [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) für Details.
+Siehe [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) für Details.
 
 ## 📚 Weitere Dokumentation
 
-- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Deployment Guide (Entwicklung, Lokal, AWS)
-- [README-DEV.md](README-DEV.md) - Entwickler-Guide
-- [DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md) - Hardware-Setup
-- [MQTT_SETUP.md](MQTT_SETUP.md) - MQTT-Konfiguration
-- [DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md) - Dashboard-Nutzung
+📖 **Dokumentations-Übersicht**: Siehe [docs/INDEX.md](docs/INDEX.md) für eine komplette Übersicht aller Dokumente
+
+### Deployment & Setup
+- [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) - Vollständiger Deployment-Guide (Entwicklung, Lokal, AWS)
+- [QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md) - 5-Min Schnellstart für lokales Produktions-Setup
+- [MONGODB_CONFIG.md](docs/MONGODB_CONFIG.md) - MongoDB-Konfiguration für lokalen Server
+- [README-DEV.md](docs/README-DEV.md) - Entwickler-Guide
+
+### Konfiguration & Guides
+- [DEVICE_CONFIGURATION.md](docs/DEVICE_CONFIGURATION.md) - Hardware-Setup für ESP32-Geräte
+- [MQTT_SETUP.md](docs/MQTT_SETUP.md) - MQTT-Broker Konfiguration
+- [DASHBOARD_GUIDE.md](docs/DASHBOARD_GUIDE.md) - Dashboard-Nutzung
+- [AWS_IOT_SETUP.md](docs/AWS_IOT_SETUP.md) - AWS IoT Core Setup
+
+### Changelog & Templates
+- [CHANGELOG_MONGODB.md](docs/CHANGELOG_MONGODB.md) - MongoDB Migration Changelog
+- [env.prod.template](docs/env.prod.template) - Template für .env.prod Konfiguration
 
 ## 🧪 Testing
 

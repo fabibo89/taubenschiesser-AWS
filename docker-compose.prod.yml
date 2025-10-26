@@ -4,29 +4,9 @@ version: '3.8'
 # Nutzen mit: docker-compose -f docker-compose.prod.yml up -d
 
 services:
-  # MongoDB Database
-  mongodb:
-    image: mongo:7.0
-    container_name: taubenschiesser-mongodb-prod
-    restart: always
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-password123}  # Besser: aus .env lesen
-      MONGO_INITDB_DATABASE: taubenschiesser
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-      - mongodb_config:/data/configdb
-    networks:
-      - taubenschiesser-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # Node.js API Server
+  # HINWEIS: MongoDB läuft bereits auf dem Host-System
+  # Verbindung erfolgt über MONGODB_URI in .env.prod
   api:
     build:
       context: ./server
@@ -36,7 +16,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGODB_URI: mongodb://admin:${MONGO_PASSWORD:-password123}@mongodb:27017/taubenschiesser?authSource=admin
+      MONGODB_URI: ${MONGODB_URI}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
       CV_SERVICE_URL: http://cv-service:8000
@@ -45,9 +25,12 @@ services:
       AWS_REGION: ${AWS_REGION:-eu-central-1}
     ports:
       - "5001:5000"
+    # MongoDB läuft auf Host-System, daher kein depends_on
     depends_on:
-      - mongodb
       - cv-service
+    # Für Zugriff auf Host-MongoDB
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - taubenschiesser-network
     logging:
@@ -143,12 +126,6 @@ services:
   #     - frontend
   #   networks:
   #     - taubenschiesser-network
-
-volumes:
-  mongodb_data:
-    driver: local
-  mongodb_config:
-    driver: local
 
 networks:
   taubenschiesser-network:
