@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including execstack for onnxruntime fix
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
@@ -13,11 +13,16 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libgl1-mesa-dri \
     libgl1 \
+    execstack \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Fix onnxruntime executable stack issue on Linux
+# This removes the executable stack requirement that causes security errors
+RUN find /usr/local/lib/python3.11/site-packages/onnxruntime -name "*.so" -exec execstack -c {} \; 2>/dev/null || true
 
 # Copy source code
 COPY . .
