@@ -113,19 +113,25 @@ app.set('deviceMonitor', deviceMonitor);
 // Start server
 const startServer = async () => {
   try {
-    await connectDB();
+    logger.info('🚀 Starting server initialization...');
     
-    // Start device monitoring
+    logger.info('📊 Connecting to MongoDB...');
+    await connectDB();
+    logger.info('✅ MongoDB connected successfully');
+    
+    logger.info('🔍 Starting device monitoring...');
     await deviceMonitor.start();
+    logger.info('✅ Device monitor started successfully');
     
     server.listen(PORT, '0.0.0.0', () => {
-      logger.info(`Server running on port ${PORT}`);
-      logger.info(`Accessible at: http://localhost:${PORT} or http://192.168.10.156:${PORT}`);
-      logger.info('Device monitoring started');
-      logger.info('Device control via MQTT available');
+      logger.info(`✅ Server running on port ${PORT}`);
+      logger.info(`📡 Accessible at: http://localhost:${PORT} or http://192.168.10.156:${PORT}`);
+      logger.info('✅ Device monitoring started');
+      logger.info('✅ Device control via MQTT available');
     });
   } catch (error) {
-    logger.error('Failed to start server:', error);
+    logger.error('❌ Failed to start server:', error);
+    logger.error('❌ Error stack:', error.stack);
     process.exit(1);
   }
 };

@@ -22,15 +22,24 @@ class DeviceMonitor {
     this.isRunning = true;
     logger.info('Starting device monitor service');
 
-    // Sofortiger Check beim Start
-    await this.checkAllDevices();
-
-    // Regelmäßige Checks
-    this.intervalId = setInterval(async () => {
+    try {
+      // Sofortiger Check beim Start
+      logger.info('Performing initial device check...');
       await this.checkAllDevices();
-    }, this.pingInterval);
+      logger.info('Initial device check completed');
 
-    logger.info(`Device monitor started - checking every ${this.pingInterval / 1000} seconds`);
+      // Regelmäßige Checks
+      this.intervalId = setInterval(async () => {
+        await this.checkAllDevices();
+      }, this.pingInterval);
+
+      logger.info(`Device monitor started - checking every ${this.pingInterval / 1000} seconds`);
+    } catch (error) {
+      logger.error('Error starting device monitor:', error);
+      logger.error('Error stack:', error.stack);
+      this.isRunning = false;
+      throw error;
+    }
   }
 
   async stop() {
