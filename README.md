@@ -95,7 +95,7 @@ cd ../cv-service && pip install -r requirements.txt
 # Environment-Variablen konfigurieren
 cp client/.env.example client/.env
 cp server/.env.example server/.env
-cp cv-service/env.example cv-service/.env
+# cv-service/.env wird automatisch durch setup-env.sh erstellt
 
 # Services einzeln starten
 npm run dev                    # Frontend + Backend

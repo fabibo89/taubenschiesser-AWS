@@ -1,32 +1,55 @@
 #!/bin/bash
-# Setup script for .env configuration
+# Setup script for .env configuration (Server + CV Service)
 
 set -e
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-ENV_FILE=".env"
+# Get the script directory (server/)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Get the project root directory
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+
+SERVER_ENV_FILE="$SCRIPT_DIR/.env"
+CV_ENV_FILE="$PROJECT_ROOT/cv-service/.env"
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  Taubenschiesser - Environment Setup            ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check if .env already exists
-if [ -f "$ENV_FILE" ]; then
-    echo -e "${YELLOW}⚠️  .env file already exists!${NC}"
-    read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+# Check if Server .env already exists
+SERVER_EXISTS=false
+if [ -f "$SERVER_ENV_FILE" ]; then
+    SERVER_EXISTS=true
+fi
+
+# Check if CV Service .env already exists
+CV_EXISTS=false
+if [ -f "$CV_ENV_FILE" ]; then
+    CV_EXISTS=true
+fi
+
+if [ "$SERVER_EXISTS" = true ] || [ "$CV_EXISTS" = true ]; then
+    echo -e "${YELLOW}⚠️  Existing .env files found:${NC}"
+    [ "$SERVER_EXISTS" = true ] && echo "  - Server: $SERVER_ENV_FILE"
+    [ "$CV_EXISTS" = true ] && echo "  - CV Service: $CV_ENV_FILE"
+    echo ""
+    read -p "Do you want to overwrite them? (y/N): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted. Your existing .env was not changed."
+        echo "Aborted. Your existing .env files were not changed."
         exit 0
     fi
 fi
 
-# Create .env file
-cat > "$ENV_FILE" <<'EOF'
+echo -e "${BLUE}Creating Server .env file...${NC}"
+
+# Create Server .env file
+cat > "$SERVER_ENV_FILE" <<'EOF'
 # ============================================
 # Taubenschiesser Server Configuration
 # ============================================
@@ -92,22 +115,89 @@ CV_SERVICE_URL=http://localhost:8000
 # ============================================
 EOF
 
-echo -e "${GREEN}✅ .env file created successfully!${NC}"
+echo -e "${GREEN}✅ Server .env created successfully!${NC}"
 echo ""
-echo "📝 Configuration:"
+
+# ============================================
+# Create CV Service .env file
+# ============================================
+
+echo -e "${BLUE}Creating CV Service .env file...${NC}"
+
+cat > "$CV_ENV_FILE" <<EOF
+# ============================================
+# Taubenschiesser CV Service Configuration
+# ============================================
+
+# Service Selection
+CV_SERVICE=yolov8  # Options: 'yolov8' or 'rekognition'
+
+# ============================================
+# YOLOv8 Configuration (Default)
+# ============================================
+# Optimized for bird detection
+# Relative path from cv-service directory
+MODEL_PATH=../models/yolov8l.onnx
+YOLO_CONFIDENCE=0.25  # Confidence threshold (0.0-1.0)
+YOLO_IOU=0.45         # IoU threshold for NMS (0.0-1.0)
+
+# ============================================
+# AWS Rekognition Configuration (Optional)
+# ============================================
+# Only needed when CV_SERVICE=rekognition
+# AWS_REGION=eu-central-1
+# AWS_ACCESS_KEY_ID=your_access_key_here
+# AWS_SECRET_ACCESS_KEY=your_secret_key_here
+
+# Alternative: AWS credentials can be set via:
+# - AWS credentials file (~/.aws/credentials)
+# - IAM roles (when running on AWS)
+# - Environment variables
+
+# ============================================
+# Notes:
+# ============================================
+# For local development:
+#   - Use YOLOv8 (default)
+#   - Model will be downloaded automatically if missing
+#
+# For AWS deployment:
+#   - Can use AWS Rekognition for serverless CV
+#   - Set CV_SERVICE=rekognition and configure AWS credentials
+# ============================================
+EOF
+
+echo -e "${GREEN}✅ CV Service .env created successfully!${NC}"
+echo ""
+
+# ============================================
+# Summary
+# ============================================
+
+echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  Setup Complete!                                 ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
+echo ""
+echo "📝 Configuration created:"
+echo "  ✅ Server: $SERVER_ENV_FILE"
+echo "  ✅ CV Service: $CV_ENV_FILE"
+echo ""
+echo "🔧 Default settings:"
 echo "  - Mode: Development (local)"
 echo "  - MQTT: Local Mosquitto (configure in Dashboard)"
 echo "  - Database: Local MongoDB"
+echo "  - CV Service: YOLOv8 (local)"
 echo ""
-echo -e "${YELLOW}🔧 Next steps:${NC}"
-echo "  1. Review and adjust values in .env if needed"
-echo "  2. Start MongoDB: docker-compose up -d mongodb"
-echo "  3. Start Mosquitto: brew services start mosquitto"
-echo "  4. Start server: npm run dev"
+echo -e "${YELLOW}📋 Next steps:${NC}"
+echo "  1. Review and adjust values if needed"
+echo "  2. Start services:"
+echo "     cd $PROJECT_ROOT"
+echo "     ./dev-start.sh"
 echo ""
-echo -e "${YELLOW}📖 For AWS IoT Core:${NC}"
-echo "  - See ENV_CONFIGURATION.md for details"
-echo "  - Uncomment AWS_IOT_ENDPOINT after terraform deployment"
+echo -e "${YELLOW}📖 Additional resources:${NC}"
+echo "  - Server config: $SCRIPT_DIR/ENV_CONFIGURATION.md"
+echo "  - CV Service: Use YOLOv8 (default) or AWS Rekognition"
+echo "  - AWS IoT Core: Uncomment AWS_IOT_ENDPOINT after terraform deployment"
 echo ""
 
 

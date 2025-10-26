@@ -57,8 +57,14 @@ def load_yolov8_model():
     """Load the YOLOv8 model using the working repository approach"""
     global yolov8_detector
     
-    # Use local models directory
-    model_path = os.getenv('MODEL_PATH', '/Users/fabianbosch/Documents/GitHub/taubenschiesser_AWS/models/yolov8l.onnx')
+    # Use local models directory - resolve relative path from this file's directory
+    model_path = os.getenv('MODEL_PATH', '../models/yolov8l.onnx')
+    
+    # Convert to absolute path if it's relative
+    if not os.path.isabs(model_path):
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.abspath(os.path.join(script_dir, model_path))
     
     try:
         # Initialize YOLOv8 detector with configurable thresholds

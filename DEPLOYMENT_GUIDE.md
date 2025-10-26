@@ -54,7 +54,7 @@ cd taubenschiesser_AWS
 
 # .env erstellen
 cd server
-cp .env.example .env
+./setup-env.sh
 cd ..
 
 # Development starten
@@ -92,13 +92,25 @@ cd ..
 
 #### 1.2 Environment konfigurieren
 
+**Option A: Mit Setup-Script (empfohlen)**
+
 ```bash
-# Server .env
 cd server
-cp .env.example .env
+./setup-env.sh
 ```
 
-`.env` Inhalt (Standard-Werte, passt bereits):
+Das Script erstellt automatisch **beide** `.env` Dateien mit allen notwendigen Variablen:
+- `server/.env` - API Server Konfiguration
+- `cv-service/.env` - Computer Vision Service Konfiguration
+
+**Option B: Manuell**
+
+**Server .env:**
+```bash
+cd server
+nano .env
+```
+
 ```env
 NODE_ENV=development
 PORT=5000
@@ -110,6 +122,28 @@ CV_SERVICE_URL=http://localhost:8000
 # AWS IoT auskommentiert (lokal nicht benötigt)
 # AWS_IOT_ENDPOINT=...
 # AWS_REGION=eu-central-1
+```
+
+**CV Service .env:**
+```bash
+cd cv-service
+nano .env
+```
+
+```env
+# Service Selection
+CV_SERVICE=yolov8  # 'yolov8' oder 'rekognition'
+
+# YOLOv8 Configuration
+# Relative path from cv-service directory
+MODEL_PATH=../models/yolov8l.onnx
+YOLO_CONFIDENCE=0.25
+YOLO_IOU=0.45
+
+# AWS Rekognition (optional, nur wenn CV_SERVICE=rekognition)
+# AWS_REGION=eu-central-1
+# AWS_ACCESS_KEY_ID=...
+# AWS_SECRET_ACCESS_KEY=...
 ```
 
 #### 1.3 Services starten
