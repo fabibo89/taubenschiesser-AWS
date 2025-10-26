@@ -119,11 +119,12 @@ python cv-service/app.py      # CV Service
 
 # Manuell:
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d   # Starten
-docker-compose -f docker-compose.prod.yml logs -f                      # Logs
+docker-compose -f docker-compose.prod.yml logs -f api cv-service frontend hardware-monitor  # Logs (alle Container)
 docker-compose -f docker-compose.prod.yml down                         # Stoppen
 ```
 
-📖 **Vollständige Anleitung**: Siehe [docs/QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md)
+📖 **Vollständige Anleitung**: Siehe [docs/QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md)  
+📋 **Log-Überwachung**: Siehe [docs/LOGS_GUIDE.md](docs/LOGS_GUIDE.md)
 
 **Entwicklungs-Setup mit Docker-MongoDB:**
 
@@ -235,6 +236,7 @@ Siehe [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) für Details.
 - [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) - Vollständiger Deployment-Guide (Entwicklung, Lokal, AWS)
 - [QUICKSTART_MONGODB.md](docs/QUICKSTART_MONGODB.md) - 5-Min Schnellstart für lokales Produktions-Setup
 - [MONGODB_CONFIG.md](docs/MONGODB_CONFIG.md) - MongoDB-Konfiguration für lokalen Server
+- [LOGS_GUIDE.md](docs/LOGS_GUIDE.md) - Docker-Logs überwachen und Fehlersuche
 - [README-DEV.md](docs/README-DEV.md) - Entwickler-Guide
 
 ### Konfiguration & Guides

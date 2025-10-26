@@ -293,6 +293,10 @@ echo "  API:      http://localhost:5001"
 echo "  CV:       http://localhost:8000"
 echo ""
 echo -e "${YELLOW}📝 Nächste Schritte:${NC}"
+echo ""
+echo -e "${BLUE}⚠️  WICHTIG: MQTT wird NICHT hier konfiguriert!${NC}"
+echo -e "${BLUE}   MQTT-Einstellungen (Mosquitto) werden nach dem Login im Dashboard gesetzt.${NC}"
+echo ""
 
 if [ "$MODE" = "2" ]; then
     echo "1. Prüfe Verbindung:"

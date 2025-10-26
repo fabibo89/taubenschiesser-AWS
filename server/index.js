@@ -25,6 +25,9 @@ const io = new Server(server, {
   }
 });
 
+// Trust proxy - required when behind Nginx
+app.set('trust proxy', true);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({

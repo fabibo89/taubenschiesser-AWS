@@ -416,6 +416,8 @@ taubenschiesser-hardware-monitor  Up
    docker-compose -f docker-compose.prod.yml logs api | grep MongoDB
    → Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
    
+   📋 Vollständige Log-Anleitung: docs/LOGS_GUIDE.md
+   
 3. Erstelle einen User:
    docker exec -it taubenschiesser-api-prod /bin/sh
    node create_user.js
@@ -551,20 +553,35 @@ exit
 
 #### 2.8 MQTT konfigurieren
 
-Nach dem Login im Dashboard:
+⚠️ **WICHTIG:** MQTT wird **NICHT** in `.env.prod` oder im Deploy-Script konfiguriert!
 
-1. Navigiere zu **Profil** → **Einstellungen** → **MQTT**
-2. Aktiviere MQTT: ✅
-3. Wähle **Server-Profil**: `custom`
-4. Trage ein:
+**MQTT-Einstellungen werden im Dashboard gesetzt** (nach dem Login).
+
+**Warum?**
+- Jeder User kann seinen eigenen MQTT-Server konfigurieren
+- Änderbar ohne Server-Neustart
+- Testbar direkt im Dashboard
+- Settings werden in MongoDB gespeichert
+
+**Voraussetzung:** Dein Mosquitto-Server muss bereits laufen (auf deinem Netzwerk oder lokal).
+
+**So konfigurierst du MQTT:**
+
+1. Login im Dashboard: `http://casahosch:3000`
+2. Navigiere zu **Profil** (oben rechts) → **Einstellungen** → **MQTT**
+3. Aktiviere MQTT: ✅
+4. Wähle **Server-Profil**: `custom`
+5. Trage ein:
    - **Broker**: `192.168.1.x` (IP deines Mosquitto-Servers)
    - **Port**: `1883`
-   - **Username**: (optional)
-   - **Password**: (optional)
-5. Klicke **MQTT-Verbindung testen**
-6. Bei Erfolg: **Einstellungen speichern**
+   - **Username**: (optional, falls dein Mosquitto Auth nutzt)
+   - **Password**: (optional, falls dein Mosquitto Auth nutzt)
+6. Klicke **MQTT-Verbindung testen**
+7. Bei Erfolg: **Einstellungen speichern**
 
 Die MQTT-Konfiguration wird in der MongoDB gespeichert (`users.settings.mqtt`).
+
+**Mosquitto läuft nicht?** Siehe [MQTT_SETUP.md](MQTT_SETUP.md) für Installation.
 
 #### 2.9 Autostart bei Server-Neustart
 
@@ -656,10 +673,16 @@ MongoDB Connected: host.docker.internal
 #### Manuelle Verwaltung
 
 ```bash
-# Logs ansehen
+# Logs ansehen (alle Container live überwachen)
+docker-compose -f docker-compose.prod.yml logs -f api cv-service frontend hardware-monitor
+
+# Oder einzeln:
 docker-compose -f docker-compose.prod.yml logs -f api
 docker-compose -f docker-compose.prod.yml logs -f cv-service
 docker-compose -f docker-compose.prod.yml logs -f frontend
+docker-compose -f docker-compose.prod.yml logs -f hardware-monitor
+
+# 📋 Vollständige Log-Anleitung: docs/LOGS_GUIDE.md
 
 # Einzelnen Service neu starten
 docker-compose -f docker-compose.prod.yml restart api
@@ -1086,6 +1109,8 @@ python app.py
 ```bash
 docker-compose -f docker-compose.prod.yml logs api
 docker inspect taubenschiesser-api-prod
+
+# 📋 Vollständige Log-Anleitung mit allen Befehlen: docs/LOGS_GUIDE.md
 ```
 
 **Socket.io Fehler / "Verbindung zum Server konnte nicht hergestellt werden":**

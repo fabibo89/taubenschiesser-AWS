@@ -24,8 +24,9 @@ Willkommen in der Dokumentation des Taubenschiesser-Projekts!
 - **[AWS_IOT_SETUP.md](AWS_IOT_SETUP.md)** - AWS IoT Core Setup
 - **[DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md)** - ESP32-Hardware Setup
 
-### Nutzung
+### Nutzung & Wartung
 - **[DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)** - Dashboard-Funktionen
+- **[LOGS_GUIDE.md](LOGS_GUIDE.md)** - Docker-Logs überwachen und Fehlersuche
 
 ## 🔍 Was suchst du?
 
@@ -35,6 +36,7 @@ Willkommen in der Dokumentation des Taubenschiesser-Projekts!
 | Auf meinem Server deployen | [QUICKSTART_MONGODB.md](QUICKSTART_MONGODB.md) oder `./deploy-local.sh` |
 | Updates von GitHub holen | `./update-prod.sh` |
 | In der AWS Cloud deployen | [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) → Abschnitt 3 |
+| Docker-Logs anzeigen | [LOGS_GUIDE.md](LOGS_GUIDE.md) |
 | MongoDB einrichten | [MONGODB_CONFIG.md](MONGODB_CONFIG.md) |
 | ESP32-Gerät konfigurieren | [DEVICE_CONFIGURATION.md](DEVICE_CONFIGURATION.md) |
 | MQTT einrichten | [MQTT_SETUP.md](MQTT_SETUP.md) |

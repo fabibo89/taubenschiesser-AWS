@@ -54,6 +54,12 @@ START HIER
 |-------|-------|----------|
 | [DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md) | Dashboard-Funktionen nutzen | End-User |
 
+### 🔧 Wartung & Monitoring
+
+| Datei | Zweck | Für wen? |
+|-------|-------|----------|
+| [LOGS_GUIDE.md](LOGS_GUIDE.md) | Docker-Logs überwachen, Fehlersuche | Server-Admin, Entwickler |
+
 ### 📝 Templates & Changelog
 
 | Datei | Zweck | Verwendung |
@@ -99,6 +105,9 @@ START HIER
 #### ...verstehen was geändert wurde
 1. [CHANGELOG_MONGODB.md](CHANGELOG_MONGODB.md) - MongoDB-Migration Details
 
+#### ...Docker-Logs anzeigen und überwachen
+1. [LOGS_GUIDE.md](LOGS_GUIDE.md) - Komplette Log-Anleitung mit allen Befehlen
+
 ## 📊 Dokumentations-Hierarchie
 
 ```
@@ -112,6 +121,7 @@ START HIER
 │   ├── Lokaler Server (Produktion)
 │   │   ├── QUICKSTART_MONGODB.md ⚡ SCHNELLSTART
 │   │   ├── MONGODB_CONFIG.md 🔧 MONGODB-DETAILS
+│   │   ├── LOGS_GUIDE.md 📋 LOG-ÜBERWACHUNG
 │   │   ├── env.prod.template
 │   │   └── CHANGELOG_MONGODB.md
 │   │
@@ -139,8 +149,9 @@ START HIER
 2. ✅ [QUICKSTART_MONGODB.md](QUICKSTART_MONGODB.md)
 3. ✅ [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Abschnitt 2
 4. 🔧 [MONGODB_CONFIG.md](MONGODB_CONFIG.md)
-5. ⚙️ [MQTT_SETUP.md](MQTT_SETUP.md)
-6. 🎮 [DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)
+5. 📋 [LOGS_GUIDE.md](LOGS_GUIDE.md)
+6. ⚙️ [MQTT_SETUP.md](MQTT_SETUP.md)
+7. 🎮 [DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)
 
 ### Für AWS-Deployment
 1. ✅ [README.md](../README.md)
@@ -161,13 +172,15 @@ START HIER
 
 - 🔖 **Bookmark**: [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Die wichtigste Datei!
 - ⚡ **Schnellstart**: [QUICKSTART_MONGODB.md](QUICKSTART_MONGODB.md) für lokales Setup
+- 📋 **Logs überwachen**: [LOGS_GUIDE.md](LOGS_GUIDE.md) - Alle Docker-Log-Befehle
 - 🆘 **Probleme?**: Jede Hauptdatei hat einen Troubleshooting-Abschnitt
 - 📋 **Checklisten**: In [MONGODB_CONFIG.md](MONGODB_CONFIG.md) und [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
 
 ## 🔄 Letzte Aktualisierung
 
-**Datum**: 26. Oktober 2024  
+**Datum**: 26. Oktober 2025  
 **Wichtigste Änderungen**:
+- ✨ Neue Log-Überwachungs-Dokumentation (LOGS_GUIDE.md)
 - ✨ MongoDB-Konfiguration für lokalen Server (Host statt Docker)
 - ✨ Neue Schnellstart-Dokumentation
 - ✨ Dieser Dokumentations-Index
