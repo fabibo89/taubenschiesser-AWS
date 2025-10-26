@@ -58,9 +58,8 @@ services:
       - ./models:/app/models:ro
     networks:
       - taubenschiesser-network
-    # Fix für onnxruntime executable stack issue
-    security_opt:
-      - seccomp:unconfined
+    # Fix für onnxruntime executable stack issue auf neueren Linux Kernels
+    privileged: true
     logging:
       driver: "json-file"
       options:
