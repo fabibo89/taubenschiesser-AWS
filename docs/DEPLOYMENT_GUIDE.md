@@ -302,9 +302,105 @@ exit
 
 Detaillierte Anleitung: **[MONGODB_CONFIG.md](MONGODB_CONFIG.md)**
 
-#### 2.2 Produktions-Config erstellen
+#### 2.2 Deployment mit deploy-local.sh (Empfohlen) 🚀
+
+Das **deploy-local.sh** Script automatisiert das gesamte Deployment und führt dich interaktiv durch die Konfiguration.
+
+**Vorbereitung:**
 
 ```bash
+chmod +x deploy-local.sh
+```
+
+**Script starten:**
+
+```bash
+./deploy-local.sh
+```
+
+**Was das Script macht:**
+
+1. **Prüft Voraussetzungen**
+   - `.env.prod` vorhanden?
+   - Docker läuft?
+   - MongoDB läuft? (bei Produktions-Modus)
+
+2. **Erstellt `.env.prod` interaktiv** (falls nicht vorhanden)
+   ```
+   MongoDB Host [host.docker.internal]: ← Enter
+   MongoDB Port [27017]: ← Enter
+   MongoDB Username [admin]: ← Enter
+   MongoDB Passwort: ← Dein Passwort eingeben
+   MongoDB Datenbank [taubenschiesser]: ← Enter
+   
+   Server IP-Adresse [localhost]: 192.168.1.100 ← Deine IP
+   ```
+   
+   - Generiert automatisch sicheren JWT Secret
+   - Erstellt vollständige `.env.prod` Datei
+
+3. **Wähle Deployment-Modus**
+   ```
+   1) Entwicklung (docker-compose.yml)
+   2) Produktion (docker-compose.prod.yml)
+   
+   Wähle (1 oder 2): 2
+   ```
+
+4. **Baut Docker Images und startet Services**
+   - Automatisches Build aller Images
+   - Startet alle Container
+   - Zeigt Status und nächste Schritte
+
+**Nach dem Deployment zeigt das Script:**
+
+```
+✅ Deployment abgeschlossen!
+
+📊 Service Status:
+NAME                              STATUS
+taubenschiesser-api-prod          Up
+taubenschiesser-cv-prod           Up
+taubenschiesser-frontend-prod     Up
+taubenschiesser-hardware-monitor  Up
+
+🌐 URLs:
+  Frontend: http://localhost:3000
+  API:      http://localhost:5001
+  CV:       http://localhost:8000
+
+📝 Nächste Schritte:
+1. Prüfe Verbindung:
+   curl http://localhost:5001/health
+   
+2. Prüfe MongoDB-Verbindung in API-Logs:
+   docker-compose -f docker-compose.prod.yml logs api | grep MongoDB
+   → Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
+   
+3. Erstelle einen User:
+   docker exec -it taubenschiesser-api-prod /bin/sh
+   node create_user.js
+   exit
+   
+4. Öffne http://localhost:3000 im Browser
+
+5. Konfiguriere MQTT im Dashboard:
+   → Profil → Einstellungen → MQTT
+   → Server-Profil: custom
+   → Broker: 192.168.1.x (dein Mosquitto)
+   → Port: 1883
+   → MQTT-Verbindung testen
+   → Einstellungen speichern
+```
+
+#### 2.3 Manuelle Konfiguration (Alternative)
+
+Falls du die `.env.prod` manuell erstellen möchtest:
+
+**Template kopieren:**
+
+```bash
+cp docs/env.prod.template .env.prod
 nano .env.prod
 ```
 
@@ -322,6 +418,13 @@ JWT_SECRET=mindestens-32-zeichen-langer-schluessel
 CLIENT_URL=http://192.168.1.100:3000
 REACT_APP_API_URL=http://192.168.1.100:5001
 
+# Computer Vision
+CV_SERVICE=yolov8
+MODEL_PATH=/app/models/yolov8l.onnx
+CLASSES_PATH=/app/models/yolov8l.json
+YOLO_CONFIDENCE=0.25
+YOLO_IOU=0.45
+
 # AWS IoT (optional)
 # AWS_IOT_ENDPOINT=xxxxx-ats.iot.eu-central-1.amazonaws.com
 # AWS_REGION=eu-central-1
@@ -333,17 +436,28 @@ REACT_APP_API_URL=http://192.168.1.100:5001
 - **Andere Server-IP**: `mongodb://admin:PASSWORT@192.168.1.100:27017/taubenschiesser?authSource=admin`
 - **Ohne Auth** (nicht empfohlen): `mongodb://host.docker.internal:27017/taubenschiesser`
 
-#### 2.3 Docker Images bauen
+**JWT Secret generieren:**
+
+```bash
+openssl rand -base64 32
+```
+
+#### 2.4 Docker Images bauen und starten
+
+**Mit deploy-local.sh:**
+
+```bash
+./deploy-local.sh
+# Wähle: 2 (Produktion)
+```
+
+**Manuell:**
 
 ```bash
 # Images bauen (kann 5-10 Min dauern)
 docker-compose -f docker-compose.prod.yml --env-file .env.prod build
-```
 
-#### 2.4 Services starten
-
-```bash
-# Starten
+# Services starten
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 # Status prüfen
@@ -354,15 +468,25 @@ docker-compose -f docker-compose.prod.yml logs -f api
 # Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
 ```
 
-#### 2.5 Health Check
+#### 2.5 Health Check & Verifizierung
 
 ```bash
 # Warte 30 Sekunden, dann:
-curl http://localhost:5001/health
-curl http://localhost:8000/health
 
-# Frontend öffnen
+# 1. Health Check
+curl http://localhost:5001/health
+# Erwartete Ausgabe: {"status":"OK","timestamp":"..."}
+
+curl http://localhost:8000/health
+# Erwartete Ausgabe: {"status":"healthy",...}
+
+# 2. MongoDB-Verbindung prüfen
+docker-compose -f docker-compose.prod.yml logs api | grep MongoDB
+# Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
+
+# 3. Frontend öffnen
 open http://localhost:3000
+# Oder im Browser: http://DEINE_SERVER_IP:3000
 ```
 
 #### 2.6 User erstellen
@@ -372,9 +496,31 @@ open http://localhost:3000
 docker exec -it taubenschiesser-api-prod /bin/sh
 node create_user.js
 exit
+
+# Standard-User wird erstellt:
+# Email: fabian.bosch@gmx.de
+# Passwort: rotwand
+# Rolle: admin
 ```
 
-#### 2.7 Autostart bei Server-Neustart
+#### 2.7 MQTT konfigurieren
+
+Nach dem Login im Dashboard:
+
+1. Navigiere zu **Profil** → **Einstellungen** → **MQTT**
+2. Aktiviere MQTT: ✅
+3. Wähle **Server-Profil**: `custom`
+4. Trage ein:
+   - **Broker**: `192.168.1.x` (IP deines Mosquitto-Servers)
+   - **Port**: `1883`
+   - **Username**: (optional)
+   - **Password**: (optional)
+5. Klicke **MQTT-Verbindung testen**
+6. Bei Erfolg: **Einstellungen speichern**
+
+Die MQTT-Konfiguration wird in der MongoDB gespeichert (`users.settings.mqtt`).
+
+#### 2.8 Autostart bei Server-Neustart
 
 **Systemd Service erstellen:**
 
@@ -410,24 +556,53 @@ sudo systemctl status taubenschiesser
 
 ### Verwaltung
 
+#### Schnellbefehle mit deploy-local.sh
+
+```bash
+# Neu deployen / Updaten
+./deploy-local.sh
+# Wähle: 2 (Produktion)
+
+# Das Script macht automatisch:
+# - Prüft MongoDB-Verbindung
+# - Baut neue Images
+# - Startet Services neu
+# - Zeigt Status und nächste Schritte
+```
+
+#### Manuelle Verwaltung
+
 ```bash
 # Logs ansehen
 docker-compose -f docker-compose.prod.yml logs -f api
+docker-compose -f docker-compose.prod.yml logs -f cv-service
+docker-compose -f docker-compose.prod.yml logs -f frontend
 
-# Service neu starten
+# Einzelnen Service neu starten
 docker-compose -f docker-compose.prod.yml restart api
 
-# Nach Code-Update
+# Alle Services neu starten
+docker-compose -f docker-compose.prod.yml restart
+
+# Nach Code-Update (git pull)
 git pull
 docker-compose -f docker-compose.prod.yml up -d --build
+# Oder einfach: ./deploy-local.sh
+
+# Status prüfen
+docker-compose -f docker-compose.prod.yml ps
 
 # MongoDB Backup erstellen (auf Host-System)
 # WICHTIG: MongoDB läuft auf dem Host, nicht in Docker!
 mongodump --uri="mongodb://admin:PASSWORT@localhost:27017/taubenschiesser?authSource=admin" --out=./backup-$(date +%Y%m%d)
 # Siehe MONGODB_CONFIG.md für mehr Backup-Optionen
 
-# Stoppen
+# Services stoppen
 docker-compose -f docker-compose.prod.yml down
+
+# Services stoppen UND Container entfernen
+docker-compose -f docker-compose.prod.yml down -v
+# ACHTUNG: Löscht NICHT die MongoDB-Daten (die liegen auf dem Host)
 ```
 
 ---
@@ -892,12 +1067,31 @@ aws ec2 describe-security-groups --filters "Name=tag:Name,Values=taubenschiesser
 docker-compose logs -f      # Logs
 ```
 
-### Lokaler Server
+### Lokaler Server (Produktion)
+
+**Mit deploy-local.sh (empfohlen):**
 ```bash
-docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d      # Starten
-docker-compose -f docker-compose.prod.yml logs -f api                     # Logs
-docker-compose -f docker-compose.prod.yml restart api                     # Restart
-docker-compose -f docker-compose.prod.yml down                            # Stoppen
+./deploy-local.sh           # Deployen / Updaten (wähle: 2)
+# Das Script macht alles: Build, Start, Checks
+```
+
+**Manuell:**
+```bash
+# Starten
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+# Logs
+docker-compose -f docker-compose.prod.yml logs -f api
+
+# Einzelnen Service neu starten
+docker-compose -f docker-compose.prod.yml restart api
+
+# Stoppen
+docker-compose -f docker-compose.prod.yml down
+
+# Health Check
+curl http://localhost:5001/health
+docker-compose -f docker-compose.prod.yml logs api | grep MongoDB
 ```
 
 ### AWS Cloud
