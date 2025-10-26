@@ -258,13 +258,17 @@ cd taubenschiesser_AWS
 # 1. Stelle sicher, dass MongoDB läuft
 sudo systemctl status mongod
 
-# 2. Produktions-Config erstellen
-nano .env.prod  # Siehe Beispiel unten
+# 2. YOLOv8 Model herunterladen (nur beim ersten Mal)
+cd models
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx
+mv yolov8n.onnx yolov8l.onnx
+cd ..
 
-# 3. Deploy Script
+# 3. Deploy Script starten
 chmod +x deploy-local.sh
 ./deploy-local.sh
 # Wähle: 2 (Produktion)
+# Script erstellt interaktiv .env.prod für dich
 ```
 
 ### Detaillierte Schritte
@@ -302,7 +306,42 @@ exit
 
 Detaillierte Anleitung: **[MONGODB_CONFIG.md](MONGODB_CONFIG.md)**
 
-#### 2.2 Deployment mit deploy-local.sh (Empfohlen) 🚀
+#### 2.2 YOLOv8 Model herunterladen ⚠️
+
+**WICHTIG**: Das YOLOv8 Model ist **NICHT** auf GitHub (zu groß: ~500MB)!
+
+Du musst es **vor dem ersten Start** herunterladen:
+
+```bash
+cd ~/docker/taubenschiesser-AWS/models
+
+# Option A: Kleines Model zum Testen (6 MB, schneller)
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx
+mv yolov8n.onnx yolov8l.onnx
+
+# Option B: Großes Model für Produktion (500 MB, genauer)
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8l.onnx
+
+# Prüfen
+ls -lh yolov8l.onnx
+# Sollte Dateigröße anzeigen (6 MB oder 500 MB)
+```
+
+**Model-Optionen:**
+
+| Model | Größe | Geschwindigkeit | Genauigkeit | Verwendung |
+|-------|-------|-----------------|-------------|------------|
+| yolov8n | 6 MB | Sehr schnell | Niedrig | Test & Entwicklung |
+| yolov8s | 22 MB | Schnell | Mittel | - |
+| yolov8m | 50 MB | Mittel | Gut | - |
+| **yolov8l** | **500 MB** | Langsam | **Sehr gut** | **Produktion** |
+
+**Warum nicht auf GitHub?**
+- Models sind in `.gitignore` (zu groß für Git)
+- Du musst sie separat herunterladen
+- Nur einmal nötig, dann bleiben sie lokal
+
+#### 2.3 Deployment mit deploy-local.sh (Empfohlen) 🚀
 
 Das **deploy-local.sh** Script automatisiert das gesamte Deployment und führt dich interaktiv durch die Konfiguration.
 
@@ -393,7 +432,7 @@ taubenschiesser-hardware-monitor  Up
    → Einstellungen speichern
 ```
 
-#### 2.3 Manuelle Konfiguration (Alternative)
+#### 2.4 Manuelle Konfiguration (Alternative)
 
 Falls du die `.env.prod` manuell erstellen möchtest:
 
@@ -442,7 +481,7 @@ YOLO_IOU=0.45
 openssl rand -base64 32
 ```
 
-#### 2.4 Docker Images bauen und starten
+#### 2.5 Docker Images bauen und starten
 
 **Mit deploy-local.sh:**
 
@@ -468,7 +507,7 @@ docker-compose -f docker-compose.prod.yml logs -f api
 # Erwartete Ausgabe: "MongoDB Connected: host.docker.internal"
 ```
 
-#### 2.5 Health Check & Verifizierung
+#### 2.6 Health Check & Verifizierung
 
 ```bash
 # Warte 30 Sekunden, dann:
@@ -489,7 +528,7 @@ open http://localhost:3000
 # Oder im Browser: http://DEINE_SERVER_IP:3000
 ```
 
-#### 2.6 User erstellen
+#### 2.7 User erstellen
 
 ```bash
 # In API Container
@@ -503,7 +542,7 @@ exit
 # Rolle: admin
 ```
 
-#### 2.7 MQTT konfigurieren
+#### 2.8 MQTT konfigurieren
 
 Nach dem Login im Dashboard:
 
@@ -520,7 +559,7 @@ Nach dem Login im Dashboard:
 
 Die MQTT-Konfiguration wird in der MongoDB gespeichert (`users.settings.mqtt`).
 
-#### 2.8 Autostart bei Server-Neustart
+#### 2.9 Autostart bei Server-Neustart
 
 **Systemd Service erstellen:**
 

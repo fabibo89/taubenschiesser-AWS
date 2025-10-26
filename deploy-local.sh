@@ -122,6 +122,82 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# Check if YOLOv8 model exists (nur für Produktion wichtig)
+if [ ! -f "models/yolov8l.onnx" ]; then
+    echo -e "${YELLOW}⚠️  YOLOv8 Model nicht gefunden!${NC}"
+    echo ""
+    echo "Das Model wird für Computer Vision benötigt (ca. 6-500 MB)."
+    echo "Es ist NICHT auf GitHub (zu groß), du musst es separat herunterladen."
+    echo ""
+    read -p "Jetzt herunterladen? (j/n): " DOWNLOAD_MODEL
+    
+    if [ "$DOWNLOAD_MODEL" = "j" ] || [ "$DOWNLOAD_MODEL" = "J" ]; then
+        echo ""
+        echo -e "${GREEN}📥 Lade YOLOv8 Model herunter...${NC}"
+        echo ""
+        echo "Welches Model?"
+        echo "1) yolov8n - Klein (6 MB, schnell, weniger genau) - für Tests"
+        echo "2) yolov8l - Groß (500 MB, langsam, sehr genau) - für Produktion"
+        echo ""
+        read -p "Wähle (1 oder 2): " MODEL_CHOICE
+        
+        mkdir -p models
+        cd models
+        
+        if [ "$MODEL_CHOICE" = "1" ]; then
+            echo -e "${YELLOW}Lade yolov8n (6 MB)...${NC}"
+            if command -v wget &> /dev/null; then
+                wget -q --show-progress https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx
+            elif command -v curl &> /dev/null; then
+                curl -L -o yolov8n.onnx https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx
+            else
+                echo -e "${RED}Weder wget noch curl gefunden!${NC}"
+                exit 1
+            fi
+            mv yolov8n.onnx yolov8l.onnx
+            echo -e "${GREEN}✓ Model heruntergeladen (6 MB)${NC}"
+        elif [ "$MODEL_CHOICE" = "2" ]; then
+            echo -e "${YELLOW}Lade yolov8l (500 MB - das kann dauern!)...${NC}"
+            if command -v wget &> /dev/null; then
+                wget -q --show-progress https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8l.onnx
+            elif command -v curl &> /dev/null; then
+                curl -L -o yolov8l.onnx https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8l.onnx
+            else
+                echo -e "${RED}Weder wget noch curl gefunden!${NC}"
+                exit 1
+            fi
+            echo -e "${GREEN}✓ Model heruntergeladen (500 MB)${NC}"
+        else
+            echo -e "${RED}Ungültige Auswahl${NC}"
+            cd ..
+            exit 1
+        fi
+        
+        cd ..
+        echo ""
+        echo -e "${GREEN}✅ Model erfolgreich heruntergeladen!${NC}"
+        echo ""
+    else
+        echo -e "${YELLOW}⚠️  Deployment wird fortgesetzt ohne Model${NC}"
+        echo "Computer Vision wird NICHT funktionieren!"
+        echo ""
+        echo "Du kannst das Model später herunterladen:"
+        echo "  cd models"
+        echo "  wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx"
+        echo "  mv yolov8n.onnx yolov8l.onnx"
+        echo ""
+        read -p "Trotzdem fortfahren? (j/n): " CONTINUE
+        if [ "$CONTINUE" != "j" ]; then
+            exit 1
+        fi
+    fi
+else
+    echo -e "${GREEN}✓ YOLOv8 Model gefunden${NC}"
+    # Zeige Größe an
+    MODEL_SIZE=$(ls -lh models/yolov8l.onnx | awk '{print $5}')
+    echo "  Model-Größe: $MODEL_SIZE"
+fi
+
 echo -e "${YELLOW}📋 Deployment-Modus:${NC}"
 echo "1) Entwicklung (docker-compose.yml)"
 echo "2) Produktion (docker-compose.prod.yml)"
