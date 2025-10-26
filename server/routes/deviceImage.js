@@ -42,10 +42,10 @@ router.get('/:deviceId', async (req, res) => {
     
     // Optional: Bild auch speichern
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const imagePath = path.join(__dirname, '../../images', `${deviceId}_${timestamp}.jpg`);
+    const imagePath = path.join(__dirname, '../images', `${deviceId}_${timestamp}.jpg`);
     
     // Images-Verzeichnis erstellen falls nicht vorhanden
-    const imagesDir = path.join(__dirname, '../../images');
+    const imagesDir = path.join(__dirname, '../images');
     if (!fs.existsSync(imagesDir)) {
       fs.mkdirSync(imagesDir, { recursive: true });
     }
