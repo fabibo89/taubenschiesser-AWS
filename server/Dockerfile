@@ -2,6 +2,9 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+# Install FFmpeg for image capture
+RUN apk add --no-cache ffmpeg
+
 # Copy package files
 COPY package*.json ./
 
@@ -11,8 +14,8 @@ RUN npm install --only=production
 # Copy source code
 COPY . .
 
-# Create logs directory
-RUN mkdir -p logs
+# Create logs and images directories
+RUN mkdir -p logs images
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs
