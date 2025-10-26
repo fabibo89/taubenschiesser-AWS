@@ -121,6 +121,17 @@ async def root():
         "service": cv_service_config["service"]
     }
 
+@app.get("/health")
+async def health():
+    """Health check endpoint for Docker healthcheck"""
+    model_loaded = yolov8_detector is not None or rekognition_client is not None
+    return {
+        "status": "healthy",
+        "message": "Taubenschiesser CV Service is running", 
+        "model_loaded": model_loaded,
+        "service": cv_service_config["service"]
+    }
+
 @app.get("/config")
 async def get_config():
     """Get current configuration"""
