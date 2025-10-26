@@ -9,8 +9,9 @@ const router = express.Router();
 
 // Einfache Bild-API (kein Video-Stream)
 router.get('/:deviceId', async (req, res) => {
+  const deviceId = req.params.deviceId; // Define OUTSIDE try-catch for error logging
+  
   try {
-    const { deviceId } = req.params;
     
     // CORS-Header setzen
     res.setHeader('Access-Control-Allow-Origin', '*');
