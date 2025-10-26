@@ -26,7 +26,8 @@ const io = new Server(server, {
 });
 
 // Trust proxy - required when behind Nginx
-app.set('trust proxy', true);
+// Only trust local connections (Docker network, localhost)
+app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 // Security middleware
 app.use(helmet());
