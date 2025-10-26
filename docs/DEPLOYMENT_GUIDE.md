@@ -1105,8 +1105,8 @@ nano .env.prod
 # ODER
 # REACT_APP_API_URL=http://DEINE_IP:5001
 
-# 2. WICHTIG: Frontend NEU BAUEN!
-docker-compose -f docker-compose.prod.yml build frontend
+# 2. WICHTIG: Frontend NEU BAUEN (mit --env-file!)
+docker-compose -f docker-compose.prod.yml --env-file .env.prod build frontend
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 # 3. Im Browser: Seite neu laden (Ctrl+Shift+R)
@@ -1133,8 +1133,8 @@ cat docs/MONGODB_CONFIG.md
 **Nach Update nicht funktioniert:**
 ```bash
 docker-compose -f docker-compose.prod.yml down
-docker-compose -f docker-compose.prod.yml build --no-cache
-docker-compose -f docker-compose.prod.yml up -d
+docker-compose -f docker-compose.prod.yml --env-file .env.prod build --no-cache
+docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ```
 
 ### AWS Cloud

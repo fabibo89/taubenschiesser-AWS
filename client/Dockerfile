@@ -3,6 +3,10 @@ FROM node:18-alpine as build
 
 WORKDIR /app
 
+# Build arguments für React Environment-Variablen
+ARG REACT_APP_API_URL
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
 # Copy package files
 COPY package*.json ./
 
@@ -13,6 +17,7 @@ RUN npm install
 COPY . .
 
 # Build the application
+# REACT_APP_* Variablen werden beim Build in den Code eingebaut
 RUN npm run build
 
 # Production stage

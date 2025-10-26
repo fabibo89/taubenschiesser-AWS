@@ -278,8 +278,8 @@ REACT_APP_API_URL=http://casahosch:5001
 # ODER
 REACT_APP_API_URL=http://192.168.178.45:5001
 
-# 3. Frontend NEU BAUEN (wichtig!)
-docker-compose -f docker-compose.prod.yml build frontend
+# 3. Frontend NEU BAUEN (wichtig - mit --env-file!)
+docker-compose -f docker-compose.prod.yml --env-file .env.prod build frontend
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 # 4. Browser-Cache löschen und Seite neu laden (Ctrl+Shift+R)
@@ -299,7 +299,7 @@ docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 # Oder manuell:
 git pull
-docker-compose -f docker-compose.prod.yml build frontend api
+docker-compose -f docker-compose.prod.yml --env-file .env.prod build frontend api
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ```
 
