@@ -51,11 +51,13 @@ git status --short
 echo ""
 echo -e "${YELLOW}🔄 Hole Updates von GitHub...${NC}"
 
-# Check for local changes
-if ! git diff-index --quiet HEAD --; then
-    echo -e "${YELLOW}⚠️  Du hast lokale Änderungen!${NC}"
+# Check for local changes (ignoriere .env Dateien - die sind in .gitignore)
+CHANGES=$(git status --porcelain | grep -v "\.env" | grep -v "\.log" | grep -v "\.pid")
+
+if [ ! -z "$CHANGES" ]; then
+    echo -e "${YELLOW}⚠️  Du hast lokale Änderungen an Code-Dateien!${NC}"
     echo ""
-    git status --short
+    echo "$CHANGES"
     echo ""
     read -p "Änderungen verwerfen und Updates holen? (j/n): " DISCARD
     
@@ -63,9 +65,17 @@ if ! git diff-index --quiet HEAD --; then
         git reset --hard
         echo -e "${GREEN}✓ Lokale Änderungen verworfen${NC}"
     else
-        echo -e "${RED}Abgebrochen. Bitte committe oder stashe deine Änderungen.${NC}"
+        echo -e "${YELLOW}Abgebrochen.${NC}"
+        echo ""
+        echo "Optionen:"
+        echo "  1) Änderungen committen:  git add . && git commit -m 'meine Änderungen'"
+        echo "  2) Änderungen stashen:    git stash"
+        echo "  3) Dann nochmal starten:  ./update-prod.sh"
         exit 1
     fi
+else
+    echo -e "${GREEN}✓ Keine lokalen Änderungen an Code-Dateien${NC}"
+    echo "  (.env Dateien werden automatisch ignoriert)"
 fi
 
 # Pull latest changes

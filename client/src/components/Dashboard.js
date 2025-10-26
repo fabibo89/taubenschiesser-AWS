@@ -287,7 +287,8 @@ const Dashboard = () => {
   useEffect(() => {
     if (isStreaming && device) {
       // Einfache Bild-URL verwenden (kein Video-Stream)
-      const imageUrl = `http://localhost:5001/api/device-image/${device._id}`;
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+      const imageUrl = `${API_URL}/api/device-image/${device._id}`;
       
       console.log(`Setting image URL for device ${device._id}:`, imageUrl);
       setStreamUrl(imageUrl);
