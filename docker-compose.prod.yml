@@ -102,9 +102,11 @@ services:
     restart: always
     environment:
       API_URL: http://api:5000
+      CV_SERVICE_URL: http://cv-service:8000
       SERVICE_TOKEN: hardware-monitor-service-token
     depends_on:
       - api
+      - cv-service
     networks:
       - taubenschiesser-network
     logging:
