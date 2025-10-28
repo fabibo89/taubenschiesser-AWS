@@ -173,6 +173,9 @@ class HardwareMonitor:
             self.device_moving[device_ip] = is_moving
             self.device_last_seen[device_ip] = datetime.now()
             
+            # Send position update to server for real-time display
+            asyncio.create_task(self.send_position_update(device_ip, payload.get('Rot', 0), payload.get('Tilt', 0)))
+            
             # If device is no longer moving, clear the movement start time
             if not is_moving and device_ip in self.device_movement_start:
                 del self.device_movement_start[device_ip]
@@ -276,9 +279,16 @@ class HardwareMonitor:
                         del self.device_movement_start[device_ip]
                     else:
                         logger.info(f"⏸️ Device {device_ip} is moving ({movement_duration:.1f}s), skipping")
+                        await self.send_monitor_event(device, 'device_busy', {
+                            'message': f'Device bewegt sich noch ({movement_duration:.1f}s)',
+                            'duration': movement_duration
+                        })
                         return
                 else:
                     logger.info(f"⏸️ Device {device_ip} is moving, skipping")
+                    await self.send_monitor_event(device, 'device_busy', {
+                        'message': 'Device bewegt sich noch'
+                    })
                     return
             
             # Note: Device active check is handled by monitorStatus field
@@ -307,6 +317,11 @@ class HardwareMonitor:
                 return
             else:
                 logger.info(f"⏳ Waiting for {timeout_threshold}s inactivity period (current: {time_since_last_seen:.1f}s)")
+                await self.send_monitor_event(device, 'device_waiting', {
+                    'message': f'Warte auf Inaktivität ({time_since_last_seen:.1f}s / {timeout_threshold}s)',
+                    'current_wait': time_since_last_seen,
+                    'threshold': timeout_threshold
+                })
             
         except Exception as e:
             logger.error(f"Error processing device {device.get('deviceId', 'unknown')}: {e}")
@@ -350,6 +365,13 @@ class HardwareMonitor:
             actions = device.get('actions', {})
             step_size = actions.get('basicStep', 40)
             
+            # Send movement event
+            await self.send_monitor_event(device, 'device_moving', {
+                'message': f'Device bewegt sich (Impulse: {step_size} Schritte)',
+                'step_size': step_size,
+                'movement_type': 'impulse'
+            })
+            
             # Send impulse command via MQTT
             command = {
                 "type": "impulse",
@@ -384,8 +406,18 @@ class HardwareMonitor:
             
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
+            
+            # Send movement complete event
+            await self.send_monitor_event(device, 'device_stopped', {
+                'message': 'Device hat Bewegung beendet'
+            })
+            
             # Wait additional 2 seconds for camera/device to stabilize
             logger.info(f"⏱️ Waiting 2s for device {device_ip} to stabilize...")
+            await self.send_monitor_event(device, 'device_stabilizing', {
+                'message': 'Warte 2s bis Kamera stabilisiert...',
+                'wait_time': 2
+            })
             await asyncio.sleep(2)
             await self.analyze_after_movement(device)
             
@@ -413,6 +445,16 @@ class HardwareMonitor:
             # Get current route position (this would need to be tracked)
             route_index = self.movement_queue.get(device_ip, 0)
             route_item = route_coordinates[route_index]
+            
+            # Send movement event
+            await self.send_monitor_event(device, 'device_moving', {
+                'message': f'Device bewegt sich zu Route-Punkt {route_index + 1}/{len(route_coordinates)}',
+                'rotation': route_item.get('rotation', 0),
+                'tilt': route_item.get('tilt', 0),
+                'route_index': route_index,
+                'total_points': len(route_coordinates),
+                'movement_type': 'route'
+            })
             
             # Send move command
             command = {
@@ -446,8 +488,18 @@ class HardwareMonitor:
             
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
+            
+            # Send movement complete event
+            await self.send_monitor_event(device, 'device_stopped', {
+                'message': f'Device erreichte Route-Punkt {route_index + 1}'
+            })
+            
             # Wait additional 2 seconds for camera/device to stabilize
             logger.info(f"⏱️ Waiting 2s for device {device_ip} to stabilize...")
+            await self.send_monitor_event(device, 'device_stabilizing', {
+                'message': 'Warte 2s bis Kamera stabilisiert...',
+                'wait_time': 2
+            })
             await asyncio.sleep(2)
             await self.analyze_after_movement(device)
             
@@ -486,12 +538,80 @@ class HardwareMonitor:
         except Exception as e:
             logger.error(f"Error waiting for movement complete: {e}")
     
+    async def send_monitor_event(self, device: Dict, event_type: str, data: Dict):
+        """Send live monitoring event to server"""
+        try:
+            device_id = device.get('_id') or device.get('deviceId')
+            
+            event_data = {
+                'deviceId': device_id,
+                'eventType': event_type,
+                'data': data,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            headers = {'Authorization': f'Bearer {self.service_token}'}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.api_url}/api/hardware/monitor-event",
+                    json=event_data,
+                    headers=headers
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(f"Failed to send monitor event {event_type}: {response.status}")
+                        
+        except Exception as e:
+            logger.error(f"Error sending monitor event: {e}")
+    
+    async def send_position_update(self, device_ip: str, rotation: int, tilt: int):
+        """Send device position update to server for real-time display"""
+        try:
+            # Find device by IP
+            headers = {'Authorization': f'Bearer {self.service_token}'}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.api_url}/api/devices", headers=headers) as response:
+                    if response.status == 200:
+                        devices = await response.json()
+                        device = next((d for d in devices if d.get('taubenschiesser', {}).get('ip') == device_ip), None)
+                        
+                        if device:
+                            device_id = device.get('_id')
+                            
+                            # Send position update event
+                            position_data = {
+                                'deviceId': device_id,
+                                'eventType': 'device_position',
+                                'data': {
+                                    'rotation': rotation,
+                                    'tilt': tilt,
+                                    'timestamp': datetime.now().isoformat()
+                                },
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            
+                            async with session.post(
+                                f"{self.api_url}/api/hardware/monitor-event",
+                                json=position_data,
+                                headers=headers
+                            ) as pos_response:
+                                if pos_response.status != 200:
+                                    logger.debug(f"Failed to send position update: {pos_response.status}")
+                        
+        except Exception as e:
+            logger.debug(f"Error sending position update: {e}")
+    
     async def analyze_after_movement(self, device: Dict):
         """Analyze camera after movement"""
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+            
+            # Send event: Starting analysis
+            await self.send_monitor_event(device, 'analysis_started', {
+                'device_ip': device_ip,
+                'message': 'Starting image analysis'
+            })
             
             # Early offline check - skip if device hasn't been seen recently
             last_seen = self.device_last_seen.get(device_ip)
@@ -514,6 +634,10 @@ class HardwareMonitor:
             if use_local_image and local_image_path:
                 # Use local image file
                 logger.info(f"📁 Using local image file for device {device_ip}: {local_image_path}")
+                await self.send_monitor_event(device, 'image_source', {
+                    'source': 'local',
+                    'path': local_image_path
+                })
                 original_frame = await self.load_local_image(local_image_path)
             else:
                 # Use camera/RTSP stream
@@ -532,6 +656,11 @@ class HardwareMonitor:
                             # Construct RTSP URL for Tapo camera
                             rtsp_url = f"rtsp://{tapo_username}:{tapo_password}@{tapo_ip}:554/{tapo_stream}"
                             logger.info(f"Using Tapo camera RTSP URL for device {device_ip}")
+                            await self.send_monitor_event(device, 'image_source', {
+                                'source': 'tapo',
+                                'ip': tapo_ip,
+                                'stream': tapo_stream
+                            })
                         else:
                             logger.warning(f"Tapo camera configuration incomplete for device {device_ip}")
                             return
@@ -544,22 +673,57 @@ class HardwareMonitor:
                 
                 # Capture frame from camera
                 logger.info(f"📷 Attempting to capture frame from device {device_ip}")
+                await self.send_monitor_event(device, 'capturing_image', {
+                    'message': 'Capturing image from camera'
+                })
                 original_frame = await self.capture_frame(rtsp_url)
             
             if original_frame is not None:
                 height, width = original_frame.shape[:2]
                 logger.info(f"✅ Frame captured successfully: {width}x{height} pixels")
                 
+                # Send original image
+                _, buffer = cv2.imencode('.jpg', original_frame)
+                original_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                await self.send_monitor_event(device, 'image_captured', {
+                    'width': width,
+                    'height': height,
+                    'image': f"data:image/jpeg;base64,{original_image_base64}"
+                })
+                
                 # Apply zoom if in route mode
                 zoomed_frame = await self.apply_zoom_to_frame(device, original_frame)
                 
+                # Send zoomed image if different
+                if zoomed_frame is not original_frame:
+                    zoom_height, zoom_width = zoomed_frame.shape[:2]
+                    _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
+                    zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
+                    
+                    await self.send_monitor_event(device, 'image_zoomed', {
+                        'width': zoom_width,
+                        'height': zoom_height,
+                        'zoom_factor': round(width / zoom_width, 2) if zoom_width > 0 else 1,
+                        'image': f"data:image/jpeg;base64,{zoomed_image_base64}"
+                    })
+                
                 # Analyze with CV service (using zoomed frame for better detection)
+                await self.send_monitor_event(device, 'analyzing', {
+                    'message': 'Analyzing image with CV service'
+                })
                 await self.analyze_frame_for_birds(device, original_frame, zoomed_frame)
             else:
                 logger.warning(f"❌ Could not capture frame from device {device_ip}")
+                await self.send_monitor_event(device, 'error', {
+                    'message': 'Could not capture frame from camera'
+                })
                 
         except Exception as e:
             logger.error(f"Error analyzing after movement: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': str(e)
+            })
     
     async def apply_zoom_to_frame(self, device: Dict, frame: np.ndarray) -> np.ndarray:
         """Apply zoom to frame based on route configuration"""
@@ -688,6 +852,26 @@ class HardwareMonitor:
                         detections = result.get('detections', [])
                         processing_time = result.get('processing_time', 0)
                         
+                        # Count all objects (not just birds)
+                        all_objects = {}
+                        for detection in detections:
+                            obj_class = detection.get('class', 'unknown')
+                            if obj_class in all_objects:
+                                all_objects[obj_class] += 1
+                            else:
+                                all_objects[obj_class] = 1
+                        
+                        # Send CV analysis result event
+                        await self.send_monitor_event(device, 'cv_analysis_complete', {
+                            'bird_count': bird_count,
+                            'detections': detections,
+                            'processing_time': processing_time,
+                            'birds_found': result.get('birds_found', False),
+                            'confidence_level': result.get('confidence_level', 0),
+                            'total_objects': len(detections),
+                            'objects_by_class': all_objects
+                        })
+                        
                         # Log detections only if objects found
                         if detections:
                             logger.info(f"🤖 CV Analysis: {bird_count} birds found, processing time: {processing_time:.2f}s")
@@ -703,6 +887,13 @@ class HardwareMonitor:
                             
                             logger.info(f"🦅 BIRDS DETECTED on device {device_ip}: {bird_count} birds, max confidence: {confidence:.2f}")
                             
+                            # Send bird detection event
+                            await self.send_monitor_event(device, 'birds_detected', {
+                                'bird_count': bird_count,
+                                'confidence': confidence,
+                                'message': f'{bird_count} birds detected with confidence {confidence:.2f}'
+                            })
+                            
                             # Save detection to database with both images and detailed info
                             target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result)
                             
@@ -710,9 +901,15 @@ class HardwareMonitor:
                             await self.trigger_shoot(device, target_bird=target_bird)
                     else:
                         logger.error(f"❌ CV analysis failed for device {device_ip}: HTTP {response.status}")
+                        await self.send_monitor_event(device, 'error', {
+                            'message': f'CV analysis failed: HTTP {response.status}'
+                        })
                         
         except Exception as e:
             logger.error(f"Error analyzing frame for birds: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'CV analysis error: {str(e)}'
+            })
     
     async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict):
         """Save detection to database via API with both images and detailed detection info"""

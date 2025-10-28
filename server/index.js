@@ -79,7 +79,23 @@ io.on('connection', (socket) => {
   
   socket.on('join-device', (deviceId) => {
     socket.join(`device-${deviceId}`);
-    logger.info(`Client ${socket.id} joined device room: ${deviceId}`);
+    logger.info(`Client ${socket.id} joined device room: device-${deviceId}`);
+  });
+  
+  socket.on('leave-device', (deviceId) => {
+    socket.leave(`device-${deviceId}`);
+    logger.info(`Client ${socket.id} left device room: device-${deviceId}`);
+  });
+  
+  // Generic room join/leave for monitor rooms
+  socket.on('join', (room) => {
+    socket.join(room);
+    logger.info(`Client ${socket.id} joined room: ${room}`);
+  });
+  
+  socket.on('leave', (room) => {
+    socket.leave(room);
+    logger.info(`Client ${socket.id} left room: ${room}`);
   });
   
   socket.on('disconnect', () => {

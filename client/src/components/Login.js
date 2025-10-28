@@ -60,7 +60,7 @@ const Login = () => {
         <Paper elevation={3} sx={{ padding: 4, width: '100%' }}>
           <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', mb: 2 }}>
             <img 
-              src="/images/icon_name.png" 
+              src="/images/icon_wide.png" 
               alt="Taubenschiesser Logo" 
               style={{ height: '80px', width: 'auto', marginBottom: '16px' }}
             />

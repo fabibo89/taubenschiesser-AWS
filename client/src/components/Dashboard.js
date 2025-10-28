@@ -412,20 +412,20 @@ const Dashboard = () => {
                   <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
                     {/* Altes Bild - bleibt sichtbar */}
                     {currentImage && (
-                      <img
-                        src={currentImage}
-                        alt="Previous Device Stream"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
-                          borderRadius: '4px',
-                          zIndex: 1
-                        }}
-                      />
+                    <img
+                      src={currentImage}
+                      alt="Previous Device Stream"
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
+                        borderRadius: '4px',
+                        zIndex: 1
+                      }}
+                    />
                     )}
                     
                     {/* Neues Bild - lädt im Hintergrund */}

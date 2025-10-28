@@ -39,8 +39,6 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { 
-  calculateRoutePosition, 
-  calculateConnectionLine, 
   validateCoordinate,
   sortCoordinatesByOrder,
   createNewCoordinate,
@@ -961,7 +959,7 @@ const Devices = () => {
                                 style={{ 
                                   width: '100%', 
                                   height: '100%', 
-                                  objectFit: 'cover',
+                                  objectFit: 'contain',
                                   borderRadius: '4px'
                                 }}
                               />

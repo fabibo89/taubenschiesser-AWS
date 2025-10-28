@@ -46,8 +46,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useSocket } from '../contexts/SocketContext';
 import { 
-  calculateRoutePosition, 
-  calculateConnectionLine, 
   validateCoordinate,
   sortCoordinatesByOrder,
   createNewCoordinate,
@@ -648,144 +646,7 @@ const DeviceDetail = () => {
                   <Typography variant="subtitle2" gutterBottom sx={{ mb: 2 }}>
                     Route-Visualisierung
                   </Typography>
-                  <Box 
-                    sx={{ 
-                      width: '100%', 
-                      height: 300, 
-                      border: '1px solid #e0e0e0',
-                      borderRadius: 1,
-                      position: 'relative',
-                      backgroundColor: '#f9f9f9',
-                      overflow: 'hidden'
-                    }}
-                  >
-                    {/* Route-Punkte und Verbindungslinien */}
-                    {actionsConfig.route.coordinates.map((coord, index) => {
-                      // Verwende Utility-Funktion für Position-Berechnung
-                      const { xPercent, yPercent } = calculateRoutePosition(coord);
-                      
-                      return (
-                        <Box key={index}>
-                          {/* Verbindungslinie zum nächsten Punkt */}
-                          {index < actionsConfig.route.coordinates.length - 1 && (() => {
-                            const nextCoord = actionsConfig.route.coordinates[index + 1];
-                            const { xPercent: nextXPercent, yPercent: nextYPercent } = calculateRoutePosition(nextCoord);
-                            
-                            return (
-                              <svg
-                                style={{
-                                  position: 'absolute',
-                                  left: 0,
-                                  top: 0,
-                                  width: '100%',
-                                  height: '100%',
-                                  zIndex: 1,
-                                  pointerEvents: 'none'
-                                }}
-                              >
-                                <line
-                                  x1={`${xPercent}%`}
-                                  y1={`${yPercent}%`}
-                                  x2={`${nextXPercent}%`}
-                                  y2={`${nextYPercent}%`}
-                                  stroke="#1976d2"
-                                  strokeWidth="2"
-                                  strokeDasharray="5,5"
-                                />
-                              </svg>
-                            );
-                          })()}
-                          
-                          {/* Verbindungslinie vom letzten zum ersten Punkt */}
-                          {index === actionsConfig.route.coordinates.length - 1 && actionsConfig.route.coordinates.length > 2 && (() => {
-                            const firstCoord = actionsConfig.route.coordinates[0];
-                            const { xPercent: firstXPercent, yPercent: firstYPercent } = calculateRoutePosition(firstCoord);
-                            
-                            return (
-                              <svg
-                                style={{
-                                  position: 'absolute',
-                                  left: 0,
-                                  top: 0,
-                                  width: '100%',
-                                  height: '100%',
-                                  zIndex: 1,
-                                  pointerEvents: 'none'
-                                }}
-                              >
-                                <defs>
-                                  <linearGradient id="routeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                                    <stop offset="0%" style={{ stopColor: '#1976d2', stopOpacity: 1 }} />
-                                    <stop offset="100%" style={{ stopColor: '#1976d2', stopOpacity: 0.1 }} />
-                                  </linearGradient>
-                                </defs>
-                                <line
-                                  x1={`${xPercent}%`}
-                                  y1={`${yPercent}%`}
-                                  x2={`${firstXPercent}%`}
-                                  y2={`${firstYPercent}%`}
-                                  stroke="url(#routeGradient)"
-                                  strokeWidth="2"
-                                  strokeDasharray="5,5"
-                                />
-                              </svg>
-                            );
-                          })()}
-                          
-                          {/* Route-Punkt */}
-                          <Box
-                            sx={{
-                              position: 'absolute',
-                              left: `${xPercent}%`,
-                              top: `${yPercent}%`,
-                              transform: 'translate(-50%, -50%)',
-                              width: 24,
-                              height: 24,
-                              borderRadius: '50%',
-                              backgroundColor: index === 0 ? '#4caf50' : '#1976d2',
-                              border: '2px solid white',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: '12px',
-                              fontWeight: 'bold',
-                              color: 'white',
-                              zIndex: 2,
-                              boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-                            }}
-                          >
-                            {index + 1}
-                          </Box>
-                          
-                        </Box>
-                      );
-                    })}
-                    
-                    
-                    {/* Achsen-Labels */}
-                    <Typography 
-                      variant="caption" 
-                      sx={{ 
-                        position: 'absolute', 
-                        left: 10, 
-                        top: 10, 
-                        color: '#666' 
-                      }}
-                    >
-                      Start
-                    </Typography>
-                    <Typography 
-                      variant="caption" 
-                      sx={{ 
-                        position: 'absolute', 
-                        right: 10, 
-                        bottom: 10, 
-                        color: '#666' 
-                      }}
-                    >
-                      {actionsConfig.route.coordinates.length} Punkte
-                    </Typography>
-                  </Box>
+                  <RouteVisualization coordinates={actionsConfig.route.coordinates} />
                 </Paper>
               )}
 
@@ -888,6 +749,17 @@ const DeviceDetail = () => {
                                   Bild wird aktualisiert...
                                 </Typography>
                               </Box>
+                            ) : coord.image ? (
+                              <img 
+                                src={coord.image} 
+                                alt={`Route point ${index + 1}`}
+                                style={{ 
+                                  width: '100%', 
+                                  height: '100%', 
+                                  objectFit: 'contain',
+                                  borderRadius: '4px'
+                                }}
+                              />
                             ) : (
                               <Box textAlign="center">
                                 <PhotoCameraIcon sx={{ fontSize: 32, color: '#ccc' }} />

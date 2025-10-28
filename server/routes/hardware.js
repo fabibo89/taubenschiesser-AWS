@@ -118,4 +118,48 @@ router.get('/detections/:deviceId', async (req, res) => {
   }
 });
 
+// Hardware Monitor Live Event Endpoint
+router.post('/monitor-event', async (req, res) => {
+  try {
+    const { 
+      deviceId,
+      eventType,
+      data,
+      timestamp 
+    } = req.body;
+    
+    if (!deviceId || !eventType) {
+      return res.status(400).json({ error: 'Device ID and event type are required' });
+    }
+    
+    // Find device
+    const device = await Device.findById(deviceId);
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+    
+    // Emit real-time update to clients watching this device
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`monitor-${device._id}`).emit('hardware-monitor-event', {
+        deviceId,
+        eventType,
+        data,
+        timestamp: timestamp || new Date().toISOString()
+      });
+      
+      logger.info(`Hardware monitor event emitted for device ${deviceId}: ${eventType}`);
+    }
+    
+    res.json({
+      success: true,
+      message: 'Event emitted successfully'
+    });
+    
+  } catch (error) {
+    logger.error('Hardware monitor event error:', error);
+    res.status(500).json({ error: 'Failed to emit monitor event' });
+  }
+});
+
 module.exports = router;

@@ -23,7 +23,8 @@ import {
   CloudUpload as UploadIcon,
   Person as PersonIcon,
   Logout as LogoutIcon,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  Monitor as MonitorIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -58,21 +59,19 @@ const Layout = ({ children }) => {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Geräte', icon: <DevicesIcon />, path: '/devices' },
     { text: 'Erkennungen', icon: <VisibilityIcon />, path: '/detections' },
+    { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 
   const drawer = (
     <Box>
       <Toolbar>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
           <img 
-            src="/images/icon.png" 
+            src="/images/icon_wide.png" 
             alt="Taubenschiesser Logo" 
-            style={{ height: '32px', width: 'auto' }}
+            style={{ height: '48px', width: 'auto' }}
           />
-          <Typography variant="h6" noWrap component="div">
-            Taubenschiesser
-          </Typography>
         </Box>
       </Toolbar>
       <Divider />
@@ -112,7 +111,7 @@ const Layout = ({ children }) => {
             <MenuIcon />
           </IconButton>
           <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
-            Cloud Platform
+            Taubenschießer - Cloud Platform
           </Typography>
           <IconButton
             size="large"
