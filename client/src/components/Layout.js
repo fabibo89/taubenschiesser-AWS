@@ -66,12 +66,10 @@ const Layout = ({ children }) => {
   const drawer = (
     <Box>
       <Toolbar>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
-          <img 
-            src="/images/icon_wide.png" 
-            alt="Taubenschiesser Logo" 
-            style={{ height: '48px', width: 'auto' }}
-          />
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+          <Typography variant="h6" noWrap component="div">
+            Taubenschießer
+          </Typography>
         </Box>
       </Toolbar>
       <Divider />
@@ -110,9 +108,17 @@ const Layout = ({ children }) => {
           >
             <MenuIcon />
           </IconButton>
-          <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
-            Taubenschießer - Cloud Platform
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <img
+              src="/images/icon_wide.png"
+              alt="Taubenschießer Logo"
+              style={{ height: '48px', width: 'auto', marginRight: 8 }}
+            />
+            <Typography variant="h6" noWrap component="div">
+              Cloud Plattform
+            </Typography>
+          </Box>
+          <Box sx={{ flexGrow: 1 }} />
           <IconButton
             size="large"
             edge="end"

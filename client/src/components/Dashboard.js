@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Grid,
   Card,
@@ -51,6 +51,7 @@ const Dashboard = () => {
     recentDetections: []
   });
   const [devices, setDevices] = useState([]);
+  const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
   const [loading, setLoading] = useState(true);
   const [streamingDevices, setStreamingDevices] = useState({});
   const navigate = useNavigate();
@@ -59,6 +60,52 @@ const Dashboard = () => {
   useEffect(() => {
     fetchDashboardData();
   }, []);
+
+  // Subscribe to hardware monitor events for all loaded devices to track live rot/tilt
+  useEffect(() => {
+    if (!socket || !connected || devices.length === 0) return;
+
+    const roomsJoined = new Set();
+
+    const handleMonitorEvent = (event) => {
+      const { deviceId, eventType, data } = event || {};
+      if (!deviceId || !data) return;
+
+      // Try to extract rotation/tilt from several possible shapes
+      const rot = (data?.position?.rot ?? data?.rot ?? data?.rotation);
+      const tilt = (data?.position?.tilt ?? data?.tilt);
+
+      if (typeof rot === 'number' || typeof tilt === 'number') {
+        setDevicePositions(prev => ({
+          ...prev,
+          [deviceId]: {
+            rot: typeof rot === 'number' ? rot : (prev[deviceId]?.rot ?? 0),
+            tilt: typeof tilt === 'number' ? tilt : (prev[deviceId]?.tilt ?? 0)
+          }
+        }));
+      }
+    };
+
+    // Join all monitor rooms for current devices
+    devices.forEach(d => {
+      if (d?._id && !roomsJoined.has(d._id)) {
+        const monitorRoom = `monitor-${d._id}`;
+        socket.emit('join', monitorRoom);
+        roomsJoined.add(d._id);
+      }
+    });
+
+    socket.on('hardware-monitor-event', handleMonitorEvent);
+
+    return () => {
+      socket.off('hardware-monitor-event', handleMonitorEvent);
+      // Leave rooms
+      roomsJoined.forEach(id => {
+        const monitorRoom = `monitor-${id}`;
+        socket.emit('leave', monitorRoom);
+      });
+    };
+  }, [socket, connected, devices]);
 
   const fetchDashboardData = async () => {
     try {
@@ -282,6 +329,16 @@ const Dashboard = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [currentImage, setCurrentImage] = useState(null);
     const isStreaming = streamingDevices[device._id];
+    const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
+
+    // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed -90..90; clamp as safety)
+    const normalized = useMemo(() => {
+      const rot = Math.max(0, Math.min(360, Number(position.rot) || 0));
+      const tiltVal = Math.max(-90, Math.min(90, Number(position.tilt) || 0));
+      const rotPct = rot / 360; // 0..1
+      const tiltPct = (tiltVal + 90) / 180; // -90..90 -> 0..1
+      return { rotPct, tiltPct, rot, tilt: tiltVal };
+    }, [position]);
     
   // Einfache Bild-Updates mit automatischer Aktualisierung
   useEffect(() => {
@@ -546,8 +603,28 @@ const Dashboard = () => {
               Steuerung
             </Typography>
             
-            {/* D-Pad Layout */}
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+            {/* D-Pad Layout with live position bars */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              {/* Vertical Tilt Bar (left of D-Pad) */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                <Box sx={{ position: 'relative', width: 8, height: 110, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
+                  <Box sx={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: `${Math.round(normalized.tiltPct * 100)}%`, bgcolor: '#1976d2' }} />
+                </Box>
+                <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666', minWidth: '20px', textAlign: 'center' }}>
+                  {normalized.tilt.toFixed(0)}°
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+                {/* Horizontal Rot Bar (above D-Pad) */}
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                  <Box sx={{ position: 'relative', width: 190, height: 8, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
+                    <Box sx={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${Math.round(normalized.rotPct * 100)}%`, bgcolor: '#1976d2' }} />
+                  </Box>
+                  <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666' }}>
+                    {normalized.rot.toFixed(0)}°
+                  </Typography>
+                </Box>
               {/* Top Row - Up */}
               <Button 
                 variant="outlined" 
@@ -608,6 +685,7 @@ const Dashboard = () => {
               >
                 Reset
               </Button>
+              </Box>
             </Box>
           </Box>
 

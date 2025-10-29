@@ -71,9 +71,7 @@ const RouteVisualization = ({ coordinates, height = 300, showLabels = true }) =>
                   zIndex: 0,
                   pointerEvents: 'none',
                   borderRadius: '50%',
-                  overflow: 'hidden',
-                  mask: 'radial-gradient(circle, black 0%, black 40%, transparent 100%)',
-                  WebkitMask: 'radial-gradient(circle, black 0%, black 40%, transparent 100%)'
+                  overflow: 'hidden'
                 }}
               >
                 <img
@@ -82,7 +80,7 @@ const RouteVisualization = ({ coordinates, height = 300, showLabels = true }) =>
                   style={{
                     width: '100%',
                     height: '100%',
-                    objectFit: 'contain',
+                    objectFit: 'cover',
                     display: 'block'
                   }}
                 />
