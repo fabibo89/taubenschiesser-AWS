@@ -52,6 +52,7 @@ const Dashboard = () => {
   });
   const [devices, setDevices] = useState([]);
   const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
+  const [deviceStatuses, setDeviceStatuses] = useState({}); // { [deviceId]: { status, message, timestamp } }
   const [loading, setLoading] = useState(true);
   const [streamingDevices, setStreamingDevices] = useState({});
   const navigate = useNavigate();
@@ -81,6 +82,18 @@ const Dashboard = () => {
           [deviceId]: {
             rot: typeof rot === 'number' ? rot : (prev[deviceId]?.rot ?? 0),
             tilt: typeof tilt === 'number' ? tilt : (prev[deviceId]?.tilt ?? 0)
+          }
+        }));
+      }
+
+      // Update device status for hardware monitor events
+      if (eventType && data?.message) {
+        setDeviceStatuses(prev => ({
+          ...prev,
+          [deviceId]: {
+            status: eventType,
+            message: data.message,
+            timestamp: new Date()
           }
         }));
       }
@@ -318,6 +331,26 @@ const Dashboard = () => {
         return 'error';
       case 'maintenance':
         return 'warning';
+      // Hardware Monitor Status Colors
+      case 'device_waiting':
+        return 'info';
+      case 'device_moving':
+        return 'warning';
+      case 'device_stopped':
+      case 'device_stabilizing':
+        return 'success';
+      case 'device_busy':
+        return 'warning';
+      case 'analysis_started':
+      case 'analyzing':
+      case 'analyzing_cv':
+      case 'capturing':
+        return 'primary';
+      case 'cv_analysis_complete':
+      case 'birds_detected':
+        return 'success';
+      case 'error':
+        return 'error';
       default:
         return 'default';
     }
@@ -330,6 +363,7 @@ const Dashboard = () => {
     const [currentImage, setCurrentImage] = useState(null);
     const isStreaming = streamingDevices[device._id];
     const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
+    const deviceStatus = deviceStatuses[device._id];
 
     // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed -90..90; clamp as safety)
     const normalized = useMemo(() => {
@@ -360,6 +394,11 @@ const Dashboard = () => {
           console.log(`Updating image for device ${device._id}:`, updatedUrl);
           setIsLoading(true);
           setStreamUrl(updatedUrl);
+          
+          // Loading-Indikator für mindestens 500ms anzeigen
+          setTimeout(() => {
+            setIsLoading(false);
+          }, 500);
         }
       }, 3000);
       
@@ -512,7 +551,7 @@ const Dashboard = () => {
                         console.log('Image loaded for:', streamUrl);
                         // Neues Bild ist fertig - ersetze das alte
                         setCurrentImage(streamUrl);
-                        setIsLoading(false);
+                        // setIsLoading(false) wird jetzt über setTimeout gesteuert
                       }}
                       onLoadStart={() => {
                         console.log('Image loading started for:', streamUrl);
@@ -560,42 +599,6 @@ const Dashboard = () => {
               </Box>
             )}
           </Paper>
-
-          {/* Steuerungs-Buttons */}
-          <Box mb={2}>
-            <Typography variant="subtitle2" gutterBottom>
-              Geräte-Steuerung
-            </Typography>
-            <ButtonGroup variant="outlined" size="small" fullWidth>
-              <Tooltip title="Überwachung starten">
-                <Button 
-                  onClick={() => handleDeviceControl(device._id, 'start')}
-                  color={device.monitorStatus === 'running' ? 'success' : 'primary'}
-                  variant={device.monitorStatus === 'running' ? 'contained' : 'outlined'}
-                >
-                  <StartIcon />
-                </Button>
-              </Tooltip>
-              <Tooltip title="Überwachung pausieren">
-                <Button 
-                  onClick={() => handleDeviceControl(device._id, 'pause')}
-                  color={device.monitorStatus === 'paused' ? 'warning' : 'primary'}
-                  variant={device.monitorStatus === 'paused' ? 'contained' : 'outlined'}
-                >
-                  <PauseIcon2 />
-                </Button>
-              </Tooltip>
-            </ButtonGroup>
-            
-            {/* Status-Anzeige */}
-            <Box mt={1} textAlign="center">
-              <Chip 
-                label={device.monitorStatus === 'running' ? 'Läuft' : device.monitorStatus === 'paused' ? 'Pausiert' : 'Gestoppt'}
-                color={device.monitorStatus === 'running' ? 'success' : device.monitorStatus === 'paused' ? 'warning' : 'default'}
-                size="small"
-              />
-            </Box>
-          </Box>
 
           {/* Bewegungs-Steuerung */}
           <Box mb={2}>
@@ -686,6 +689,69 @@ const Dashboard = () => {
                 Reset
               </Button>
               </Box>
+            </Box>
+          </Box>
+
+          {/* Hardware Monitor Status */}
+          <Box mb={2}>
+            <Typography variant="caption" color="textSecondary" gutterBottom sx={{ display: 'block' }}>
+              Hardware Monitor Status:
+            </Typography>
+            {deviceStatus ? (
+              <>
+                <Chip
+                  label={deviceStatus.message}
+                  color={getStatusColor(deviceStatus.status)}
+                  size="small"
+                  sx={{ fontSize: '0.7rem' }}
+                />
+                <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.5 }}>
+                  {deviceStatus.timestamp.toLocaleTimeString()}
+                </Typography>
+              </>
+            ) : (
+              <Chip
+                label="Kein Status verfügbar"
+                color="default"
+                size="small"
+                sx={{ fontSize: '0.7rem' }}
+              />
+            )}
+          </Box>
+
+          {/* Steuerungs-Buttons */}
+          <Box mb={2}>
+            <Typography variant="subtitle2" gutterBottom>
+              Geräte-Steuerung
+            </Typography>
+            <ButtonGroup variant="outlined" size="small" fullWidth>
+              <Tooltip title="Überwachung starten">
+                <Button 
+                  onClick={() => handleDeviceControl(device._id, 'start')}
+                  color={device.monitorStatus === 'running' ? 'success' : 'primary'}
+                  variant={device.monitorStatus === 'running' ? 'contained' : 'outlined'}
+                >
+                  <StartIcon />
+                </Button>
+              </Tooltip>
+              <Tooltip title="Überwachung pausieren">
+                <Button 
+                  onClick={() => handleDeviceControl(device._id, 'pause')}
+                  color={device.monitorStatus === 'paused' ? 'warning' : 'primary'}
+                  variant={device.monitorStatus === 'paused' ? 'contained' : 'outlined'}
+                >
+                  <PauseIcon2 />
+                </Button>
+              </Tooltip>
+            </ButtonGroup>
+            
+            {/* Status-Anzeige */}
+            <Box mt={1} textAlign="center">
+              <Chip 
+                label={device.monitorStatus === 'running' ? 'Läuft' : device.monitorStatus === 'paused' ? 'Pausiert' : 'Gestoppt'}
+                color={device.monitorStatus === 'running' ? 'success' : device.monitorStatus === 'paused' ? 'warning' : 'default'}
+                size="small"
+              />
             </Box>
           </Box>
 
