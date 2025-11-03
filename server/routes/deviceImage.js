@@ -38,16 +38,6 @@ router.get('/:deviceId', async (req, res) => {
       '-vcodec', 'mjpeg',
       'pipe:1'
     ];
-    
-    // Optional: Bild auch speichern
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const imagePath = path.join(__dirname, '../images', `${deviceId}_${timestamp}.jpg`);
-    
-    // Images-Verzeichnis erstellen falls nicht vorhanden
-    const imagesDir = path.join(__dirname, '../images');
-    if (!fs.existsSync(imagesDir)) {
-      fs.mkdirSync(imagesDir, { recursive: true });
-    }
 
     const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
       stdio: ['pipe', 'pipe', 'pipe']
@@ -57,24 +47,10 @@ router.get('/:deviceId', async (req, res) => {
     res.setHeader('Content-Type', 'image/jpeg');
     res.setHeader('Cache-Control', 'no-cache');
 
-    // FFmpeg-Output an HTTP-Response weiterleiten UND speichern
-    const chunks = [];
-    
-    ffmpegProcess.stdout.on('data', (chunk) => {
-      chunks.push(chunk);
-      res.write(chunk);
-    });
+    // FFmpeg-Output direkt an HTTP-Response weiterleiten (OHNE zu speichern)
+    ffmpegProcess.stdout.pipe(res);
     
     ffmpegProcess.stdout.on('end', () => {
-      // Bild speichern
-      const imageBuffer = Buffer.concat(chunks);
-      fs.writeFile(imagePath, imageBuffer, (err) => {
-        if (err) {
-          logger.error(`Error saving image for device ${deviceId}:`, err);
-        } else {
-          logger.info(`Image saved for device ${deviceId}: ${imagePath}`);
-        }
-      });
       res.end();
     });
 
