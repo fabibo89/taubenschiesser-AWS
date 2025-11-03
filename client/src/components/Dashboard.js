@@ -361,6 +361,7 @@ const Dashboard = () => {
     const [streamUrl, setStreamUrl] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [currentImage, setCurrentImage] = useState(null);
+    const loadTimeoutRef = React.useRef(null);
     const isStreaming = streamingDevices[device._id];
     const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
     const deviceStatus = deviceStatuses[device._id];
@@ -395,14 +396,20 @@ const Dashboard = () => {
           setIsLoading(true);
           setStreamUrl(updatedUrl);
           
-          // Loading-Indikator für mindestens 500ms anzeigen
-          setTimeout(() => {
+          // Sicherheits-Timeout: Falls Bild nicht lädt, nach 10 Sek weitermachen
+          loadTimeoutRef.current = setTimeout(() => {
+            console.warn(`Image load timeout for device ${device._id}`);
             setIsLoading(false);
-          }, 500);
+          }, 10000);
         }
       }, 3000);
       
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        if (loadTimeoutRef.current) {
+          clearTimeout(loadTimeoutRef.current);
+        }
+      };
     } else {
       setStreamUrl(null);
     }
@@ -492,20 +499,33 @@ const Dashboard = () => {
                 {isLoading && (
                   <Box sx={{
                     position: 'absolute',
-                    top: 10,
-                    right: 10,
-                    zIndex: 1,
-                    backgroundColor: 'rgba(0,0,0,0.7)',
-                    color: 'white',
-                    padding: '4px 8px',
-                    borderRadius: '4px',
-                    fontSize: '12px'
+                    top: 8,
+                    right: 8,
+                    zIndex: 10,
+                    backgroundColor: 'rgba(0,0,0,0.4)',
+                    color: 'rgba(255,255,255,0.8)',
+                    padding: '3px 6px',
+                    borderRadius: '3px',
+                    fontSize: '10px',
+                    fontWeight: 300
                   }}>
                     Aktualisiere...
                   </Box>
                 )}
                 {streamUrl ? (
-                  <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
+                  <Box 
+                    sx={{ 
+                      position: 'relative', 
+                      width: '100%', 
+                      height: '100%',
+                      cursor: 'pointer',
+                      '&:hover': {
+                        opacity: 0.95
+                      }
+                    }}
+                    onClick={() => toggleStream(device._id)}
+                    title="Klicken um Stream zu stoppen"
+                  >
                     {/* Altes Bild - bleibt sichtbar */}
                     {currentImage && (
                     <img
@@ -544,14 +564,20 @@ const Dashboard = () => {
                       onError={(e) => {
                         console.error('Image load error:', e);
                         console.error('Image URL:', streamUrl);
+                        if (loadTimeoutRef.current) {
+                          clearTimeout(loadTimeoutRef.current);
+                        }
                         setIsLoading(false);
-                        setStreamingDevices(prev => ({ ...prev, [device._id]: false }));
                       }}
                       onLoad={() => {
                         console.log('Image loaded for:', streamUrl);
+                        if (loadTimeoutRef.current) {
+                          clearTimeout(loadTimeoutRef.current);
+                        }
                         // Neues Bild ist fertig - ersetze das alte
                         setCurrentImage(streamUrl);
-                        // setIsLoading(false) wird jetzt über setTimeout gesteuert
+                        // Loading beendet
+                        setIsLoading(false);
                       }}
                       onLoadStart={() => {
                         console.log('Image loading started for:', streamUrl);
@@ -566,21 +592,6 @@ const Dashboard = () => {
                     </Typography>
                   </Box>
                 )}
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: 8,
-                    right: 8,
-                    bgcolor: 'rgba(0,0,0,0.7)',
-                    color: 'white',
-                    px: 1,
-                    py: 0.5,
-                    borderRadius: 1,
-                    fontSize: '0.75rem'
-                  }}
-                >
-                  LIVE
-                </Box>
               </Box>
             ) : (
               <Box textAlign="center">
@@ -602,12 +613,15 @@ const Dashboard = () => {
 
           {/* Bewegungs-Steuerung */}
           <Box mb={2}>
-            <Typography variant="subtitle2" gutterBottom>
+            <Typography variant="subtitle2" gutterBottom textAlign="center">
               Steuerung
             </Typography>
             
             {/* D-Pad Layout with live position bars */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              {/* Left spacer to push D-Pad to center */}
+              <Box sx={{ flex: 1 }} />
+              
               {/* Vertical Tilt Bar (left of D-Pad) */}
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
                 <Box sx={{ position: 'relative', width: 8, height: 110, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
@@ -618,6 +632,7 @@ const Dashboard = () => {
                 </Typography>
               </Box>
 
+              {/* D-Pad with Horizontal Rot Bar (centered) */}
               <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
                 {/* Horizontal Rot Bar (above D-Pad) */}
                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
@@ -689,6 +704,9 @@ const Dashboard = () => {
                 Reset
               </Button>
               </Box>
+              
+              {/* Right spacer to balance and center D-Pad */}
+              <Box sx={{ flex: 1 }} />
             </Box>
           </Box>
 

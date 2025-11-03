@@ -9,10 +9,9 @@ const router = express.Router();
 
 // Einfache Bild-API (kein Video-Stream)
 router.get('/:deviceId', async (req, res) => {
-  const deviceId = req.params.deviceId; // Define OUTSIDE try-catch for error logging
+  const deviceId = req.params.deviceId;
   
   try {
-    
     // CORS-Header setzen
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -90,7 +89,9 @@ router.get('/:deviceId', async (req, res) => {
 
     ffmpegProcess.on('error', (error) => {
       logger.error(`FFmpeg error for device ${deviceId}:`, error);
-      res.status(500).json({ error: 'Image capture error' });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Image capture error' });
+      }
     });
 
     // Client disconnect handling
@@ -104,7 +105,9 @@ router.get('/:deviceId', async (req, res) => {
 
   } catch (error) {
     logger.error(`Error capturing image for device ${deviceId}:`, error);
-    res.status(500).json({ error: 'Server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Server error' });
+    }
   }
 });
 

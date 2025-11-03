@@ -1,16 +1,7 @@
 {
 	"folders": [
 		{
-			"path": "../taubenschiesser-server"
-		},
-		{
 			"path": "."
-		},
-		{
-			"path": "../taubenschiesser-hardware"
-		},
-		{
-			"path": "../../../Downloads/ONNX-YOLOv8-Object-Detection-main"
 		}
 	],
 	"settings": {}
