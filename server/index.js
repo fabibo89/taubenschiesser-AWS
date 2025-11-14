@@ -170,3 +170,15 @@ process.on('SIGTERM', async () => {
 startServer();
 
 module.exports = { app, io };
+
+function getLocalIp() {
+  const interfaces = os.networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    for (const details of iface || []) {
+      if (details.family === 'IPv4' && !details.internal) {
+        return details.address;
+      }
+    }
+  }
+  return 'localhost';
+}
