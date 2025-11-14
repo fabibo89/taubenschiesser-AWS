@@ -1275,14 +1275,22 @@ class HardwareMonitor:
                     return None
                 
                 ret, frame = cap.read()
+                
+                # Manche Kameras liefern nicht sofort ein gültiges Frame – ein paar Versuche erlauben
+                attempt = 1
+                while (not ret or frame is None) and attempt < 6:
+                    time.sleep(0.1)
+                    ret, frame = cap.read()
+                    attempt += 1
+                
                 cap.release()
                 
                 if ret and frame is not None:
                     height, width = frame.shape[:2]
-                    logger.debug(f"📸 Frame captured from RTSP: {width}x{height} pixels")
+                    logger.debug(f"📸 Frame captured from RTSP: {width}x{height} pixels (attempt {attempt})")
                     return frame
                 else:
-                    logger.warning(f"❌ Could not read frame from RTSP stream (ret={ret})")
+                    logger.warning(f"❌ Could not read frame from RTSP stream after {attempt} attempts (ret={ret})")
                     return None
                     
         except Exception as e:

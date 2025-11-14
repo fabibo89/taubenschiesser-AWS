@@ -26,6 +26,7 @@ MONGODB_URI=mongodb://admin:password123@localhost:27017/taubenschiesser?authSour
 # Authentication
 # ============================================
 JWT_SECRET=your-super-secret-jwt-key-change-in-production
+JWT_EXPIRES_IN=30d  # optional, fallback sind 7 Tage
 
 # ============================================
 # Frontend & Services

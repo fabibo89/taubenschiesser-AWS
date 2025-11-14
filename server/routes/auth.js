@@ -6,6 +6,7 @@ const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 const router = express.Router();
+const tokenExpiry = process.env.JWT_EXPIRES_IN || '7d';
 
 // Register
 router.post('/register', [
@@ -38,7 +39,7 @@ router.post('/register', [
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '7d' }
+      { expiresIn: tokenExpiry }
     );
 
     res.status(201).json({
@@ -82,7 +83,7 @@ router.post('/login', [
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || 'fallback-secret',
-      { expiresIn: '7d' }
+      { expiresIn: tokenExpiry }
     );
 
     res.json({

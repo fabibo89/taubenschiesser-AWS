@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const axios = require('axios');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
+const rtspFrameManager = require('../utils/rtspFrameManager');
 
 const router = express.Router();
 
@@ -23,16 +24,20 @@ router.get('/:deviceId', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
 
-    // Versuche zuerst, direkten Snapshot (snapshot.cgi) zu laden
-    const snapshotServed = await tryServeTapoSnapshot(device, res);
-    if (snapshotServed) {
-      return;
-    }
-
     // RTSP-URL generieren (Fallback)
     const rtspUrl = device.getRtspUrl();
     if (!rtspUrl) {
       return res.status(400).json({ error: 'RTSP URL not available' });
+    }
+
+    // Versuche, über persistenten RTSP-Stream sofort einen Frame zu liefern
+    try {
+      const frameBuffer = await rtspFrameManager.getFrame(deviceId, rtspUrl);
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.end(frameBuffer);
+    } catch (error) {
+      logger.warn(`Persistent RTSP frame failed for device ${deviceId}: ${error.message}`);
     }
 
     // Einfaches Bild mit FFmpeg erstellen (qualitativ hochwertig)
@@ -97,43 +102,3 @@ router.get('/:deviceId', async (req, res) => {
 
 module.exports = router;
 
-/**
- * Liefert, falls möglich, einen Snapshot direkt von einer Tapo-Kamera via HTTP snapshot.cgi.
- * @returns {Promise<boolean>} true, wenn Snapshot bereits gesendet wurde, sonst false.
- */
-async function tryServeTapoSnapshot(device, res) {
-  if (device.camera?.type !== 'tapo') {
-    return false;
-  }
-
-  const tapoConfig = device.camera?.tapo || {};
-  const { ip, username, password } = tapoConfig;
-
-  if (!ip || !username || !password) {
-    return false;
-  }
-
-  const snapshotUrl = `http://${ip}/snapshot.cgi`;
-  const authHeader = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
-
-  try {
-    const response = await axios.get(snapshotUrl, {
-      responseType: 'arraybuffer',
-      timeout: 5000,
-      headers: {
-        Authorization: authHeader
-      }
-    });
-
-    const contentType = response.headers['content-type'] || 'image/jpeg';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'no-cache');
-    res.end(response.data);
-
-    logger.info(`Snapshot delivered via snapshot.cgi for device ${device._id}`);
-    return true;
-  } catch (error) {
-    logger.warn(`Snapshot.cgi request failed for device ${device._id}: ${error.message}`);
-    return false;
-  }
-}
