@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
+const os = require('os');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
@@ -141,7 +142,8 @@ const startServer = async () => {
     
     server.listen(PORT, '0.0.0.0', () => {
       logger.info(`✅ Server running on port ${PORT}`);
-      logger.info(`📡 Accessible at: http://localhost:${PORT} or http://192.168.10.156:${PORT}`);
+      const hostInfo = getLocalIp();
+      logger.info(`📡 Accessible at: http://${hostInfo}:${PORT}`);
       logger.info('✅ Device monitoring started');
       logger.info('✅ Device control via MQTT available');
     });

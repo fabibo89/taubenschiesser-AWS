@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../taubenschiesser-hardware/Taubeschießer_ESP"
+		}
+	],
+	"settings": {}
+}
