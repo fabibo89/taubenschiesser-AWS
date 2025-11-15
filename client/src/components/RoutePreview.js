@@ -17,11 +17,13 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
     naturalWidth: 0,
     naturalHeight: 0
   });
+  const [containerAspectRatio, setContainerAspectRatio] = useState(null);
 
   // Bildgröße zurücksetzen, wenn sich das Vorschaubild ändert
   useEffect(() => {
     if (previewImage) {
       setImageDimensions({ width: 0, height: 0 });
+      setContainerAspectRatio(null);
     }
   }, [previewImage]);
 
@@ -48,7 +50,7 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
           )}
           {imageDimensions.naturalWidth > 0 && imageDimensions.naturalHeight > 0 && zoom && (
             <Typography variant="caption" color="text.secondary">
-              Rahmen: {Math.round(imageDimensions.naturalWidth / zoom)} × {Math.round(imageDimensions.naturalHeight / zoom)} px
+              Sichtbar: {Math.round(imageDimensions.naturalWidth / zoom)} × {Math.round(imageDimensions.naturalHeight / zoom)} px
             </Typography>
           )}
         </Box>
@@ -64,7 +66,16 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
             position: 'relative',
             display: 'inline-block',
             width: '100%',
-            maxHeight: 240
+            maxHeight: 240,
+            overflow: 'hidden',
+            borderRadius: 1,
+            // Stelle sicher, dass der Container die Bildproportionen hat
+            ...(containerAspectRatio && {
+              aspectRatio: containerAspectRatio,
+              maxHeight: 240,
+              width: 'auto',
+              maxWidth: '100%'
+            })
           }}
         >
           <Box
@@ -75,9 +86,16 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
             sx={{
               maxHeight: 240,
               width: '100%',
+              height: 'auto',
               objectFit: 'contain',
               borderRadius: 1,
-              display: 'block'
+              display: 'block',
+              // Zoom mit gleichmäßiger Skalierung - behält Proportionen bei
+              transform: zoom && zoom > 1 ? `scale(${zoom})` : 'scale(1)',
+              transformOrigin: 'center center',
+              transition: 'transform 0.2s ease',
+              // Stelle sicher, dass das Bild seine natürlichen Proportionen behält
+              objectPosition: 'center'
             }}
             onLoad={(e) => {
               // Bildgröße und Position nach dem Laden messen
@@ -145,6 +163,9 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
                     naturalWidth: naturalWidth,
                     naturalHeight: naturalHeight
                   });
+                  
+                  // Setze Container-Seitenverhältnis basierend auf natürlicher Bildgröße
+                  setContainerAspectRatio(naturalAspectRatio);
                 } else {
                   // Fallback: verwende getBoundingClientRect
                   const imgRect = img.getBoundingClientRect();
@@ -157,48 +178,13 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
                     naturalWidth: naturalWidth,
                     naturalHeight: naturalHeight
                   });
+                  
+                  // Setze Container-Seitenverhältnis basierend auf natürlicher Bildgröße
+                  setContainerAspectRatio(naturalAspectRatio);
                 }
               }, 10);
             }}
           />
-          {/* Roter Rahmen für Zoom-Bereich */}
-          {imageDimensions.width > 0 && imageDimensions.height > 0 && imageDimensions.naturalWidth > 0 && imageDimensions.naturalHeight > 0 && zoom && (() => {
-            // Berechne Rahmen-Größe basierend auf Zoom
-            // Bei Zoom 1x soll der Rahmen die natürliche Bildgröße haben
-            // Skaliere die natürliche Bildgröße auf die gerenderte Bildgröße
-            const scaleX = imageDimensions.width / imageDimensions.naturalWidth;
-            const scaleY = imageDimensions.height / imageDimensions.naturalHeight;
-            
-            // Rahmen-Größe in natürlichen Pixeln
-            const frameNaturalWidth = imageDimensions.naturalWidth / zoom;
-            const frameNaturalHeight = imageDimensions.naturalHeight / zoom;
-            
-            // Skaliere auf gerenderte Größe
-            const frameWidth = frameNaturalWidth * scaleX;
-            const frameHeight = frameNaturalHeight * scaleY;
-            
-            return (
-              <Box
-                sx={{
-                  position: 'absolute',
-                  // Positioniere den Rahmen relativ zum gerenderten Bild, nicht zum Container
-                  left: `${imageDimensions.left + (imageDimensions.width / 2)}px`,
-                  top: `${imageDimensions.top + (imageDimensions.height / 2)}px`,
-                  transform: 'translate(-50%, -50%)',
-                  // Verwende berechnete Größe - skaliert von natürlicher auf gerenderte Größe
-                  width: `${frameWidth}px`,
-                  height: `${frameHeight}px`,
-                  border: '3px solid',
-                  borderColor: 'error.main',
-                  borderRadius: 1,
-                  pointerEvents: 'none',
-                  boxSizing: 'border-box',
-                  transition: 'width 0.2s ease, height 0.2s ease, left 0.2s ease, top 0.2s ease',
-                  boxShadow: '0 0 0 2px rgba(211, 47, 47, 0.3)'
-                }}
-              />
-            );
-          })()}
         </Box>
       ) : (
         <Typography variant="body2" color="text.secondary">
