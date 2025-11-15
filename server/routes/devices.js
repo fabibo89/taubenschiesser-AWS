@@ -4,6 +4,7 @@ const Device = require('../models/Device');
 const Detection = require('../models/Detection');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const hardwareHelper = require('../utils/hardwareHelper');
 
 const router = express.Router();
 
@@ -480,6 +481,51 @@ router.post('/:id/execute-route', authenticateToken, async (req, res) => {
   }
 });
 
+// Preview a coordinate by moving the camera and returning a live snapshot
+router.post('/:id/preview-route-coordinate', authenticateToken, async (req, res) => {
+  logger.info(`🎯 PREVIEW-ROUTE-COORDINATE REQUEST: deviceId=${req.params.id}, userId=${req.user?.userId}`);
+  
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      logger.warn(`❌ Device not found for preview: ${req.params.id}`);
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { rotation, tilt, zoom = 1 } = req.body || {};
+
+    if (rotation === undefined || tilt === undefined) {
+      return res.status(400).json({ error: 'Rotation und Kippung sind erforderlich' });
+    }
+
+    const coordinate = {
+      rotation: Number(rotation),
+      tilt: Number(tilt),
+      zoom: Number(zoom) || 1
+    };
+
+    logger.info(`📐 Preview coordinate -> rotation=${coordinate.rotation}, tilt=${coordinate.tilt}, zoom=${coordinate.zoom}`);
+
+    const result = await hardwareHelper.updateRouteImage(device, coordinate, -1);
+
+    res.json({
+      message: 'Preview captured successfully',
+      image: result.image,
+      timestamp: result.timestamp
+    });
+  } catch (error) {
+    logger.error('Preview route coordinate error:', error);
+    res.status(500).json({
+      error: 'Failed to capture preview',
+      message: error.message
+    });
+  }
+});
+
 // Update route image for a specific coordinate
 router.post('/:id/update-route-image/:index', authenticateToken, async (req, res) => {
   logger.info(`🖼️ UPDATE-ROUTE-IMAGE REQUEST: deviceId=${req.params.id}, index=${req.params.index}, userId=${req.user?.userId}`);
@@ -514,9 +560,6 @@ router.post('/:id/update-route-image/:index', authenticateToken, async (req, res
     
     logger.info(`🎯 Updating image for coordinate ${index}: rotation=${coordinate.rotation}, tilt=${coordinate.tilt}, zoom=${coordinate.zoom}`);
 
-    // Get hardware monitor helper from app
-    const hardwareHelper = require('../utils/hardwareHelper');
-    
     try {
       // Move device to position, capture and save image
       logger.info(`📡 Calling hardwareHelper.updateRouteImage...`);

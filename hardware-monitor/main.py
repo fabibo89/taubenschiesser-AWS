@@ -42,12 +42,14 @@ class HardwareMonitor:
         self.device_last_seen = {}  # Track last MQTT message
         self.movement_queue = {}    # Queue movements per device
         self.device_movement_start = {}  # Track when movement started
+        self.last_position_update = {}  # Track last position update time for throttling
         
         # Thread safety
         self.camera_lock = Lock()
         
         # MQTT listener for receiving messages
         self.mqtt_listener = None
+        self.loop = None
         
     async def load_user_mqtt_settings(self, user_id):
         """Load MQTT settings for a specific user"""
@@ -116,6 +118,7 @@ class HardwareMonitor:
     async def start(self):
         """Start the hardware monitoring service"""
         logger.info("Starting Hardware Monitor Service")
+        self.loop = asyncio.get_running_loop()
         
         # Start monitoring tasks
         tasks = [
@@ -125,6 +128,13 @@ class HardwareMonitor:
         ]
         
         await asyncio.gather(*tasks)
+    
+    def schedule_async(self, coro):
+        """Schedule coroutine on main event loop from other threads"""
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
+        else:
+            logger.warning("No running event loop available to schedule coroutine")
     
     def on_mqtt_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
@@ -170,11 +180,29 @@ class HardwareMonitor:
             
             # Update device moving status
             is_moving = payload.get('moving', False)
+            was_moving = self.device_moving.get(device_ip, False)
             self.device_moving[device_ip] = is_moving
             self.device_last_seen[device_ip] = datetime.now()
             
             # Send position update to server for real-time display
-            asyncio.create_task(self.send_position_update(device_ip, payload.get('Rot', 0), payload.get('Tilt', 0)))
+            # Throttle updates while moving (max 1 update per second), but always send when movement completes
+            current_time = datetime.now()
+            last_update = self.last_position_update.get(device_ip)
+            should_update = False
+            
+            if not is_moving:
+                # Always send update when movement completes (moving = false)
+                should_update = True
+            elif not was_moving and is_moving:
+                # Send update when movement starts
+                should_update = True
+            elif is_moving and (not last_update or (current_time - last_update).total_seconds() >= 1.0):
+                # While moving, throttle to max 1 update per second
+                should_update = True
+            
+            if should_update:
+                self.last_position_update[device_ip] = current_time
+                self.schedule_async(self.send_position_update(device_ip, payload.get('Rot', 0), payload.get('Tilt', 0)))
             
             # If device is no longer moving, clear the movement start time
             if not is_moving and device_ip in self.device_movement_start:

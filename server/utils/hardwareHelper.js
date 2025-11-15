@@ -8,6 +8,8 @@ class HardwareHelper {
     this.mqttClients = new Map();
     this.CV_SERVICE_URL = process.env.CV_SERVICE_URL || 'http://localhost:8000';
     this.useAwsIot = awsIotHelper.isEnabled();
+    this.deviceMovementWaiters = new Map(); // Map<deviceIp, Array<{resolve,reject,timeout,seenMoving}>>
+    this.subscribedTopics = new Set();
     
     if (this.useAwsIot) {
       logger.info('Hardware Helper initialized with AWS IoT Core support');
@@ -39,9 +41,27 @@ class HardwareHelper {
         clientId: `server_hardware_helper_${userId}_${Date.now()}`
       });
 
+      client.on('message', (topic, message) => {
+        this.handleMqttMessage(topic, message);
+      });
+
       await new Promise((resolve, reject) => {
         client.on('connect', () => {
           logger.info(`MQTT client connected for user ${userId}`);
+          client.subscribe('taubenschiesser/+/info', (err) => {
+            if (err) {
+              logger.error('Failed to subscribe to taubenschiesser/+/info:', err);
+            } else {
+              logger.info('Subscribed to taubenschiesser/+/info');
+            }
+          });
+          client.subscribe('taubenschiesser/info', (err) => {
+            if (err) {
+              logger.error('Failed to subscribe to taubenschiesser/info:', err);
+            } else {
+              logger.info('Subscribed to taubenschiesser/info');
+            }
+          });
           resolve();
         });
         client.on('error', (error) => {
@@ -56,6 +76,105 @@ class HardwareHelper {
       logger.error('Failed to create MQTT client:', error);
       throw error;
     }
+  }
+
+  handleMqttMessage(topic, message) {
+    try {
+      if (!topic.startsWith('taubenschiesser/')) {
+        return;
+      }
+
+      if (!(topic.endsWith('/info') || topic === 'taubenschiesser/info')) {
+        return;
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(message.toString());
+      } catch (error) {
+        logger.warn(`Failed to parse MQTT payload on ${topic}: ${error.message}`);
+        return;
+      }
+
+      let deviceIp;
+      if (topic === 'taubenschiesser/info') {
+        deviceIp = payload?.ip;
+      } else {
+        const parts = topic.split('/');
+        deviceIp = parts[1];
+      }
+
+      if (!deviceIp) {
+        return;
+      }
+
+      const isMoving = !!payload?.moving;
+
+      const waiters = this.deviceMovementWaiters.get(deviceIp);
+      if (waiters && waiters.length) {
+        const remaining = [];
+        for (const waiter of waiters) {
+          if (isMoving) {
+            waiter.seenMoving = true;
+            remaining.push(waiter);
+          } else if (!waiter.requireMoving || waiter.seenMoving) {
+            clearTimeout(waiter.timeout);
+            waiter.resolve();
+          } else {
+            remaining.push(waiter);
+          }
+        }
+
+        if (remaining.length > 0) {
+          this.deviceMovementWaiters.set(deviceIp, remaining);
+        } else {
+          this.deviceMovementWaiters.delete(deviceIp);
+        }
+      }
+    } catch (error) {
+      logger.error('Error handling MQTT message:', error);
+    }
+  }
+
+  async ensureDeviceSubscription(client, deviceIp) {
+    if (!deviceIp || !client) {
+      return;
+    }
+
+    const topic = `taubenschiesser/${deviceIp}/info`;
+    if (this.subscribedTopics.has(topic)) {
+      return;
+    }
+
+    await new Promise((resolve, reject) => {
+      client.subscribe(topic, (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          logger.info(`Subscribed to MQTT topic ${topic}`);
+          this.subscribedTopics.add(topic);
+          resolve();
+        }
+      });
+    });
+  }
+
+  waitForMovementViaMqtt(deviceIp, timeoutMs = 35000) {
+    return new Promise((resolve) => {
+      const waiter = {
+        resolve: () => resolve(),
+        timeout: setTimeout(() => {
+          logger.warn(`Movement MQTT timeout reached for device ${deviceIp}`);
+          resolve();
+        }, timeoutMs),
+        seenMoving: false,
+        requireMoving: false
+      };
+
+      const waiters = this.deviceMovementWaiters.get(deviceIp) || [];
+      waiters.push(waiter);
+      this.deviceMovementWaiters.set(deviceIp, waiters);
+    });
   }
 
   /**
@@ -83,7 +202,7 @@ class HardwareHelper {
         logger.info(`Sending move command via AWS IoT to ${device.name}:`, command);
         await awsIotHelper.publishCommand(device.name, command, 'commands');
         logger.info('Move command sent successfully via AWS IoT');
-        return;
+        return { transport: 'aws' };
       }
 
       // Fall back to local MQTT
@@ -96,10 +215,12 @@ class HardwareHelper {
 
       const mqttClient = await this.getMqttClient(device.owner, user.settings);
       const topic = `taubenschiesser/${deviceIp}`;
+
+      await this.ensureDeviceSubscription(mqttClient, deviceIp);
       
       logger.info(`Sending move command via local MQTT to ${topic}:`, command);
       
-      return new Promise((resolve, reject) => {
+      await new Promise((resolve, reject) => {
         mqttClient.publish(topic, JSON.stringify(command), (error) => {
           if (error) {
             logger.error('Failed to publish MQTT message:', error);
@@ -110,6 +231,8 @@ class HardwareHelper {
           }
         });
       });
+
+      return { transport: 'mqtt', deviceIp };
     } catch (error) {
       logger.error('Error moving to position:', error);
       throw error;
@@ -119,11 +242,35 @@ class HardwareHelper {
   /**
    * Wait for device movement to complete
    */
-  async waitForMovementComplete(timeoutMs = 30000) {
-    // Wait for movement to complete
-    // In a production system, you would listen to MQTT feedback
-    // For now, we use a simple timeout
-    await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs, 5000)));
+  async waitForMovementComplete(device, movementContext = {}, options = {}) {
+    const timeoutMs = options.timeoutMs || 35000;
+    const stabilizationMs = options.stabilizationMs ?? 500;
+
+    if (this.useAwsIot) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs, 5000)));
+      if (stabilizationMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, stabilizationMs));
+      }
+      return;
+    }
+
+    const deviceIp = movementContext.deviceIp || device?.taubenschiesser?.ip;
+    if (!deviceIp) {
+      logger.warn('No device IP available for movement wait, falling back to timeout');
+      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs, 3000)));
+      if (stabilizationMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, stabilizationMs));
+      }
+      return;
+    }
+
+    logger.info(`Waiting for MQTT movement completion for device ${deviceIp}`);
+    await this.waitForMovementViaMqtt(deviceIp, timeoutMs);
+
+    if (stabilizationMs > 0) {
+      logger.info(`Waiting additional ${stabilizationMs}ms for stabilization`);
+      await new Promise(resolve => setTimeout(resolve, stabilizationMs));
+    }
   }
 
   /**
@@ -222,28 +369,24 @@ class HardwareHelper {
 
       // 1. Move to position
       logger.info(`Moving to position: rotation=${coordinate.rotation}, tilt=${coordinate.tilt}`);
-      await this.moveToPosition(device, coordinate.rotation, coordinate.tilt);
+      const movementContext = await this.moveToPosition(device, coordinate.rotation, coordinate.tilt);
 
-      // 2. Wait for movement to complete
+      // 2. Wait for movement to complete (MQTT feedback when available)
       logger.info('Waiting for movement to complete...');
-      await this.waitForMovementComplete(5000);
-      
-      // 3. Additional stabilization time
-      logger.info('Waiting for camera stabilization...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs: 2000 });
 
-      // 4. Capture frame
+      // 3. Capture frame
       logger.info('Capturing frame from camera...');
       let imageBase64 = await this.captureFrame(device);
 
-      // 5. Apply zoom if needed
+      // 4. Apply zoom if needed
       const zoomFactor = coordinate.zoom || 1.0;
       if (zoomFactor > 1.0) {
         logger.info(`Applying zoom: ${zoomFactor}x`);
         imageBase64 = await this.applyZoom(imageBase64, zoomFactor);
       }
 
-      // 6. Return the result
+      // 5. Return the result
       logger.info('Image update completed successfully');
       
       return {

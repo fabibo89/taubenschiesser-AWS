@@ -366,12 +366,12 @@ const Dashboard = () => {
     const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
     const deviceStatus = deviceStatuses[device._id];
 
-    // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed -90..90; clamp as safety)
+    // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed 0..180; clamp as safety)
     const normalized = useMemo(() => {
       const rot = Math.max(0, Math.min(360, Number(position.rot) || 0));
-      const tiltVal = Math.max(-90, Math.min(90, Number(position.tilt) || 0));
+      const tiltVal = Math.max(0, Math.min(180, Number(position.tilt) || 0));
       const rotPct = rot / 360; // 0..1
-      const tiltPct = (tiltVal + 90) / 180; // -90..90 -> 0..1
+      const tiltPct = tiltVal / 180; // 0..180 -> 0..1
       return { rotPct, tiltPct, rot, tilt: tiltVal };
     }, [position]);
     

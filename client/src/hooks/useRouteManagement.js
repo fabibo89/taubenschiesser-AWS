@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
 
 const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || '';
@@ -8,26 +8,27 @@ const API_URL = (typeof process !== 'undefined' && process.env && process.env.RE
  * Gemeinsam genutzt von Devices.js und DeviceDetail.js
  */
 export const useRouteManagement = (deviceId) => {
-  const [actionsConfig, setActionsConfig] = useState({
+  const getDefaultActionsConfig = () => ({
     mode: 'impulse',
     route: { coordinates: [] }
   });
-  const [newCoordinate, setNewCoordinate] = useState({
-    rotation: 0,
-    tilt: 0,
+  const getDefaultCoordinate = () => ({
+    rotation: 90,
+    tilt: 90,
     order: 0,
     zoom: 1
   });
+
+  const [actionsConfig, setActionsConfig] = useState(getDefaultActionsConfig);
+  const [newCoordinate, setNewCoordinate] = useState(getDefaultCoordinate);
   const [editingIndex, setEditingIndex] = useState(null);
   const [updatingImages, setUpdatingImages] = useState(new Set());
+  const [previewImage, setPreviewImage] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(null);
 
   const resetNewCoordinate = () => {
-    setNewCoordinate({
-      rotation: 0,
-      tilt: 0,
-      order: 0,
-      zoom: 1
-    });
+    setNewCoordinate(getDefaultCoordinate());
   };
 
   const handleModeChange = (event) => {
@@ -97,15 +98,36 @@ export const useRouteManagement = (deviceId) => {
     }
   };
 
+  const clearPreview = () => {
+    setPreviewImage(null);
+    setPreviewError(null);
+  };
+
   const handleCancelEdit = () => {
     setEditingIndex(null);
     resetNewCoordinate();
+    clearPreview();
   };
 
-  const handleUpdateImage = async (index) => {
+  useEffect(() => {
+    setActionsConfig(getDefaultActionsConfig());
+    setNewCoordinate(getDefaultCoordinate());
+    setEditingIndex(null);
+    setUpdatingImages(new Set());
+    clearPreview();
+  }, [deviceId]);
+
+  const resolveDeviceId = (overrideId) => overrideId ?? deviceId;
+
+  const handleUpdateImage = async (index, targetDeviceId) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
     console.log('🔧 handleUpdateImage called with index:', index);
     console.log('🔧 API_URL:', API_URL);
-    console.log('🔧 Device ID:', deviceId);
+    console.log('🔧 Device ID:', currentDeviceId);
     console.log('🔧 Token exists:', !!localStorage.getItem('token'));
     
     setUpdatingImages(prev => new Set(prev).add(index));
@@ -113,7 +135,7 @@ export const useRouteManagement = (deviceId) => {
     try {
       console.log(`Updating image for coordinate ${index}`);
       
-      const url = `${API_URL}/api/devices/${deviceId}/update-route-image/${index}`;
+      const url = `${API_URL}/api/devices/${currentDeviceId}/update-route-image/${index}`;
       console.log('Calling API:', url);
       
       const response = await axios.post(
@@ -163,34 +185,91 @@ export const useRouteManagement = (deviceId) => {
     }
   };
 
-  const handleUpdateAllImages = async () => {
-    const allIndices = actionsConfig.route.coordinates.map((_, index) => index);
-    setUpdatingImages(new Set(allIndices));
-    
-    // TODO: Implement actual bulk image capture functionality
-    console.log('Updating all images');
-    
-    // Simulate API call
-    setTimeout(() => {
-      setUpdatingImages(new Set());
-    }, 3000);
+  const handlePreviewCoordinate = async (targetDeviceId, coordinateOverride) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      const message = 'Kein Gerät ausgewählt';
+      setPreviewError(message);
+      return { success: false, message };
+    }
+
+    const coordinate = coordinateOverride || newCoordinate;
+
+    const payload = {
+      rotation: Number(coordinate.rotation) || 0,
+      tilt: Number(coordinate.tilt) || 0,
+      zoom: Number(coordinate.zoom) || 1
+    };
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    try {
+      const response = await axios.post(`/api/devices/${currentDeviceId}/preview-route-coordinate`, payload);
+      if (response.data?.image) {
+        setPreviewImage(response.data.image);
+        return { success: true, image: response.data.image };
+      }
+      throw new Error('Kein Vorschaubild erhalten');
+    } catch (error) {
+      console.error('Error fetching preview image:', error);
+      const message = error.response?.data?.message || error.response?.data?.error || error.message;
+      setPreviewError(message);
+      return { success: false, message };
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
-  const fetchActionsConfig = async () => {
+  const handleUpdateAllImages = async (targetDeviceId) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
+    const allIndices = actionsConfig.route.coordinates.map((_, index) => index);
+    setUpdatingImages(new Set(allIndices));
+
+    console.log(`Updating all images for device ${currentDeviceId}`);
+    
     try {
-      const response = await axios.get(`/api/devices/${deviceId}/actions`);
+      for (const index of allIndices) {
+        await handleUpdateImage(index, currentDeviceId);
+      }
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating all images:', error);
+      return { success: false, message: error.message };
+    } finally {
+      setUpdatingImages(new Set());
+    }
+  };
+
+  const fetchActionsConfig = async (targetDeviceId) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
+    try {
+      const response = await axios.get(`/api/devices/${currentDeviceId}/actions`);
       setActionsConfig(response.data);
       return { success: true, data: response.data };
     } catch (error) {
       console.error('Error fetching actions config:', error);
-      return { success: false, error };
+      return { success: false, message: error.message, error };
     }
   };
 
-  const saveActionsConfig = async () => {
+  const saveActionsConfig = async (targetDeviceId) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
     try {
       console.log('Saving actions config:', actionsConfig);
-      const response = await axios.put(`/api/devices/${deviceId}/actions`, actionsConfig);
+      const response = await axios.put(`/api/devices/${currentDeviceId}/actions`, actionsConfig);
       console.log('Save response:', response.data);
       return { success: true, message: 'Route-Konfiguration gespeichert' };
     } catch (error) {
@@ -212,6 +291,9 @@ export const useRouteManagement = (deviceId) => {
     setNewCoordinate,
     editingIndex,
     updatingImages,
+    previewImage,
+    previewLoading,
+    previewError,
     
     // Handlers
     handleModeChange,
@@ -222,9 +304,12 @@ export const useRouteManagement = (deviceId) => {
     handleCancelEdit,
     handleUpdateImage,
     handleUpdateAllImages,
+    handlePreviewCoordinate,
     fetchActionsConfig,
     saveActionsConfig,
-    resetNewCoordinate
+    resetNewCoordinate,
+    clearPreview,
+    setEditingIndex
   };
 };
 
