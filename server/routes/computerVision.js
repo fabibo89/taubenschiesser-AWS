@@ -226,13 +226,37 @@ router.get('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     // Check if user owns the device
-    if (detection.device.owner.toString() !== req.user.userId) {
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
     res.json(detection);
   } catch (error) {
     logger.error('Get detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete single detection (and associated images references)
+router.delete('/detections/:id', authenticateToken, async (req, res) => {
+  try {
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    // Ensure the current user owns the related device
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    await Detection.deleteOne({ _id: detection._id });
+
+    res.json({ message: 'Detection deleted successfully' });
+  } catch (error) {
+    logger.error('Delete detection error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

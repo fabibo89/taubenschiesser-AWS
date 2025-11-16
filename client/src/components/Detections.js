@@ -18,6 +18,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  DialogActions,
   IconButton,
   CardMedia
 } from '@mui/material';
@@ -26,7 +27,8 @@ import {
   FilterList as FilterIcon,
   Visibility as DetectionIcon,
   Close as CloseIcon,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Delete as DeleteIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
@@ -95,6 +97,32 @@ const Detections = () => {
   const handleCloseImageDialog = () => {
     setImageDialogOpen(false);
     setSelectedDetection(null);
+  };
+
+  const handleDeleteDetection = async (detection) => {
+    if (!detection) return;
+
+    const confirmDelete = window.confirm('Erkennung und zugehörige Bilder wirklich löschen?');
+    if (!confirmDelete) return;
+
+    try {
+      await axios.delete(`/api/cv/detections/${detection._id}`);
+
+      // Entferne lokal aus der Liste
+      setDetections((prev) => prev.filter((d) => d._id !== detection._id));
+      setPagination((prev) => ({
+        ...prev,
+        total: Math.max(0, (prev.total || 0) - 1)
+      }));
+
+      // Falls die aktuelle Detailansicht diese Erkennung zeigt, schließen
+      if (selectedDetection && selectedDetection._id === detection._id) {
+        handleCloseImageDialog();
+      }
+    } catch (error) {
+      console.error('Error deleting detection:', error);
+      alert('Fehler beim Löschen der Erkennung');
+    }
   };
 
   const columns = [
@@ -215,7 +243,7 @@ const Detections = () => {
     {
       field: 'actions',
       headerName: 'Aktionen',
-      width: 120,
+      width: 160,
       sortable: false,
       renderCell: (params) => (
         <Box>
@@ -226,6 +254,14 @@ const Detections = () => {
             title="Details anzeigen"
           >
             <DetectionIcon />
+          </IconButton>
+          <IconButton
+            size="small"
+            onClick={() => handleDeleteDetection(params.row)}
+            color="error"
+            title="Erkennung löschen"
+          >
+            <DeleteIcon />
           </IconButton>
         </Box>
       )
@@ -343,7 +379,7 @@ const Detections = () => {
         <DialogContent>
           {selectedDetection && (
             <Grid container spacing={2}>
-              {/* Original Image */}
+              {/* Original Image mit Bounding-Boxen */}
               {selectedDetection.image?.url && (
                 <Grid item xs={12} md={selectedDetection.zoomed_image?.url ? 6 : 12}>
                   <Card>
@@ -352,21 +388,84 @@ const Detections = () => {
                         Original-Bild
                       </Typography>
                       <Box
-                        component="img"
-                        src={selectedDetection.image.url}
-                        alt="Original Detection"
                         sx={{
+                          position: 'relative',
                           width: '100%',
-                          height: 'auto',
                           maxHeight: '500px',
-                          objectFit: 'contain',
                           border: '1px solid #e0e0e0',
-                          borderRadius: 1
+                          borderRadius: 1,
+                          overflow: 'hidden',
+                          backgroundColor: '#000'
                         }}
-                      />
+                      >
+                        <Box
+                          component="img"
+                          src={selectedDetection.image.url}
+                          alt="Original Detection"
+                          sx={{
+                            width: '100%',
+                            height: 'auto',
+                            display: 'block',
+                            objectFit: 'contain'
+                          }}
+                        />
+                        {selectedDetection.image_info?.original_size &&
+                          Array.isArray(selectedDetection.detections) &&
+                          selectedDetection.detections.map((detection, index) => {
+                            if (!detection.bbox) return null;
+
+                            const { x, y, width, height } = detection.bbox;
+                            const imgWidth = selectedDetection.image_info.original_size.width || 1;
+                            const imgHeight = selectedDetection.image_info.original_size.height || 1;
+
+                            // Falls ein gezoomtes Bild existiert, sind die BBox-Koordinaten relativ zum Zoom-Bild.
+                            // Wir verschieben sie daher in das Originalbild, indem wir den Zoom-Ausschnitt zentriert annehmen.
+                            let adjX = x;
+                            let adjY = y;
+
+                            if (selectedDetection.zoomed_image?.url && selectedDetection.image_info?.zoomed_size) {
+                              const zoomWidth = selectedDetection.image_info.zoomed_size.width || imgWidth;
+                              const zoomHeight = selectedDetection.image_info.zoomed_size.height || imgHeight;
+
+                              const offsetX = (imgWidth - zoomWidth) / 2;
+                              const offsetY = (imgHeight - zoomHeight) / 2;
+
+                              adjX = offsetX + x;
+                              adjY = offsetY + y;
+                            }
+
+                            const leftPct = (adjX / imgWidth) * 100;
+                            const topPct = (adjY / imgHeight) * 100;
+                            const widthPct = (width / imgWidth) * 100;
+                            const heightPct = (height / imgHeight) * 100;
+
+                            return (
+                              <Box
+                                key={`orig-bbox-${index}`}
+                                sx={{
+                                  position: 'absolute',
+                                  left: `${leftPct}%`,
+                                  top: `${topPct}%`,
+                                  width: `${widthPct}%`,
+                                  height: `${heightPct}%`,
+                                  border: '2px solid #ff1744',
+                                  boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                                  pointerEvents: 'none',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            );
+                          })}
+                      </Box>
                       {selectedDetection.image_info?.original_size && (
-                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                          Größe: {selectedDetection.image_info.original_size.width} x {selectedDetection.image_info.original_size.height}
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                          sx={{ mt: 1 }}
+                        >
+                          Größe: {selectedDetection.image_info.original_size.width} x{' '}
+                          {selectedDetection.image_info.original_size.height}
                         </Typography>
                       )}
                     </CardContent>
@@ -374,7 +473,7 @@ const Detections = () => {
                 </Grid>
               )}
 
-              {/* Zoomed Image */}
+              {/* Zoomed Image mit Bounding-Boxen */}
               {selectedDetection.zoomed_image?.url && (
                 <Grid item xs={12} md={selectedDetection.image?.url ? 6 : 12}>
                   <Card>
@@ -383,21 +482,75 @@ const Detections = () => {
                         Gezoomtes Bild {selectedDetection.zoom_factor && `(${selectedDetection.zoom_factor}x)`}
                       </Typography>
                       <Box
-                        component="img"
-                        src={selectedDetection.zoomed_image.url}
-                        alt="Zoomed Detection"
                         sx={{
+                          position: 'relative',
                           width: '100%',
-                          height: 'auto',
                           maxHeight: '500px',
-                          objectFit: 'contain',
                           border: '1px solid #e0e0e0',
-                          borderRadius: 1
+                          borderRadius: 1,
+                          overflow: 'hidden',
+                          backgroundColor: '#000'
                         }}
-                      />
+                      >
+                        <Box
+                          component="img"
+                          src={selectedDetection.zoomed_image.url}
+                          alt="Zoomed Detection"
+                          sx={{
+                            width: '100%',
+                            height: 'auto',
+                            display: 'block',
+                            objectFit: 'contain'
+                          }}
+                        />
+                        {selectedDetection.image_info?.zoomed_size &&
+                          Array.isArray(selectedDetection.detections) &&
+                          selectedDetection.detections.map((detection, index) => {
+                            if (!detection.position) return null;
+
+                            const { center_x, center_y, width, height } = detection.position;
+
+                            const imgWidth = selectedDetection.image_info.zoomed_size.width || 1;
+                            const imgHeight = selectedDetection.image_info.zoomed_size.height || 1;
+
+                            // position.* sind Pixel-Koordinaten relativ zum gezoomten Bild
+                            const bboxWidth = width || 0;
+                            const bboxHeight = height || 0;
+                            const bboxLeft = (center_x || 0) - bboxWidth / 2;
+                            const bboxTop = (center_y || 0) - bboxHeight / 2;
+
+                            const leftPct = (bboxLeft / imgWidth) * 100;
+                            const topPct = (bboxTop / imgHeight) * 100;
+                            const wPct = (bboxWidth / imgWidth) * 100;
+                            const hPct = (bboxHeight / imgHeight) * 100;
+
+                            return (
+                              <Box
+                                key={`zoom-bbox-${index}`}
+                                sx={{
+                                  position: 'absolute',
+                                  left: `${leftPct}%`,
+                                  top: `${topPct}%`,
+                                  width: `${wPct}%`,
+                                  height: `${hPct}%`,
+                                  border: '2px solid #ff1744',
+                                  boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                                  pointerEvents: 'none',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                            );
+                          })}
+                      </Box>
                       {selectedDetection.image_info?.zoomed_size && (
-                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                          Größe: {selectedDetection.image_info.zoomed_size.width} x {selectedDetection.image_info.zoomed_size.height}
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                          sx={{ mt: 1 }}
+                        >
+                          Größe: {selectedDetection.image_info.zoomed_size.width} x{' '}
+                          {selectedDetection.image_info.zoomed_size.height}
                         </Typography>
                       )}
                     </CardContent>
@@ -503,6 +656,19 @@ const Detections = () => {
             </Grid>
           )}
         </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseImageDialog}>
+            Schließen
+          </Button>
+          {selectedDetection && (
+            <Button
+              color="error"
+              onClick={() => handleDeleteDetection(selectedDetection)}
+            >
+              Erkennung löschen
+            </Button>
+          )}
+        </DialogActions>
       </Dialog>
     </Box>
   );
