@@ -78,3 +78,4 @@ device-config.json
 coverage/
 .pytest_cache/
 
+Cursor.code-workspace
