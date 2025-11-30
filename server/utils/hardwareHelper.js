@@ -293,7 +293,35 @@ class HardwareHelper {
         throw new Error('Local image capture not yet implemented in server');
       }
 
-      // Get RTSP URL
+      // Handle Raspberry Pi camera (HTTP GET)
+      if (camera.type === 'raspberry-pi') {
+        const pi = camera.raspberryPi;
+        if (!pi || !pi.ip) {
+          throw new Error('Raspberry Pi camera IP not configured');
+        }
+
+        const port = pi.port || 8080;
+        const endpoint = pi.endpoint || '/image.jpg';
+        const url = `http://${pi.ip}:${port}${endpoint}`;
+
+        logger.info(`Capturing frame from Raspberry Pi: ${url}`);
+        
+        const response = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 10000 // 10 second timeout
+        });
+
+        if (response.data) {
+          // Convert arraybuffer to base64
+          const imageBase64 = Buffer.from(response.data, 'binary').toString('base64');
+          logger.info('Successfully captured image from Raspberry Pi');
+          return imageBase64;
+        }
+
+        throw new Error('Failed to capture frame from Raspberry Pi - empty response');
+      }
+
+      // Get RTSP URL for other camera types
       let rtspUrl = camera.rtspUrl;
       
       if (!rtspUrl && camera.type === 'tapo') {

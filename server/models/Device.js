@@ -52,7 +52,7 @@ const deviceSchema = new mongoose.Schema({
   camera: {
     type: {
       type: String,
-      enum: ['tapo', 'direct', 'local'],
+      enum: ['tapo', 'direct', 'local', 'raspberry-pi'],
       default: 'tapo'
     },
     // For Tapo cameras
@@ -64,6 +64,18 @@ const deviceSchema = new mongoose.Schema({
         type: String,
         enum: ['stream1', 'stream2'],
         default: 'stream1'
+      }
+    },
+    // For Raspberry Pi cameras
+    raspberryPi: {
+      ip: String,
+      port: {
+        type: Number,
+        default: 8080
+      },
+      endpoint: {
+        type: String,
+        default: '/image.jpg'
       }
     },
     // For direct RTSP or other cameras
@@ -145,7 +157,10 @@ const deviceSchema = new mongoose.Schema({
 
 // Method to get RTSP URL based on camera configuration
 deviceSchema.methods.getRtspUrl = function() {
-  if (this.camera.type === 'tapo') {
+  if (this.camera.type === 'raspberry-pi') {
+    // Raspberry Pi doesn't use RTSP, return null
+    return null;
+  } else if (this.camera.type === 'tapo') {
     const { ip, username, password, stream } = this.camera.tapo;
     if (!ip || !username || !password || !stream) {
       throw new Error('Tapo camera configuration incomplete');
@@ -157,6 +172,20 @@ deviceSchema.methods.getRtspUrl = function() {
     // Fallback to directUrl or rtspUrl
     return this.camera.directUrl || this.camera.rtspUrl;
   }
+};
+
+// Method to get HTTP image URL for Raspberry Pi cameras
+deviceSchema.methods.getImageUrl = function() {
+  if (this.camera.type === 'raspberry-pi') {
+    const pi = this.camera.raspberryPi;
+    if (!pi || !pi.ip) {
+      return null;
+    }
+    const port = pi.port || 8080;
+    const endpoint = pi.endpoint || '/image.jpg';
+    return `http://${pi.ip}:${port}${endpoint}`;
+  }
+  return null;
 };
 
 // Method to get Taubenschiesser IP

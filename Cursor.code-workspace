@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../../Docker/homeassistant/custom_components/taubenschiesser_HA"
+		},
+		{
+			"path": "../taubenschiesser-hardware"
 		}
 	],
 	"settings": {}

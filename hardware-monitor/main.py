@@ -668,11 +668,43 @@ class HardwareMonitor:
                 })
                 original_frame = await self.load_local_image(local_image_path)
             else:
-                # Use camera/RTSP stream
+                # Use camera/RTSP stream or HTTP (Raspberry Pi)
+                camera_type = camera_config.get('type')
                 rtsp_url = camera_config.get('rtspUrl')
                 
+                # Check for Raspberry Pi camera (HTTP)
+                if camera_type == 'raspberry-pi':
+                    pi_config = camera_config.get('raspberryPi', {})
+                    if pi_config:
+                        pi_ip = pi_config.get('ip')
+                        pi_port = pi_config.get('port', 8080)
+                        pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+                        
+                        if pi_ip:
+                            image_url = f"http://{pi_ip}:{pi_port}{pi_endpoint}"
+                            logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
+                            await self.send_monitor_event(device, 'image_source', {
+                                'source': 'raspberry-pi',
+                                'ip': pi_ip,
+                                'port': pi_port,
+                                'endpoint': pi_endpoint
+                            })
+                            
+                            # Capture frame from Raspberry Pi
+                            logger.info(f"📷 Attempting to capture frame from Raspberry Pi: {device_ip}")
+                            await self.send_monitor_event(device, 'capturing_image', {
+                                'message': 'Capturing image from Raspberry Pi camera'
+                            })
+                            original_frame = await self.capture_frame_from_http(image_url)
+                        else:
+                            logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
+                            return
+                    else:
+                        logger.warning(f"No Raspberry Pi camera configuration for device {device_ip}")
+                        return
+                
                 # If no direct RTSP URL, check for Tapo camera
-                if not rtsp_url and camera_config.get('type') == 'tapo':
+                elif not rtsp_url and camera_type == 'tapo':
                     tapo_config = camera_config.get('tapo', {})
                     if tapo_config:
                         tapo_ip = tapo_config.get('ip')
@@ -699,12 +731,13 @@ class HardwareMonitor:
                     logger.warning(f"No camera configured for device {device_ip}")
                     return
                 
-                # Capture frame from camera
-                logger.info(f"📷 Attempting to capture frame from device {device_ip}")
-                await self.send_monitor_event(device, 'capturing_image', {
-                    'message': 'Capturing image from camera'
-                })
-                original_frame = await self.capture_frame(rtsp_url)
+                # Capture frame from RTSP camera
+                if camera_type != 'raspberry-pi':
+                    logger.info(f"📷 Attempting to capture frame from device {device_ip}")
+                    await self.send_monitor_event(device, 'capturing_image', {
+                        'message': 'Capturing image from camera'
+                    })
+                    original_frame = await self.capture_frame(rtsp_url)
             
             if original_frame is not None:
                 height, width = original_frame.shape[:2]
@@ -1291,6 +1324,35 @@ class HardwareMonitor:
                 
         except Exception as e:
             logger.error(f"Error processing camera stream for device {device.get('deviceId', 'unknown')}: {e}")
+    
+    async def capture_frame_from_http(self, image_url: str) -> Optional[np.ndarray]:
+        """Capture a frame from HTTP endpoint (e.g. Raspberry Pi)"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        image_data = await response.read()
+                        
+                        # Convert bytes to numpy array
+                        nparr = np.frombuffer(image_data, np.uint8)
+                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        
+                        if frame is not None:
+                            height, width = frame.shape[:2]
+                            logger.debug(f"📸 Frame captured from HTTP: {width}x{height} pixels")
+                            return frame
+                        else:
+                            logger.warning(f"❌ Could not decode image from HTTP response")
+                            return None
+                    else:
+                        logger.warning(f"❌ HTTP request failed with status {response.status}")
+                        return None
+        except asyncio.TimeoutError:
+            logger.warning(f"❌ Timeout while fetching image from {image_url}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error capturing frame from HTTP: {e}")
+            return None
     
     async def capture_frame(self, rtsp_url: str) -> Optional[np.ndarray]:
         """Capture a frame from RTSP stream"""
