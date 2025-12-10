@@ -10,9 +10,14 @@ const router = express.Router();
 
 // Helper function to get internal API URL (for server-to-server calls)
 function getInternalApiUrl() {
-  const port = process.env.PORT || 5001;
-  // Use localhost for internal calls (works in Docker and locally)
-  return `http://localhost:${port}`;
+  // In Docker, the API runs on port 5000 internally (see docker-compose.prod.yml)
+  // Use the PORT env var if set, otherwise default to 5000 (Docker) or 5001 (local)
+  const port = process.env.PORT || (process.env.NODE_ENV === 'production' ? 5000 : 5001);
+  
+  // Force IPv4 by using 127.0.0.1 instead of localhost
+  // localhost can resolve to IPv6 ::1 which causes ECONNREFUSED
+  // This works in Docker containers and locally
+  return `http://127.0.0.1:${port}`;
 }
 
 // Helper function to log axios errors without request body
