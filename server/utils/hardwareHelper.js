@@ -2,6 +2,7 @@ const mqtt = require('mqtt');
 const axios = require('axios');
 const logger = require('./logger');
 const awsIotHelper = require('./awsIotHelper');
+const rtspFrameManager = require('./rtspFrameManager');
 
 class HardwareHelper {
   constructor() {
@@ -322,13 +323,21 @@ class HardwareHelper {
       }
 
       // Get RTSP URL for other camera types
-      let rtspUrl = camera.rtspUrl;
+      // Use device.getRtspUrl() if available (handles tapo, dual, and other types)
+      let rtspUrl = null;
       
-      if (!rtspUrl && camera.type === 'tapo') {
-        const tapo = camera.tapo;
-        if (tapo && tapo.ip && tapo.username && tapo.password) {
-          const stream = tapo.stream || 'stream1';
-          rtspUrl = `rtsp://${tapo.username}:${tapo.password}@${tapo.ip}:554/${stream}`;
+      if (device.getRtspUrl && typeof device.getRtspUrl === 'function') {
+        rtspUrl = device.getRtspUrl();
+      } else {
+        // Fallback: try to construct RTSP URL manually
+        rtspUrl = camera.rtspUrl;
+        
+        if (!rtspUrl && (camera.type === 'tapo' || camera.type === 'dual')) {
+          const tapo = camera.tapo;
+          if (tapo && tapo.ip && tapo.username && tapo.password) {
+            const stream = tapo.stream || 'stream1';
+            rtspUrl = `rtsp://${tapo.username}:${tapo.password}@${tapo.ip}:554/${stream}`;
+          }
         }
       }
 
@@ -336,20 +345,20 @@ class HardwareHelper {
         throw new Error('No RTSP URL available for device');
       }
 
-      logger.info('Capturing frame from RTSP stream...');
+      logger.info(`Capturing frame from RTSP stream: ${rtspUrl.replace(/:[^:@]+@/, ':****@')}`);
       
-      // Use CV service to capture frame
-      const response = await axios.post(`${this.CV_SERVICE_URL}/capture_frame`, {
-        rtsp_url: rtspUrl
-      }, {
-        timeout: 15000
-      });
-
-      if (response.data && response.data.image) {
-        return response.data.image; // Base64 encoded image
+      // Use rtspFrameManager (same as Dashboard) for consistent behavior
+      const deviceId = device._id?.toString() || device.id || 'unknown';
+      const frameBuffer = await rtspFrameManager.getFrame(deviceId, rtspUrl, 10000);
+      
+      if (frameBuffer && frameBuffer.length > 0) {
+        // Convert buffer to base64
+        const imageBase64 = frameBuffer.toString('base64');
+        logger.info('Successfully captured frame from RTSP stream');
+        return imageBase64;
       }
 
-      throw new Error('Failed to capture frame from camera');
+      throw new Error('Failed to capture frame from camera - empty frame');
     } catch (error) {
       logger.error('Error capturing frame:', error);
       throw error;
@@ -389,32 +398,150 @@ class HardwareHelper {
   }
 
   /**
+   * Capture frame with zoom - returns both original and zoomed images
+   * This centralizes the logic from hardware monitor
+   */
+  async captureFrameWithZoom(device, zoomFactor = 1.0) {
+    try {
+      const camera = device.camera;
+      
+      if (!camera) {
+        throw new Error('No camera configured for device');
+      }
+
+      // Handle Raspberry Pi camera (HTTP GET)
+      if (camera.type === 'raspberry-pi') {
+        const pi = camera.raspberryPi;
+        if (!pi || !pi.ip) {
+          throw new Error('Raspberry Pi camera IP not configured');
+        }
+
+        const port = pi.port || 8080;
+        const endpoint = pi.endpoint || '/image.jpg';
+        const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
+        
+        // Build base query params (flip)
+        const baseQueryParams = [];
+        if (pi.flip) {
+          baseQueryParams.push('flip=true');
+        }
+        const baseUrlWithFlip = baseQueryParams.length > 0 
+          ? `${baseUrl}?${baseQueryParams.join('&')}`
+          : baseUrl;
+        
+        // Always get original image first (without zoom)
+        logger.info(`Capturing original frame from Raspberry Pi: ${baseUrlWithFlip}`);
+        const originalResponse = await axios.get(baseUrlWithFlip, {
+          responseType: 'arraybuffer',
+          timeout: 10000
+        });
+        
+        if (!originalResponse.data) {
+          throw new Error('Failed to capture original frame from Raspberry Pi - empty response');
+        }
+        
+        const originalBase64 = Buffer.from(originalResponse.data, 'binary').toString('base64');
+        
+        // Get zoomed image if zoom > 1.0
+        let zoomedBase64 = originalBase64;
+        if (zoomFactor > 1.0) {
+          const zoomQueryParams = [...baseQueryParams];
+          zoomQueryParams.push(`zoom=${zoomFactor.toFixed(3)}`);
+          const zoomedUrl = `${baseUrl}?${zoomQueryParams.join('&')}`;
+          
+          logger.info(`Capturing zoomed frame from Raspberry Pi: ${zoomedUrl}`);
+          const zoomedResponse = await axios.get(zoomedUrl, {
+            responseType: 'arraybuffer',
+            timeout: 10000
+          });
+          
+          if (zoomedResponse.data) {
+            zoomedBase64 = Buffer.from(zoomedResponse.data, 'binary').toString('base64');
+          } else {
+            logger.warn('Failed to capture zoomed frame from Raspberry Pi, using original');
+            zoomedBase64 = originalBase64;
+          }
+        }
+        
+        return {
+          original: originalBase64,
+          zoomed: zoomedBase64
+        };
+      }
+
+      // For other cameras (Tapo, RTSP), capture original and apply zoom
+      const originalBase64 = await this.captureFrame(device);
+      let zoomedBase64 = originalBase64;
+      
+      if (zoomFactor > 1.0) {
+        zoomedBase64 = await this.applyZoom(originalBase64, zoomFactor);
+      }
+      
+      return {
+        original: originalBase64,
+        zoomed: zoomedBase64
+      };
+    } catch (error) {
+      logger.error('Error capturing frame with zoom:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Update route image for a specific coordinate
    */
   async updateRouteImage(device, coordinate, index) {
     try {
       logger.info(`Starting route image update for device ${device._id}, coordinate ${index}`);
 
-      // 1. Move to position
-      logger.info(`Moving to position: rotation=${coordinate.rotation}, tilt=${coordinate.tilt}`);
-      const movementContext = await this.moveToPosition(device, coordinate.rotation, coordinate.tilt);
+      // 1. Apply position inversion if enabled (same as position preview)
+      let finalRotation = coordinate.rotation;
+      let finalTilt = coordinate.tilt;
+      
+      const taubenschiesserConfig = device.taubenschiesser || {};
+      if (taubenschiesserConfig.invertRotation) {
+        finalRotation = 180 - finalRotation;
+        logger.info(`Applied rotation inversion: ${coordinate.rotation} -> ${finalRotation}`);
+      }
+      if (taubenschiesserConfig.invertTilt) {
+        finalTilt = 180 - finalTilt;
+        logger.info(`Applied tilt inversion: ${coordinate.tilt} -> ${finalTilt}`);
+      }
 
-      // 2. Wait for movement to complete (MQTT feedback when available)
+      // 2. Move to position (with inversion applied)
+      logger.info(`Moving to position: rotation=${finalRotation} (original: ${coordinate.rotation}), tilt=${finalTilt} (original: ${coordinate.tilt})`);
+      const movementContext = await this.moveToPosition(device, finalRotation, finalTilt);
+
+      // 3. Wait for movement to complete (MQTT feedback when available)
       logger.info('Waiting for movement to complete...');
       await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs: 2000 });
 
-      // 3. Capture frame
+      // 4. Capture frame
+      // For dual mode, use Tapo camera (same as route preview)
+      // For single camera, use the configured camera
       logger.info('Capturing frame from camera...');
-      let imageBase64 = await this.captureFrame(device);
+      let captureDevice = device;
+      if (device.camera && device.camera.type === 'dual' && device.camera.tapo) {
+        // Create a device object with Tapo camera only for capture
+        captureDevice = {
+          ...device.toObject ? device.toObject() : device,
+          camera: {
+            ...device.camera,
+            type: 'tapo'
+          }
+        };
+        logger.info('Using Tapo camera for dual mode route image');
+      }
+      let imageBase64 = await this.captureFrame(captureDevice);
 
-      // 4. Apply zoom if needed
+      // 5. Apply zoom if needed
       const zoomFactor = coordinate.zoom || 1.0;
       if (zoomFactor > 1.0) {
         logger.info(`Applying zoom: ${zoomFactor}x`);
         imageBase64 = await this.applyZoom(imageBase64, zoomFactor);
       }
 
-      // 5. Return the result
+      // 6. Return the result
       logger.info('Image update completed successfully');
       
       return {

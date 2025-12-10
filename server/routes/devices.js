@@ -613,4 +613,482 @@ router.post('/:id/update-route-image/:index', authenticateToken, async (req, res
   }
 });
 
+// Position Preview - Move device to position
+router.post('/:id/position-preview/move', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { rotation, tilt, zoom } = req.body;
+
+    if (rotation === undefined || tilt === undefined) {
+      return res.status(400).json({ error: 'Rotation und Tilt sind erforderlich' });
+    }
+
+    // Apply position inversion if enabled
+    let finalRotation = rotation;
+    let finalTilt = tilt;
+    
+    const taubenschiesserConfig = device.taubenschiesser || {};
+    if (taubenschiesserConfig.invertRotation) {
+      finalRotation = 180 - finalRotation;
+      logger.info(`Applied rotation inversion: ${rotation} -> ${finalRotation}`);
+    }
+    if (taubenschiesserConfig.invertTilt) {
+      finalTilt = 180 - finalTilt;
+      logger.info(`Applied tilt inversion: ${tilt} -> ${finalTilt}`);
+    }
+
+    logger.info(`Moving device ${device.name} to position: rotation=${finalRotation} (original: ${rotation}), tilt=${finalTilt} (original: ${tilt})`);
+
+    // Move device to position (with inversion applied)
+    const movementContext = await hardwareHelper.moveToPosition(device, finalRotation, finalTilt);
+    
+    // Wait for movement to complete
+    await hardwareHelper.waitForMovementComplete(device, movementContext, {
+      timeoutMs: 30000,
+      stabilizationMs: 2000
+    });
+
+    res.json({
+      success: true,
+      message: 'Device moved successfully',
+      position: { rotation, tilt }
+    });
+  } catch (error) {
+    logger.error('Position preview move error:', error);
+    res.status(500).json({ 
+      error: 'Failed to move device',
+      message: error.message 
+    });
+  }
+});
+
+// Position Preview - Capture and analyze
+router.post('/:id/position-preview/capture', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { rotation, tilt, zoom = 1 } = req.body;
+
+    logger.info(`Capturing and analyzing for device ${device.name} at position: rotation=${rotation}, tilt=${tilt}, zoom=${zoom}`);
+
+    const camera = device.camera;
+    const isDualMode = camera?.type === 'dual';
+    const result = {};
+
+    // Handle dual camera mode - process cameras sequentially to return results immediately
+    if (isDualMode) {
+      // Tapo camera - process first
+      if (camera.tapo) {
+        try {
+          // Use zoom from route coordinate if available, otherwise use provided zoom
+          const routeZoom = device.actions?.route?.coordinates?.find(c => 
+            c.rotation === rotation && c.tilt === tilt
+          )?.zoom;
+          
+          // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+          const finalZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+          
+          // Use centralized function from hardwareHelper (same logic as hardware monitor)
+          const tapoDevice = { ...device.toObject(), camera: { ...camera, type: 'tapo' } };
+          const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(tapoDevice, finalZoom);
+          const tapoImageBase64 = `data:image/jpeg;base64,${original}`;
+          const tapoZoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+          // Send for analysis - use internal endpoint (it handles CV service routing)
+          const FormData = require('form-data');
+          const axios = require('axios');
+          const formData = new FormData();
+          formData.append('image', Buffer.from(zoomed, 'base64'), {
+            filename: 'tapo.jpg',
+            contentType: 'image/jpeg'
+          });
+          formData.append('deviceId', device._id.toString());
+
+          const cvResponse = await axios.post(
+            `${req.protocol}://${req.get('host')}/api/cv/detect`,
+            formData,
+            {
+              headers: {
+                ...formData.getHeaders(),
+                'Authorization': req.headers.authorization || ''
+              },
+              timeout: 30000
+            }
+          );
+
+          result.tapo = {
+            original: tapoImageBase64,
+            zoomed: tapoZoomedBase64,
+            analysis: {
+              detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+              detections: cvResponse.data.detections || [],
+              processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+              model: cvResponse.data.model || { name: 'YOLOv8' },
+              image_url: cvResponse.data.image_url,
+              image_info: cvResponse.data.image_info
+            }
+          };
+        } catch (error) {
+          logger.error('Error capturing/analyzing Tapo camera:', error);
+          const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+          result.tapo = { error: errorMessage };
+        }
+      }
+
+      // Raspberry Pi camera - process second
+      if (camera.raspberryPi) {
+        try {
+          // Get zoom from route coordinate if available, otherwise use provided zoom
+          const routeZoom = device.actions?.route?.coordinates?.find(c => 
+            c.rotation === rotation && c.tilt === tilt
+          )?.zoom;
+          
+          // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+          const baseZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+          
+          // Calculate FOV-based zoom adjustment for Raspberry Pi (like hardware monitor does)
+          const tapoFov = camera.tapo?.fov || 110;
+          const piFov = camera.raspberryPi?.fov || 75;
+          let totalZoomFactor = 1.0;
+          
+          if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {
+            // Raspberry Pi needs less zoom because it already has smaller FOV
+            const fovRatio = piFov / tapoFov;
+            totalZoomFactor = baseZoom * fovRatio;
+            logger.info(`FOV-based zoom: base=${baseZoom}, FOV ratio=${fovRatio.toFixed(3)} → total=${totalZoomFactor.toFixed(3)}`);
+          }
+          
+          // Use centralized function from hardwareHelper (same logic as hardware monitor)
+          const piDevice = { ...device.toObject(), camera: { ...camera, type: 'raspberry-pi' } };
+          const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(piDevice, totalZoomFactor);
+          const piImageBase64 = `data:image/jpeg;base64,${original}`;
+          const piZoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+            // Send for analysis - use internal endpoint (it handles CV service routing)
+            const FormData = require('form-data');
+            const formData = new FormData();
+            formData.append('image', Buffer.from(zoomed, 'base64'), {
+              filename: 'raspberry-pi.jpg',
+              contentType: 'image/jpeg'
+            });
+            formData.append('deviceId', device._id.toString());
+
+            const cvResponse = await axios.post(
+              `${req.protocol}://${req.get('host')}/api/cv/detect`,
+              formData,
+              {
+                headers: {
+                  ...formData.getHeaders(),
+                  'Authorization': req.headers.authorization || ''
+                },
+                timeout: 30000
+              }
+            );
+
+          result.raspberryPi = {
+            original: piImageBase64,
+            zoomed: piZoomedBase64,
+            analysis: {
+              detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+              detections: cvResponse.data.detections || [],
+              processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+              model: cvResponse.data.model || { name: 'YOLOv8' },
+              image_url: cvResponse.data.image_url,
+              image_info: cvResponse.data.image_info
+            }
+          };
+        } catch (error) {
+          logger.error('Error capturing/analyzing Raspberry Pi camera:', error);
+          const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+          result.raspberryPi = { error: errorMessage };
+        }
+      }
+    } else {
+      // Single camera mode
+      try {
+        // Use provided zoom if > 1, otherwise check route coordinate, otherwise default to 1
+        const routeZoom = device.actions?.route?.coordinates?.find(c => 
+          c.rotation === rotation && c.tilt === tilt
+        )?.zoom;
+        
+        // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+        const finalZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+        
+        // Use centralized function from hardwareHelper (same logic as hardware monitor)
+        const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(device, finalZoom);
+        const imageBase64 = `data:image/jpeg;base64,${original}`;
+        const zoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+        // Send for analysis - use internal endpoint (it handles CV service routing)
+        const FormData = require('form-data');
+        const axios = require('axios');
+        const formData = new FormData();
+        formData.append('image', Buffer.from(zoomed, 'base64'), {
+          filename: 'camera.jpg',
+          contentType: 'image/jpeg'
+        });
+        formData.append('deviceId', device._id.toString());
+
+        const cvResponse = await axios.post(
+          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'Authorization': req.headers.authorization || ''
+            },
+            timeout: 30000
+          }
+        );
+
+        result.original = imageBase64;
+        result.zoomed = zoomedBase64;
+        result.analysis = {
+          detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+          detections: cvResponse.data.detections || [],
+          processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+          model: cvResponse.data.model || { name: 'YOLOv8' },
+          image_url: cvResponse.data.image_url,
+          image_info: cvResponse.data.image_info
+        };
+      } catch (error) {
+        logger.error('Error capturing/analyzing camera:', error);
+        const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+        result.error = errorMessage;
+      }
+    }
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Position preview capture error:', error);
+    res.status(500).json({
+      error: 'Failed to capture and analyze',
+      message: error.message
+    });
+  }
+});
+
+// Position Preview - Capture single camera (for progressive updates)
+router.post('/:id/position-preview/capture-camera', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { rotation, tilt, zoom = 1, cameraType } = req.body;
+
+    if (!cameraType) {
+      return res.status(400).json({ error: 'cameraType is required (tapo, raspberry-pi, or single)' });
+    }
+
+    logger.info(`Capturing ${cameraType} camera for device ${device.name} at position: rotation=${rotation}, tilt=${tilt}, zoom=${zoom}`);
+
+    const camera = device.camera;
+    const result = {};
+
+    // Process single camera based on type
+    if (cameraType === 'tapo' && camera.tapo) {
+      try {
+        const tapoDevice = { ...device.toObject(), camera: { ...camera, type: 'tapo' } };
+        
+        // Use provided zoom if > 1, otherwise check route coordinate, otherwise default to 1
+        const routeZoom = device.actions?.route?.coordinates?.find(c => 
+          c.rotation === rotation && c.tilt === tilt
+        )?.zoom;
+        
+        // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+        const finalZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+        
+        // Use centralized function from hardwareHelper (same logic as hardware monitor)
+        const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(tapoDevice, finalZoom);
+        const tapoImageBase64 = `data:image/jpeg;base64,${original}`;
+        const tapoZoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+        const FormData = require('form-data');
+        const axios = require('axios');
+        const formData = new FormData();
+        formData.append('image', Buffer.from(zoomed, 'base64'), {
+          filename: 'tapo.jpg',
+          contentType: 'image/jpeg'
+        });
+        formData.append('deviceId', device._id.toString());
+
+        const cvResponse = await axios.post(
+          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'Authorization': req.headers.authorization || ''
+            },
+            timeout: 30000
+          }
+        );
+
+        result.tapo = {
+          original: tapoImageBase64,
+          zoomed: tapoZoomedBase64,
+          analysis: {
+            detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+            detections: cvResponse.data.detections || [],
+            processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+            model: cvResponse.data.model || { name: 'YOLOv8' },
+            image_url: cvResponse.data.image_url,
+            image_info: cvResponse.data.image_info
+          }
+        };
+      } catch (error) {
+        logger.error('Error capturing/analyzing Tapo camera:', error);
+        const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+        result.tapo = { error: errorMessage };
+      }
+    } else if (cameraType === 'raspberry-pi' && camera.raspberryPi) {
+      try {
+        // Use provided zoom if > 1, otherwise check route coordinate, otherwise default to 1
+        const routeZoom = device.actions?.route?.coordinates?.find(c => 
+          c.rotation === rotation && c.tilt === tilt
+        )?.zoom;
+        
+        // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+        const baseZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+        
+        const tapoFov = camera.tapo?.fov || 110;
+        const piFov = camera.raspberryPi?.fov || 75;
+        let totalZoomFactor = 1.0;
+        
+        if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {
+          const fovRatio = piFov / tapoFov;
+          totalZoomFactor = baseZoom * fovRatio;
+        }
+        
+        // Use centralized function from hardwareHelper (same logic as hardware monitor)
+        // Note: For Raspberry Pi, we need to calculate FOV-adjusted zoom
+        const piDevice = { ...device.toObject(), camera: { ...camera, type: 'raspberry-pi' } };
+        const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(piDevice, totalZoomFactor);
+        const piImageBase64 = `data:image/jpeg;base64,${original}`;
+        const piZoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+        const FormData = require('form-data');
+        const axios = require('axios');
+        const formData = new FormData();
+        formData.append('image', Buffer.from(zoomed, 'base64'), {
+          filename: 'raspberry-pi.jpg',
+          contentType: 'image/jpeg'
+        });
+        formData.append('deviceId', device._id.toString());
+
+        const cvResponse = await axios.post(
+          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'Authorization': req.headers.authorization || ''
+            },
+            timeout: 30000
+          }
+        );
+
+        result.raspberryPi = {
+          original: piImageBase64,
+          zoomed: piZoomedBase64,
+          analysis: {
+            detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+            detections: cvResponse.data.detections || [],
+            processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+            model: cvResponse.data.model || { name: 'YOLOv8' },
+            image_url: cvResponse.data.image_url,
+            image_info: cvResponse.data.image_info
+          }
+        };
+      } catch (error) {
+        logger.error('Error capturing/analyzing Raspberry Pi camera:', error);
+        const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+        result.raspberryPi = { error: errorMessage };
+      }
+    } else if (cameraType === 'single') {
+      try {
+        // Use provided zoom if > 1, otherwise check route coordinate, otherwise default to 1
+        const routeZoom = device.actions?.route?.coordinates?.find(c => 
+          c.rotation === rotation && c.tilt === tilt
+        )?.zoom;
+        
+        // Use provided zoom if it's set and > 1, otherwise use route zoom, otherwise default to 1
+        const finalZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
+        
+        // Use centralized function from hardwareHelper (same logic as hardware monitor)
+        const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(device, finalZoom);
+        const imageBase64 = `data:image/jpeg;base64,${original}`;
+        const zoomedBase64 = `data:image/jpeg;base64,${zoomed}`;
+
+        const FormData = require('form-data');
+        const axios = require('axios');
+        const formData = new FormData();
+        formData.append('image', Buffer.from(zoomed, 'base64'), {
+          filename: 'camera.jpg',
+          contentType: 'image/jpeg'
+        });
+        formData.append('deviceId', device._id.toString());
+
+        const cvResponse = await axios.post(
+          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'Authorization': req.headers.authorization || ''
+            },
+            timeout: 30000
+          }
+        );
+
+        result.original = imageBase64;
+        result.zoomed = zoomedBase64;
+        result.analysis = {
+          detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
+          detections: cvResponse.data.detections || [],
+          processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
+          model: cvResponse.data.model || { name: 'YOLOv8' },
+          image_url: cvResponse.data.image_url,
+          image_info: cvResponse.data.image_info
+        };
+      } catch (error) {
+        logger.error('Error capturing/analyzing camera:', error);
+        const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
+        result.error = errorMessage;
+      }
+    } else {
+      return res.status(400).json({ error: `Camera type ${cameraType} not available for this device` });
+    }
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Position preview capture camera error:', error);
+    res.status(500).json({
+      error: 'Failed to capture and analyze',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

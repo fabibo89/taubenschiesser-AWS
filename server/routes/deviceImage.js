@@ -34,7 +34,10 @@ router.get('/:deviceId', async (req, res) => {
     try {
       const frameBuffer = await rtspFrameManager.getFrame(deviceId, rtspUrl);
       res.setHeader('Content-Type', 'image/jpeg');
-      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Last-Modified', new Date().toUTCString());
       return res.end(frameBuffer);
     } catch (error) {
       logger.warn(`Persistent RTSP frame failed for device ${deviceId}: ${error.message}`);

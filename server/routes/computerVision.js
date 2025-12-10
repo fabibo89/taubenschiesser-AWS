@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const axios = require('axios');
+const FormData = require('form-data');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
@@ -109,22 +110,28 @@ router.post('/detect', upload.single('image'), async (req, res) => {
     }
 
     // Send image to CV service
+    // Use form-data package (not native FormData) for Node.js
     const formData = new FormData();
     formData.append('file', req.file.buffer, {
       filename: req.file.originalname,
       contentType: req.file.mimetype
     });
 
+    const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+    logger.info(`Sending image to CV service: ${cvServiceUrl}/detect`);
+    
     const cvResponse = await axios.post(
-      `${process.env.CV_SERVICE_URL || 'http://localhost:8000'}/detect`,
+      `${cvServiceUrl}/detect`,
       formData,
       {
         headers: {
-          'Content-Type': 'multipart/form-data'
+          ...formData.getHeaders()
         },
         timeout: 30000 // 30 second timeout
       }
     );
+    
+    logger.info(`CV service response status: ${cvResponse.status}`);
 
     const detections = cvResponse.data.detections || [];
     
@@ -156,21 +163,37 @@ router.post('/detect', upload.single('image'), async (req, res) => {
     res.json({
       success: true,
       detections,
+      detection_count: detections.length,
       detectionId: detection._id,
+      processing_time: cvResponse.data.processing_time,
       processingTime: cvResponse.data.processing_time,
+      model: cvResponse.data.model,
+      image_url: cvResponse.data.image_url,
       image_info: cvResponse.data.image_info
     });
 
   } catch (error) {
     logger.error('CV detection error:', error);
+    logger.error('CV detection error details:', {
+      message: error.message,
+      code: error.code,
+      response: error.response?.data,
+      status: error.response?.status,
+      stack: error.stack
+    });
     
     if (error.code === 'ECONNREFUSED') {
       return res.status(503).json({ 
-        error: 'Computer Vision service unavailable' 
+        error: 'Computer Vision service unavailable',
+        details: error.message
       });
     }
     
-    res.status(500).json({ error: 'Detection processing failed' });
+    const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Detection processing failed';
+    res.status(500).json({ 
+      error: 'Detection processing failed',
+      details: errorMessage
+    });
   }
 });
 

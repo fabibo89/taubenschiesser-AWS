@@ -6,7 +6,7 @@ import { calculateRoutePosition } from '../utils/routeUtils';
  * Gemeinsame Route-Visualisierungs-Komponente
  * Wird von Devices.js und DeviceDetail.js verwendet
  */
-const RouteVisualization = ({ coordinates, height = 300, showLabels = true }) => {
+const RouteVisualization = ({ coordinates, height = 300, showLabels = true, onCoordinateClick }) => {
   const baseImageSize = 120; // Basis-Größe des Bildes in Pixeln bei zoom=1
   const [imageScale, setImageScale] = useState(1); // Skalierungsfaktor für alle Bilder
 
@@ -155,27 +155,44 @@ const RouteVisualization = ({ coordinates, height = 300, showLabels = true }) =>
             
             {/* Route-Punkt */}
             <Box
+              onClick={() => onCoordinateClick && onCoordinateClick(coord, index)}
               sx={{
                 position: 'absolute',
                 left: `${xPercent}%`,
                 top: `${yPercent}%`,
                 transform: 'translate(-50%, -50%)',
-                width: 24,
-                height: 24,
+                width: 40,
+                height: 40,
                 borderRadius: '50%',
-                backgroundColor: index === 0 ? '#4caf50' : '#1976d2',
-                border: '2px solid white',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '12px',
-                fontWeight: 'bold',
-                color: 'white',
-                zIndex: 2,
-                boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                zIndex: 3,
+                cursor: onCoordinateClick ? 'pointer' : 'default',
+                '&:hover': onCoordinateClick ? {
+                  backgroundColor: 'rgba(25, 118, 210, 0.1)',
+                  transition: 'background-color 0.2s'
+                } : {}
               }}
             >
-              {index + 1}
+              <Box
+                sx={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  backgroundColor: index === 0 ? '#4caf50' : '#1976d2',
+                  border: '2px solid white',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                  color: 'white',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                }}
+              >
+                {index + 1}
+              </Box>
             </Box>
             
           </Box>

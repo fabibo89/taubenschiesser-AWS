@@ -16,14 +16,24 @@ class RtspFrameManager {
     info.lastRequest = Date.now();
     this._scheduleCleanup(deviceId, info);
 
-    if (info.lastFrame && Date.now() - info.lastUpdated < 1000) {
-      return info.lastFrame;
-    }
+    // Track the frame sequence number to ensure we get a NEW frame
+    // We want to skip any frames that were already available when we started
+    const requestTime = Date.now();
+    const lastFrameTimeBeforeRequest = info.lastUpdated;
 
     return new Promise((resolve, reject) => {
       let done = false;
+      let frameReceived = false;
 
       const onFrame = (frame) => {
+        // Only accept frames that came AFTER our request started
+        // This ensures we get a fresh frame, not one that was already cached
+        if (info.lastUpdated <= lastFrameTimeBeforeRequest) {
+          // This frame was already there before we requested, wait for next one
+          return;
+        }
+        
+        frameReceived = true;
         done = true;
         cleanup();
         resolve(frame);
@@ -33,7 +43,12 @@ class RtspFrameManager {
         if (!done) {
           done = true;
           cleanup();
-          reject(err);
+          // If we have a frame that's newer than when we started, use it as fallback
+          if (info.lastFrame && info.lastUpdated > lastFrameTimeBeforeRequest) {
+            resolve(info.lastFrame);
+          } else {
+            reject(err);
+          }
         }
       };
 
@@ -43,14 +58,23 @@ class RtspFrameManager {
         clearTimeout(timer);
       };
 
-      info.emitter.once('frame', onFrame);
+      // Use 'on' instead of 'once' so we can skip old frames
+      info.emitter.on('frame', onFrame);
       info.emitter.once('error', onError);
 
       const timer = setTimeout(() => {
         if (!done) {
           done = true;
           cleanup();
-          reject(new Error('RTSP frame timeout'));
+          // If timeout but we have a newer frame, use it
+          if (info.lastFrame && info.lastUpdated > lastFrameTimeBeforeRequest) {
+            resolve(info.lastFrame);
+          } else if (frameReceived) {
+            // We received a frame but it was old, reject
+            reject(new Error('RTSP frame timeout - only old frames available'));
+          } else {
+            reject(new Error('RTSP frame timeout'));
+          }
         }
       }, timeoutMs);
     });

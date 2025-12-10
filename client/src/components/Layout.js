@@ -24,7 +24,8 @@ import {
   Person as PersonIcon,
   Logout as LogoutIcon,
   Settings as SettingsIcon,
-  Monitor as MonitorIcon
+  Monitor as MonitorIcon,
+  Preview as PreviewIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -60,6 +61,7 @@ const Layout = ({ children }) => {
     { text: 'Geräte', icon: <DevicesIcon />, path: '/devices' },
     { text: 'Erkennungen', icon: <VisibilityIcon />, path: '/detections' },
     { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
+    { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 

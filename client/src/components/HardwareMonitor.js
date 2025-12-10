@@ -465,100 +465,127 @@ const HardwareMonitor = () => {
           {/* Images - Support for dual cameras */}
           {(tapoImage || raspberryPiImage || originalImage) ? (
             <>
-              {/* Tapo Camera */}
-              {tapoImage && (
-                <>
-                  <Grid item xs={12} md={6}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom>
-                          Tapo Kamera - Original
-                        </Typography>
-                        <Box
-                          component="img"
-                          src={tapoImage}
-                          alt="Tapo Original"
-                          sx={{
-                            width: '100%',
-                            height: 'auto',
-                            borderRadius: 1,
-                            border: '1px solid #ddd'
-                          }}
-                        />
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  {tapoZoomedImage && (
+              {/* Dual Camera Mode - Side by Side: Tapo left, Raspberry Pi right */}
+              {(tapoImage || raspberryPiImage) && (
+                <Grid item xs={12}>
+                  <Grid container spacing={3}>
+                    {/* Left Column - Tapo Camera */}
                     <Grid item xs={12} md={6}>
-                      <Card>
-                        <CardContent>
-                          <Typography variant="h6" gutterBottom>
-                            Tapo Kamera - Gezoomt
-                          </Typography>
-                          <Box
-                            component="img"
-                            src={tapoZoomedImage}
-                            alt="Tapo Zoomed"
-                            sx={{
-                              width: '100%',
-                              height: 'auto',
-                              borderRadius: 1,
-                              border: '1px solid #ddd'
-                            }}
-                          />
-                        </CardContent>
-                      </Card>
+                      {tapoImage ? (
+                        <>
+                          <Card sx={{ mb: 2 }}>
+                            <CardContent>
+                              <Typography variant="h6" gutterBottom>
+                                Tapo Kamera - Original
+                              </Typography>
+                              <Box
+                                component="img"
+                                src={tapoImage}
+                                alt="Tapo Original"
+                                sx={{
+                                  width: '100%',
+                                  height: 400,
+                                  objectFit: 'contain',
+                                  borderRadius: 1,
+                                  border: '1px solid #ddd',
+                                  backgroundColor: '#f5f5f5'
+                                }}
+                              />
+                            </CardContent>
+                          </Card>
+                          {tapoZoomedImage && (
+                            <Card sx={{ mb: 2 }}>
+                              <CardContent>
+                                <Typography variant="h6" gutterBottom>
+                                  Tapo Kamera - Gezoomt
+                                </Typography>
+                                <Box
+                                  component="img"
+                                  src={tapoZoomedImage}
+                                  alt="Tapo Zoomed"
+                                  sx={{
+                                    width: '100%',
+                                    height: 400,
+                                    objectFit: 'contain',
+                                    borderRadius: 1,
+                                    border: '1px solid #ddd',
+                                    backgroundColor: '#f5f5f5'
+                                  }}
+                                />
+                              </CardContent>
+                            </Card>
+                          )}
+                        </>
+                      ) : (
+                        <Card>
+                          <CardContent>
+                            <Typography variant="body2" color="textSecondary" align="center">
+                              Tapo Kamera - Keine Daten
+                            </Typography>
+                          </CardContent>
+                        </Card>
+                      )}
                     </Grid>
-                  )}
-                </>
-              )}
-              
-              {/* Raspberry Pi Camera */}
-              {raspberryPiImage && (
-                <>
-                  <Grid item xs={12} md={6}>
-                    <Card>
-                      <CardContent>
-                        <Typography variant="h6" gutterBottom>
-                          Raspberry Pi Kamera - Original
-                        </Typography>
-                        <Box
-                          component="img"
-                          src={raspberryPiImage}
-                          alt="Raspberry Pi Original"
-                          sx={{
-                            width: '100%',
-                            height: 'auto',
-                            borderRadius: 1,
-                            border: '1px solid #ddd'
-                          }}
-                        />
-                      </CardContent>
-                    </Card>
-                  </Grid>
-                  {raspberryPiZoomedImage && (
+                    
+                    {/* Right Column - Raspberry Pi Camera */}
                     <Grid item xs={12} md={6}>
-                      <Card>
-                        <CardContent>
-                          <Typography variant="h6" gutterBottom>
-                            Raspberry Pi Kamera - Gezoomt
-                          </Typography>
-                          <Box
-                            component="img"
-                            src={raspberryPiZoomedImage}
-                            alt="Raspberry Pi Zoomed"
-                            sx={{
-                              width: '100%',
-                              height: 'auto',
-                              borderRadius: 1,
-                              border: '1px solid #ddd'
-                            }}
-                          />
-                        </CardContent>
-                      </Card>
+                      {raspberryPiImage ? (
+                        <>
+                          <Card sx={{ mb: 2 }}>
+                            <CardContent>
+                              <Typography variant="h6" gutterBottom>
+                                Raspberry Pi Kamera - Original
+                              </Typography>
+                              <Box
+                                component="img"
+                                src={raspberryPiImage}
+                                alt="Raspberry Pi Original"
+                                sx={{
+                                  width: '100%',
+                                  height: 400,
+                                  objectFit: 'contain',
+                                  borderRadius: 1,
+                                  border: '1px solid #ddd',
+                                  backgroundColor: '#f5f5f5'
+                                }}
+                              />
+                            </CardContent>
+                          </Card>
+                          {raspberryPiZoomedImage && (
+                            <Card sx={{ mb: 2 }}>
+                              <CardContent>
+                                <Typography variant="h6" gutterBottom>
+                                  Raspberry Pi Kamera - Gezoomt
+                                </Typography>
+                                <Box
+                                  component="img"
+                                  src={raspberryPiZoomedImage}
+                                  alt="Raspberry Pi Zoomed"
+                                  sx={{
+                                    width: '100%',
+                                    height: 400,
+                                    objectFit: 'contain',
+                                    borderRadius: 1,
+                                    border: '1px solid #ddd',
+                                    backgroundColor: '#f5f5f5'
+                                  }}
+                                />
+                              </CardContent>
+                            </Card>
+                          )}
+                        </>
+                      ) : (
+                        <Card>
+                          <CardContent>
+                            <Typography variant="body2" color="textSecondary" align="center">
+                              Raspberry Pi Kamera - Keine Daten
+                            </Typography>
+                          </CardContent>
+                        </Card>
+                      )}
                     </Grid>
-                  )}
-                </>
+                  </Grid>
+                </Grid>
               )}
               
               {/* Fallback for single camera mode */}

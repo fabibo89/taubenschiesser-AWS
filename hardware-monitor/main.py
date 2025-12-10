@@ -922,7 +922,9 @@ class HardwareMonitor:
                 'message': 'Capturing image from Tapo camera',
                 'camera': 'tapo'
             })
-            original_frame = await self.capture_frame(rtsp_url)
+            # Use device_id if available to use API endpoint (same as Dashboard)
+            device_id = device.get('_id') or device.get('id')
+            original_frame = await self.capture_frame(rtsp_url, device_id=device_id)
             
             if original_frame is None:
                 logger.warning(f"❌ Could not capture frame from Tapo camera for device {device_ip}")
@@ -1209,7 +1211,9 @@ class HardwareMonitor:
                 'message': 'Capturing image from Tapo camera',
                 'camera': 'tapo'
             })
-            original_frame = await self.capture_frame(rtsp_url)
+            # Use device_id if available to use API endpoint (same as Dashboard)
+            device_id = device.get('_id') or device.get('id')
+            original_frame = await self.capture_frame(rtsp_url, device_id=device_id)
             
             if original_frame is not None:
                 await self.process_single_camera(device, original_frame, 'tapo', camera_label)
@@ -2107,8 +2111,8 @@ class HardwareMonitor:
             rtsp_url = device.get('camera', {}).get('rtspUrl')
             device_id = device.get('_id') or device.get('deviceId')
             
-            # Capture frame from RTSP stream
-            frame = await self.capture_frame(rtsp_url)
+            # Capture frame from RTSP stream (use API endpoint if device_id available)
+            frame = await self.capture_frame(rtsp_url, device_id=device_id)
             
             if frame is not None:
                 # Send frame for CV analysis
@@ -2150,8 +2154,42 @@ class HardwareMonitor:
             logger.error(f"❌ Error capturing frame from HTTP: {e}")
             return None
     
-    async def capture_frame(self, rtsp_url: str) -> Optional[np.ndarray]:
-        """Capture a frame from RTSP stream with timeout"""
+    async def capture_frame(self, rtsp_url: str, device_id: str = None) -> Optional[np.ndarray]:
+        """Capture a frame from RTSP stream with timeout
+        
+        If device_id is provided, uses the API endpoint (same as Dashboard) for consistency.
+        Otherwise, falls back to direct cv2.VideoCapture.
+        """
+        # If device_id is provided, use API endpoint (same logic as Dashboard)
+        if device_id:
+            try:
+                logger.debug(f"Using API endpoint to capture frame for device {device_id}")
+                timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+                async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                    image_url = f"{self.api_url}/api/device-image/{device_id}"
+                    async with session.get(image_url) as response:
+                        if response.status == 200:
+                            image_data = await response.read()
+                            # Convert bytes to numpy array
+                            nparr = np.frombuffer(image_data, np.uint8)
+                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                            
+                            if frame is not None:
+                                height, width = frame.shape[:2]
+                                logger.debug(f"📸 Frame captured from API: {width}x{height} pixels")
+                                return frame
+                            else:
+                                logger.warning(f"❌ Could not decode image from API response")
+                                # Fall through to direct capture
+                        else:
+                            logger.warning(f"❌ API request failed with status {response.status}, falling back to direct capture")
+                            # Fall through to direct capture
+            except Exception as e:
+                logger.warning(f"❌ Error using API endpoint: {e}, falling back to direct capture")
+                # Fall through to direct capture
+        
+        # Fallback to direct cv2.VideoCapture
         try:
             # Run synchronous capture in thread pool to avoid blocking
             loop = asyncio.get_event_loop()

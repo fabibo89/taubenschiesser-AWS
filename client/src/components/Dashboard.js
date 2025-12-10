@@ -44,7 +44,7 @@ import { useSocket } from '../contexts/SocketContext';
 import axios from 'axios';
 
 // Helper component for stream display
-const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false }) => {
+const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false, imageRef = null }) => {
   if (!streamUrl) {
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
@@ -106,7 +106,8 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
         {/* For MJPEG streams, use img tag directly */}
         {isMjpeg ? (
           <img
-            src={streamUrl}
+            ref={imageRef}
+            src={streamUrl || 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'}
             alt={`${cameraName} Stream`}
             style={{
               width: '100%',
@@ -154,6 +155,19 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
               key={streamUrl}
               src={streamUrl}
               alt={`${cameraName} Stream`}
+              crossOrigin="anonymous"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                borderRadius: '4px',
+                opacity: isLoading ? 0 : 1,
+                transition: 'opacity 0.3s ease',
+                zIndex: 2
+              }}
               style={{
                 position: 'absolute',
                 top: 0,
@@ -534,6 +548,7 @@ const Dashboard = () => {
     const [raspberryPiIsLoading, setRaspberryPiIsLoading] = useState(false);
     const [raspberryPiCurrentImage, setRaspberryPiCurrentImage] = useState(null);
     const raspberryPiLoadTimeoutRef = React.useRef(null);
+    const raspberryPiImageRef = React.useRef(null); // Ref to track the img element
     const isStreaming = streamingDevices[device._id];
     const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
     const deviceStatus = deviceStatuses[device._id];
@@ -617,13 +632,25 @@ const Dashboard = () => {
       setRaspberryPiIsLoading(false);
       
       return () => {
+        // Stop the stream by removing the src attribute from the img element
+        if (raspberryPiImageRef.current) {
+          raspberryPiImageRef.current.src = '';
+          raspberryPiImageRef.current.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent pixel
+        }
         setRaspberryPiStreamUrl(null);
+        setRaspberryPiCurrentImage(null);
         if (raspberryPiLoadTimeoutRef.current) {
           clearTimeout(raspberryPiLoadTimeoutRef.current);
         }
       };
     } else {
+      // Stop the stream when not streaming
+      if (raspberryPiImageRef.current) {
+        raspberryPiImageRef.current.src = '';
+        raspberryPiImageRef.current.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent pixel
+      }
       setRaspberryPiStreamUrl(null);
+      setRaspberryPiCurrentImage(null);
     }
   }, [isStreaming, device, hasRaspberryPi]);
 
@@ -757,6 +784,7 @@ const Dashboard = () => {
                         toggleStream={() => toggleStream(device._id)}
                         cameraName="Raspberry Pi"
                         isMjpeg={true}
+                        imageRef={raspberryPiImageRef}
                       />
                     ) : (
                       <StreamPlaceholder
