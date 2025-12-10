@@ -46,13 +46,21 @@ const deviceSchema = new mongoose.Schema({
       type: String,
       required: true,
       trim: true
+    },
+    invertRotation: {
+      type: Boolean,
+      default: false
+    },
+    invertTilt: {
+      type: Boolean,
+      default: false
     }
   },
   // Camera Configuration
   camera: {
     type: {
       type: String,
-      enum: ['tapo', 'direct', 'local', 'raspberry-pi'],
+      enum: ['tapo', 'direct', 'local', 'raspberry-pi', 'dual'],
       default: 'tapo'
     },
     // For Tapo cameras
@@ -64,6 +72,10 @@ const deviceSchema = new mongoose.Schema({
         type: String,
         enum: ['stream1', 'stream2'],
         default: 'stream1'
+      },
+      fov: {
+        type: Number,
+        default: 110  // Default diagonal FOV in degrees for Tapo cameras
       }
     },
     // For Raspberry Pi cameras
@@ -76,6 +88,18 @@ const deviceSchema = new mongoose.Schema({
       endpoint: {
         type: String,
         default: '/image.jpg'
+      },
+      streamEndpoint: {
+        type: String,
+        default: '/stream.mjpeg'
+      },
+      flip: {
+        type: Boolean,
+        default: false
+      },
+      fov: {
+        type: Number,
+        default: 75  // Default diagonal FOV in degrees for Raspberry Pi Camera Module 3
       }
     },
     // For direct RTSP or other cameras
@@ -160,18 +184,21 @@ deviceSchema.methods.getRtspUrl = function() {
   if (this.camera.type === 'raspberry-pi') {
     // Raspberry Pi doesn't use RTSP, return null
     return null;
-  } else if (this.camera.type === 'tapo') {
-    const { ip, username, password, stream } = this.camera.tapo;
-    if (!ip || !username || !password || !stream) {
-      throw new Error('Tapo camera configuration incomplete');
+  } else if (this.camera.type === 'tapo' || this.camera.type === 'dual') {
+    // Check for Tapo camera - works for both 'tapo' and 'dual' mode
+    if (this.camera.tapo && this.camera.tapo.ip && this.camera.tapo.username && this.camera.tapo.password) {
+      const { ip, username, password, stream } = this.camera.tapo;
+      return `rtsp://${username}:${password}@${ip}:554/${stream || 'stream1'}`;
     }
-    return `rtsp://${username}:${password}@${ip}:554/${stream}`;
-  } else if (this.camera.type === 'direct') {
-    return this.camera.directUrl || this.camera.rtspUrl;
-  } else {
-    // Fallback to directUrl or rtspUrl
+    // If dual mode but no Tapo config, fall through to other options
+  }
+  
+  if (this.camera.type === 'direct') {
     return this.camera.directUrl || this.camera.rtspUrl;
   }
+  
+  // Fallback to directUrl or rtspUrl
+  return this.camera.directUrl || this.camera.rtspUrl;
 };
 
 // Method to get HTTP image URL for Raspberry Pi cameras

@@ -87,15 +87,38 @@ router.put('/:id', authenticateToken, async (req, res) => {
       query.owner = req.user.userId;
     }
     
-    const device = await Device.findOneAndUpdate(
-      query,
-      req.body,
-      { new: true, runValidators: true }
-    );
+    const device = await Device.findOne(query);
     
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
     }
+    
+    // Update device fields, including nested objects
+    Object.keys(req.body).forEach(key => {
+      if (key === 'taubenschiesser' && req.body[key]) {
+        // Merge taubenschiesser object to preserve existing fields
+        device.taubenschiesser = {
+          ...device.taubenschiesser,
+          ...req.body[key]
+        };
+      } else if (key === 'camera' && req.body[key]) {
+        // Merge camera object to preserve existing fields
+        device.camera = {
+          ...device.camera,
+          ...req.body[key]
+        };
+      } else if (key === 'location' && req.body[key]) {
+        // Merge location object to preserve existing fields
+        device.location = {
+          ...device.location,
+          ...req.body[key]
+        };
+      } else {
+        device[key] = req.body[key];
+      }
+    });
+    
+    await device.save();
     
     res.json(device);
   } catch (error) {

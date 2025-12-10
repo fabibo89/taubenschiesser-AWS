@@ -45,6 +45,13 @@ const HardwareMonitor = () => {
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState('idle');
   const [statusMessage, setStatusMessage] = useState('');
+  // Dual camera support
+  const [tapoImage, setTapoImage] = useState(null);
+  const [tapoZoomedImage, setTapoZoomedImage] = useState(null);
+  const [tapoCvResults, setTapoCvResults] = useState(null);
+  const [raspberryPiImage, setRaspberryPiImage] = useState(null);
+  const [raspberryPiZoomedImage, setRaspberryPiZoomedImage] = useState(null);
+  const [raspberryPiCvResults, setRaspberryPiCvResults] = useState(null);
   const { socket, connected } = useSocket();
 
   const steps = [
@@ -115,6 +122,13 @@ const HardwareMonitor = () => {
         setOriginalImage(null);
         setZoomedImage(null);
         setCvResults(null);
+        // Clear dual camera images
+        setTapoImage(null);
+        setTapoZoomedImage(null);
+        setTapoCvResults(null);
+        setRaspberryPiImage(null);
+        setRaspberryPiZoomedImage(null);
+        setRaspberryPiCvResults(null);
         setDeviceStatus('analyzing');
         setStatusMessage('Analyse gestartet');
         break;
@@ -122,32 +136,63 @@ const HardwareMonitor = () => {
       case 'capturing_image':
         setCurrentStep(2);
         setDeviceStatus('capturing');
-        setStatusMessage('Bild wird aufgenommen...');
+        const cameraName = data.camera === 'tapo' ? 'Tapo' : data.camera === 'raspberry-pi' ? 'Raspberry Pi' : '';
+        setStatusMessage(cameraName ? `Bild wird aufgenommen (${cameraName})...` : 'Bild wird aufgenommen...');
         break;
       
       case 'image_captured':
         setCurrentStep(2);
-        setOriginalImage(data.image);
+        const camera = data.camera || 'unknown';
+        if (camera === 'tapo') {
+          setTapoImage(data.image);
+          setStatusMessage(`Tapo Bild aufgenommen (${data.width}x${data.height}px)`);
+        } else if (camera === 'raspberry-pi') {
+          setRaspberryPiImage(data.image);
+          setStatusMessage(`Raspberry Pi Bild aufgenommen (${data.width}x${data.height}px)`);
+        } else {
+          // Fallback for single camera mode
+          setOriginalImage(data.image);
+          setStatusMessage(`Bild aufgenommen (${data.width}x${data.height}px)`);
+        }
         setDeviceStatus('captured');
-        setStatusMessage(`Bild aufgenommen (${data.width}x${data.height}px)`);
         break;
       
       case 'image_zoomed':
         setCurrentStep(3);
-        setZoomedImage(data.image);
+        const zoomCamera = data.camera || 'unknown';
+        if (zoomCamera === 'tapo') {
+          setTapoZoomedImage(data.image);
+          setStatusMessage(`Tapo Zoom ${data.zoom_factor}x angewendet`);
+        } else if (zoomCamera === 'raspberry-pi') {
+          setRaspberryPiZoomedImage(data.image);
+          setStatusMessage(`Raspberry Pi Zoom ${data.zoom_factor}x angewendet`);
+        } else {
+          // Fallback for single camera mode
+          setZoomedImage(data.image);
+          setStatusMessage(`Zoom ${data.zoom_factor}x angewendet`);
+        }
         setDeviceStatus('zoomed');
-        setStatusMessage(`Zoom ${data.zoom_factor}x angewendet`);
         break;
       
       case 'analyzing':
         setCurrentStep(4);
         setDeviceStatus('analyzing_cv');
-        setStatusMessage('CV-Analyse läuft...');
+        const analyzingCamera = data.camera || 'unknown';
+        const analyzingCameraName = analyzingCamera === 'tapo' ? 'Tapo' : analyzingCamera === 'raspberry-pi' ? 'Raspberry Pi' : '';
+        setStatusMessage(analyzingCameraName ? `CV-Analyse läuft (${analyzingCameraName})...` : 'CV-Analyse läuft...');
         break;
       
       case 'cv_analysis_complete':
         setCurrentStep(4);
-        setCvResults(data);
+        const cvCamera = data.camera || 'unknown';
+        if (cvCamera === 'tapo') {
+          setTapoCvResults(data);
+        } else if (cvCamera === 'raspberry-pi') {
+          setRaspberryPiCvResults(data);
+        } else {
+          // Fallback for single camera mode
+          setCvResults(data);
+        }
         setDeviceStatus('analysis_complete');
         
         // Show what objects were detected
@@ -155,16 +200,18 @@ const HardwareMonitor = () => {
           const objectSummary = Object.entries(data.objects_by_class || {})
             .map(([className, count]) => `${count}x ${className}`)
             .join(', ');
-          setStatusMessage(`${data.total_objects} Objekt(e) erkannt: ${objectSummary}`);
+          const cameraName = cvCamera === 'tapo' ? 'Tapo' : cvCamera === 'raspberry-pi' ? 'Raspberry Pi' : '';
+          setStatusMessage(`${cameraName ? `[${cameraName}] ` : ''}${data.total_objects} Objekt(e) erkannt: ${objectSummary}`);
           
           if (data.birds_found) {
-            toast.success(`🦅 ${data.bird_count} Vögel erkannt!`);
+            toast.success(`🦅 ${data.bird_count} Vögel erkannt (${cameraName || 'Kamera'})!`);
           } else {
-            toast.info(`Objekte erkannt: ${objectSummary}`);
+            toast.info(`${cameraName ? `[${cameraName}] ` : ''}Objekte erkannt: ${objectSummary}`);
           }
         } else {
-          setStatusMessage('Keine Objekte erkannt');
-          toast.info('Keine Objekte erkannt');
+          const cameraName = cvCamera === 'tapo' ? 'Tapo' : cvCamera === 'raspberry-pi' ? 'Raspberry Pi' : '';
+          setStatusMessage(`${cameraName ? `[${cameraName}] ` : ''}Keine Objekte erkannt`);
+          toast.info(`${cameraName ? `[${cameraName}] ` : ''}Keine Objekte erkannt`);
         }
         break;
       
@@ -415,26 +462,174 @@ const HardwareMonitor = () => {
             </Card>
           </Grid>
 
-          {/* Images */}
-          <Grid item xs={12} md={6}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Original Bild
-                </Typography>
-                {originalImage ? (
-                  <Box
-                    component="img"
-                    src={originalImage}
-                    alt="Original"
-                    sx={{
-                      width: '100%',
-                      height: 'auto',
-                      borderRadius: 1,
-                      border: '1px solid #ddd'
-                    }}
-                  />
-                ) : (
+          {/* Images - Support for dual cameras */}
+          {(tapoImage || raspberryPiImage || originalImage) ? (
+            <>
+              {/* Tapo Camera */}
+              {tapoImage && (
+                <>
+                  <Grid item xs={12} md={6}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          Tapo Kamera - Original
+                        </Typography>
+                        <Box
+                          component="img"
+                          src={tapoImage}
+                          alt="Tapo Original"
+                          sx={{
+                            width: '100%',
+                            height: 'auto',
+                            borderRadius: 1,
+                            border: '1px solid #ddd'
+                          }}
+                        />
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  {tapoZoomedImage && (
+                    <Grid item xs={12} md={6}>
+                      <Card>
+                        <CardContent>
+                          <Typography variant="h6" gutterBottom>
+                            Tapo Kamera - Gezoomt
+                          </Typography>
+                          <Box
+                            component="img"
+                            src={tapoZoomedImage}
+                            alt="Tapo Zoomed"
+                            sx={{
+                              width: '100%',
+                              height: 'auto',
+                              borderRadius: 1,
+                              border: '1px solid #ddd'
+                            }}
+                          />
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )}
+                </>
+              )}
+              
+              {/* Raspberry Pi Camera */}
+              {raspberryPiImage && (
+                <>
+                  <Grid item xs={12} md={6}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          Raspberry Pi Kamera - Original
+                        </Typography>
+                        <Box
+                          component="img"
+                          src={raspberryPiImage}
+                          alt="Raspberry Pi Original"
+                          sx={{
+                            width: '100%',
+                            height: 'auto',
+                            borderRadius: 1,
+                            border: '1px solid #ddd'
+                          }}
+                        />
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  {raspberryPiZoomedImage && (
+                    <Grid item xs={12} md={6}>
+                      <Card>
+                        <CardContent>
+                          <Typography variant="h6" gutterBottom>
+                            Raspberry Pi Kamera - Gezoomt
+                          </Typography>
+                          <Box
+                            component="img"
+                            src={raspberryPiZoomedImage}
+                            alt="Raspberry Pi Zoomed"
+                            sx={{
+                              width: '100%',
+                              height: 'auto',
+                              borderRadius: 1,
+                              border: '1px solid #ddd'
+                            }}
+                          />
+                        </CardContent>
+                      </Card>
+                    </Grid>
+                  )}
+                </>
+              )}
+              
+              {/* Fallback for single camera mode */}
+              {!tapoImage && !raspberryPiImage && originalImage && (
+                <>
+                  <Grid item xs={12} md={6}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          Original Bild
+                        </Typography>
+                        <Box
+                          component="img"
+                          src={originalImage}
+                          alt="Original"
+                          sx={{
+                            width: '100%',
+                            height: 'auto',
+                            borderRadius: 1,
+                            border: '1px solid #ddd'
+                          }}
+                        />
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Card>
+                      <CardContent>
+                        <Typography variant="h6" gutterBottom>
+                          Gezoomtes Bild
+                        </Typography>
+                        {zoomedImage ? (
+                          <Box
+                            component="img"
+                            src={zoomedImage}
+                            alt="Zoomed"
+                            sx={{
+                              width: '100%',
+                              height: 'auto',
+                              borderRadius: 1,
+                              border: '1px solid #ddd'
+                            }}
+                          />
+                        ) : (
+                          <Box
+                            sx={{
+                              width: '100%',
+                              height: 300,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              border: '2px dashed #ccc',
+                              borderRadius: 1,
+                              backgroundColor: '#f5f5f5'
+                            }}
+                          >
+                            <Typography color="textSecondary">
+                              Kein Zoom angewendet
+                            </Typography>
+                          </Box>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </Grid>
+                </>
+              )}
+            </>
+          ) : (
+            <Grid item xs={12}>
+              <Card>
+                <CardContent>
                   <Box
                     sx={{
                       width: '100%',
@@ -451,55 +646,100 @@ const HardwareMonitor = () => {
                       Warte auf Bild...
                     </Typography>
                   </Box>
-                )}
-              </CardContent>
-            </Card>
-          </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+          )}
 
-          <Grid item xs={12} md={6}>
-            <Card>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Gezoomtes Bild
-                </Typography>
-                {zoomedImage ? (
-                  <Box
-                    component="img"
-                    src={zoomedImage}
-                    alt="Zoomed"
-                    sx={{
-                      width: '100%',
-                      height: 'auto',
-                      borderRadius: 1,
-                      border: '1px solid #ddd'
-                    }}
-                  />
-                ) : (
-                  <Box
-                    sx={{
-                      width: '100%',
-                      height: 300,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      border: '2px dashed #ccc',
-                      borderRadius: 1,
-                      backgroundColor: '#f5f5f5'
-                    }}
-                  >
-                    <Typography color="textSecondary">
-                      Kein Zoom angewendet
-                    </Typography>
-                  </Box>
-                )}
-              </CardContent>
-            </Card>
-          </Grid>
-
-          {/* CV Results */}
-          {cvResults && (
-            <Grid item xs={12}>
-              <Card>
+          {/* CV Results - Support for dual cameras */}
+          {(tapoCvResults || raspberryPiCvResults || cvResults) && (
+            <>
+              {tapoCvResults && (
+                <Grid item xs={12} md={6}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Tapo Kamera - CV Ergebnisse
+                      </Typography>
+                      <Box>
+                        <Typography variant="body2" color="textSecondary" gutterBottom>
+                          <strong>Objekte erkannt:</strong> {tapoCvResults.total_objects || 0}
+                        </Typography>
+                        {tapoCvResults.birds_found && (
+                          <Typography variant="body2" color="error" gutterBottom>
+                            <strong>🦅 Vögel:</strong> {tapoCvResults.bird_count || 0} (Konfidenz: {(tapoCvResults.confidence_level * 100).toFixed(1)}%)
+                          </Typography>
+                        )}
+                        {tapoCvResults.objects_by_class && Object.keys(tapoCvResults.objects_by_class).length > 0 && (
+                          <Box mt={1}>
+                            <Typography variant="body2" color="textSecondary">
+                              <strong>Details:</strong>
+                            </Typography>
+                            {Object.entries(tapoCvResults.objects_by_class).map(([className, count]) => (
+                              <Chip
+                                key={className}
+                                label={`${count}x ${className}`}
+                                size="small"
+                                sx={{ mr: 0.5, mt: 0.5 }}
+                                color={className === 'bird' ? 'error' : 'default'}
+                              />
+                            ))}
+                          </Box>
+                        )}
+                        <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+                          <strong>Verarbeitungszeit:</strong> {tapoCvResults.processing_time?.toFixed(2) || 0}ms
+                        </Typography>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              )}
+              
+              {raspberryPiCvResults && (
+                <Grid item xs={12} md={6}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Raspberry Pi Kamera - CV Ergebnisse
+                      </Typography>
+                      <Box>
+                        <Typography variant="body2" color="textSecondary" gutterBottom>
+                          <strong>Objekte erkannt:</strong> {raspberryPiCvResults.total_objects || 0}
+                        </Typography>
+                        {raspberryPiCvResults.birds_found && (
+                          <Typography variant="body2" color="error" gutterBottom>
+                            <strong>🦅 Vögel:</strong> {raspberryPiCvResults.bird_count || 0} (Konfidenz: {(raspberryPiCvResults.confidence_level * 100).toFixed(1)}%)
+                          </Typography>
+                        )}
+                        {raspberryPiCvResults.objects_by_class && Object.keys(raspberryPiCvResults.objects_by_class).length > 0 && (
+                          <Box mt={1}>
+                            <Typography variant="body2" color="textSecondary">
+                              <strong>Details:</strong>
+                            </Typography>
+                            {Object.entries(raspberryPiCvResults.objects_by_class).map(([className, count]) => (
+                              <Chip
+                                key={className}
+                                label={`${count}x ${className}`}
+                                size="small"
+                                sx={{ mr: 0.5, mt: 0.5 }}
+                                color={className === 'bird' ? 'error' : 'default'}
+                              />
+                            ))}
+                          </Box>
+                        )}
+                        <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+                          <strong>Verarbeitungszeit:</strong> {raspberryPiCvResults.processing_time?.toFixed(2) || 0}ms
+                        </Typography>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              )}
+              
+              {/* Fallback for single camera mode */}
+              {!tapoCvResults && !raspberryPiCvResults && cvResults && (
+                <Grid item xs={12}>
+                  <Card>
                 <CardContent>
                   <Typography variant="h6" gutterBottom>
                     CV-Analyse Ergebnisse
@@ -590,6 +830,8 @@ const HardwareMonitor = () => {
                 </CardContent>
               </Card>
             </Grid>
+              )}
+            </>
           )}
 
           {/* Event Log */}

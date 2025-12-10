@@ -18,6 +18,14 @@ router.post('/detection', async (req, res) => {
       processing_time, 
       zoom_factor,
       image_info,
+      camera_source,
+      // Dual camera support
+      tapo_original_image,
+      tapo_zoomed_image,
+      tapo_image_info,
+      raspberry_pi_original_image,
+      raspberry_pi_zoomed_image,
+      raspberry_pi_image_info,
       timestamp 
     } = req.body;
     
@@ -31,29 +39,81 @@ router.post('/detection', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
     
-    // Create detection record with both images
-    const detection = new Detection({
+    // Create detection record - support both single and dual camera modes
+    const detectionData = {
       device: device._id,
-      image: {
-        url: original_image,
-        filename: `detection_original_${deviceId}_${Date.now()}.jpg`,
-        size: original_image ? original_image.length : 0
-      },
-      zoomed_image: {
-        url: zoomed_image,
-        filename: `detection_zoomed_${deviceId}_${Date.now()}.jpg`,
-        size: zoomed_image ? zoomed_image.length : 0
-      },
       detections: detections || [],
       processedAt: new Date(timestamp || Date.now()),
       processingTime: processing_time || 0,
       zoom_factor: zoom_factor || 1.0,
-      image_info: image_info || {},
       model: {
         name: 'YOLOv8-Hardware',
         version: '1.0.0'
+      },
+      camera_source: camera_source || 'unknown'
+    };
+    
+    // Add images based on mode (single or dual camera)
+    if (tapo_original_image || raspberry_pi_original_image) {
+      // Dual camera mode - both cameras
+      if (tapo_original_image) {
+        detectionData.tapo_image = {
+          url: tapo_original_image,
+          filename: `detection_tapo_original_${deviceId}_${Date.now()}.jpg`,
+          size: tapo_original_image ? tapo_original_image.length : 0
+        };
       }
-    });
+      if (tapo_zoomed_image) {
+        detectionData.tapo_zoomed_image = {
+          url: tapo_zoomed_image,
+          filename: `detection_tapo_zoomed_${deviceId}_${Date.now()}.jpg`,
+          size: tapo_zoomed_image ? tapo_zoomed_image.length : 0
+        };
+      }
+      if (raspberry_pi_original_image) {
+        detectionData.raspberry_pi_image = {
+          url: raspberry_pi_original_image,
+          filename: `detection_raspberry_pi_original_${deviceId}_${Date.now()}.jpg`,
+          size: raspberry_pi_original_image ? raspberry_pi_original_image.length : 0
+        };
+      }
+      if (raspberry_pi_zoomed_image) {
+        detectionData.raspberry_pi_zoomed_image = {
+          url: raspberry_pi_zoomed_image,
+          filename: `detection_raspberry_pi_zoomed_${deviceId}_${Date.now()}.jpg`,
+          size: raspberry_pi_zoomed_image ? raspberry_pi_zoomed_image.length : 0
+        };
+      }
+      // Store image info for both cameras
+      if (tapo_image_info) {
+        detectionData.image_info = tapo_image_info; // Use tapo as primary for backward compatibility
+      }
+      if (raspberry_pi_image_info) {
+        detectionData.image_info = detectionData.image_info || {};
+        detectionData.image_info.raspberry_pi = raspberry_pi_image_info;
+      }
+    } else {
+      // Single camera mode - backward compatibility
+      if (original_image) {
+        detectionData.image = {
+          url: original_image,
+          filename: `detection_original_${deviceId}_${Date.now()}.jpg`,
+          size: original_image ? original_image.length : 0
+        };
+      }
+      if (zoomed_image) {
+        detectionData.zoomed_image = {
+          url: zoomed_image,
+          filename: `detection_zoomed_${deviceId}_${Date.now()}.jpg`,
+          size: zoomed_image ? zoomed_image.length : 0
+        };
+      }
+      if (image_info) {
+        detectionData.image_info = image_info;
+      }
+    }
+    
+    const detection = new Detection(detectionData);
     
     await detection.save();
     

@@ -43,6 +43,173 @@ import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../contexts/SocketContext';
 import axios from 'axios';
 
+// Helper component for stream display
+const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false }) => {
+  if (!streamUrl) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+        <CircularProgress size={40} />
+        <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+          Stream wird vorbereitet...
+        </Typography>
+      </Box>
+    );
+  }
+  
+  return (
+    <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+      {/* Loading-Indikator */}
+      {isLoading && (
+        <Box sx={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 10,
+          backgroundColor: 'rgba(0,0,0,0.4)',
+          color: 'rgba(255,255,255,0.8)',
+          padding: '3px 6px',
+          borderRadius: '3px',
+          fontSize: '10px',
+          fontWeight: 300
+        }}>
+          Aktualisiere...
+        </Box>
+      )}
+      {/* Camera name label */}
+      <Box sx={{
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        zIndex: 10,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        color: 'rgba(255,255,255,0.9)',
+        padding: '4px 8px',
+        borderRadius: '3px',
+        fontSize: '11px',
+        fontWeight: 500
+      }}>
+        {cameraName}
+      </Box>
+      <Box 
+        sx={{ 
+          position: 'relative', 
+          width: '100%', 
+          height: '100%',
+          cursor: 'pointer',
+          '&:hover': {
+            opacity: 0.95
+          }
+        }}
+        onClick={toggleStream}
+        title="Klicken um Stream zu stoppen"
+      >
+        {/* For MJPEG streams, use img tag directly */}
+        {isMjpeg ? (
+          <img
+            src={streamUrl}
+            alt={`${cameraName} Stream`}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              borderRadius: '4px'
+            }}
+            onError={(e) => {
+              console.error(`${cameraName} stream error:`, e);
+              if (loadTimeoutRef.current) {
+                clearTimeout(loadTimeoutRef.current);
+              }
+              setIsLoading(false);
+            }}
+            onLoad={() => {
+              console.log(`${cameraName} stream loaded`);
+              if (loadTimeoutRef.current) {
+                clearTimeout(loadTimeoutRef.current);
+              }
+              setIsLoading(false);
+            }}
+          />
+        ) : (
+          <>
+            {/* Altes Bild - bleibt sichtbar */}
+            {currentImage && (
+              <img
+                src={currentImage}
+                alt={`Previous ${cameraName} Stream`}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  borderRadius: '4px',
+                  zIndex: 1
+                }}
+              />
+            )}
+            
+            {/* Neues Bild - lädt im Hintergrund */}
+            <img
+              key={streamUrl}
+              src={streamUrl}
+              alt={`${cameraName} Stream`}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                borderRadius: '4px',
+                opacity: isLoading ? 0 : 1,
+                transition: 'opacity 0.3s ease',
+                zIndex: 2
+              }}
+              onError={(e) => {
+                console.error(`${cameraName} image load error:`, e);
+                if (loadTimeoutRef.current) {
+                  clearTimeout(loadTimeoutRef.current);
+                }
+                setIsLoading(false);
+              }}
+              onLoad={() => {
+                console.log(`${cameraName} image loaded for:`, streamUrl);
+                if (loadTimeoutRef.current) {
+                  clearTimeout(loadTimeoutRef.current);
+                }
+                setCurrentImage(streamUrl);
+                setIsLoading(false);
+              }}
+              onLoadStart={() => {
+                console.log(`${cameraName} image loading started for:`, streamUrl);
+              }}
+            />
+          </>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+// Helper component for stream placeholder
+const StreamPlaceholder = ({ toggleStream, cameraName }) => (
+  <Box textAlign="center">
+    <CameraIcon sx={{ fontSize: 48, color: 'grey.400', mb: 1 }} />
+    <Typography variant="body2" color="textSecondary">
+      {cameraName} Stream nicht aktiv
+    </Typography>
+    <Button
+      variant="outlined"
+      startIcon={<PlayIcon />}
+      onClick={toggleStream}
+      sx={{ mt: 1 }}
+    >
+      Stream starten
+    </Button>
+  </Box>
+);
+
 const Dashboard = () => {
   const [stats, setStats] = useState({
     totalDevices: 0,
@@ -362,9 +529,19 @@ const Dashboard = () => {
     const [isLoading, setIsLoading] = useState(false);
     const [currentImage, setCurrentImage] = useState(null);
     const loadTimeoutRef = React.useRef(null);
+    // Raspberry Pi stream state
+    const [raspberryPiStreamUrl, setRaspberryPiStreamUrl] = useState(null);
+    const [raspberryPiIsLoading, setRaspberryPiIsLoading] = useState(false);
+    const [raspberryPiCurrentImage, setRaspberryPiCurrentImage] = useState(null);
+    const raspberryPiLoadTimeoutRef = React.useRef(null);
     const isStreaming = streamingDevices[device._id];
     const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
     const deviceStatus = deviceStatuses[device._id];
+    
+    // Check if device has both cameras
+    const hasTapo = device.camera?.tapo?.ip && device.camera?.tapo?.username && device.camera?.tapo?.password;
+    const hasRaspberryPi = device.camera?.raspberryPi?.ip;
+    const isDualCamera = hasTapo && hasRaspberryPi;
 
     // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed 0..180; clamp as safety)
     const normalized = useMemo(() => {
@@ -375,14 +552,14 @@ const Dashboard = () => {
       return { rotPct, tiltPct, rot, tilt: tiltVal };
     }, [position]);
     
-  // Einfache Bild-Updates mit automatischer Aktualisierung
+  // Einfache Bild-Updates mit automatischer Aktualisierung - Tapo Camera
   useEffect(() => {
-    if (isStreaming && device) {
+    if (isStreaming && device && hasTapo) {
       // Einfache Bild-URL verwenden (kein Video-Stream)
       const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
       const imageUrl = `${API_URL}/api/device-image/${device._id}`;
       
-      console.log(`Setting image URL for device ${device._id}:`, imageUrl);
+      console.log(`Setting Tapo image URL for device ${device._id}:`, imageUrl);
       setStreamUrl(imageUrl);
       setCurrentImage(imageUrl);
       
@@ -392,13 +569,13 @@ const Dashboard = () => {
           // URL mit Timestamp für Cache-Busting
           const timestamp = Date.now();
           const updatedUrl = `${imageUrl}?t=${timestamp}`;
-          console.log(`Updating image for device ${device._id}:`, updatedUrl);
+          console.log(`Updating Tapo image for device ${device._id}:`, updatedUrl);
           setIsLoading(true);
           setStreamUrl(updatedUrl);
           
           // Sicherheits-Timeout: Falls Bild nicht lädt, nach 10 Sek weitermachen
           loadTimeoutRef.current = setTimeout(() => {
-            console.warn(`Image load timeout for device ${device._id}`);
+            console.warn(`Tapo image load timeout for device ${device._id}`);
             setIsLoading(false);
           }, 10000);
         }
@@ -413,7 +590,42 @@ const Dashboard = () => {
     } else {
       setStreamUrl(null);
     }
-  }, [isStreaming, device]);
+  }, [isStreaming, device, hasTapo, isLoading]);
+  
+  // Raspberry Pi Camera Stream
+  useEffect(() => {
+    if (isStreaming && device && hasRaspberryPi) {
+      const pi = device.camera.raspberryPi;
+      const piIp = pi.ip;
+      const piPort = pi.port || 8080;
+      const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
+      const piFlip = pi.flip || false;
+      
+      // Add flip parameter if needed
+      let streamUrl = `http://${piIp}:${piPort}${streamEndpoint}`;
+      if (piFlip) {
+        const separator = streamEndpoint.includes('?') ? '&' : '?';
+        streamUrl = `${streamUrl}${separator}flip=true`;
+      }
+      
+      console.log(`Setting Raspberry Pi stream URL for device ${device._id}:`, streamUrl);
+      setRaspberryPiStreamUrl(streamUrl);
+      setRaspberryPiCurrentImage(streamUrl);
+      
+      // For MJPEG stream, we don't need to update it - it's a continuous stream
+      // But we can still track loading state
+      setRaspberryPiIsLoading(false);
+      
+      return () => {
+        setRaspberryPiStreamUrl(null);
+        if (raspberryPiLoadTimeoutRef.current) {
+          clearTimeout(raspberryPiLoadTimeoutRef.current);
+        }
+      };
+    } else {
+      setRaspberryPiStreamUrl(null);
+    }
+  }, [isStreaming, device, hasRaspberryPi]);
 
     return (
       <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -479,20 +691,97 @@ const Dashboard = () => {
             </Box>
           </Box>
 
-          {/* Live-Stream Bereich */}
-                <Paper 
-                  sx={{ 
-                    width: '100%',
-                    aspectRatio: '16/9',
-                    mb: 2, 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'center',
-                    bgcolor: 'grey.100',
-                    position: 'relative',
-                    maxHeight: '400px' // Fallback für ältere Browser
-                  }}
-                >
+          {/* Live-Stream Bereich - Support für dual cameras */}
+          {isDualCamera ? (
+            <Box sx={{ mb: 2 }}>
+              <Grid container spacing={2}>
+                {/* Tapo Camera Stream */}
+                <Grid item xs={12}>
+                  <Paper 
+                    sx={{ 
+                      width: '100%',
+                      aspectRatio: '16/9',
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center',
+                      bgcolor: 'grey.100',
+                      position: 'relative',
+                      maxHeight: '400px',
+                      mb: 2
+                    }}
+                  >
+                    {isStreaming ? (
+                      <StreamDisplay
+                        streamUrl={streamUrl}
+                        currentImage={currentImage}
+                        isLoading={isLoading}
+                        loadTimeoutRef={loadTimeoutRef}
+                        setIsLoading={setIsLoading}
+                        setCurrentImage={setCurrentImage}
+                        setStreamUrl={setStreamUrl}
+                        toggleStream={() => toggleStream(device._id)}
+                        cameraName="Tapo"
+                      />
+                    ) : (
+                      <StreamPlaceholder
+                        toggleStream={() => toggleStream(device._id)}
+                        cameraName="Tapo"
+                      />
+                    )}
+                  </Paper>
+                </Grid>
+                
+                {/* Raspberry Pi Camera Stream */}
+                <Grid item xs={12}>
+                  <Paper 
+                    sx={{ 
+                      width: '100%',
+                      aspectRatio: '16/9',
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center',
+                      bgcolor: 'grey.100',
+                      position: 'relative',
+                      maxHeight: '400px'
+                    }}
+                  >
+                    {isStreaming ? (
+                      <StreamDisplay
+                        streamUrl={raspberryPiStreamUrl}
+                        currentImage={raspberryPiCurrentImage}
+                        isLoading={raspberryPiIsLoading}
+                        loadTimeoutRef={raspberryPiLoadTimeoutRef}
+                        setIsLoading={setRaspberryPiIsLoading}
+                        setCurrentImage={setRaspberryPiCurrentImage}
+                        setStreamUrl={setRaspberryPiStreamUrl}
+                        toggleStream={() => toggleStream(device._id)}
+                        cameraName="Raspberry Pi"
+                        isMjpeg={true}
+                      />
+                    ) : (
+                      <StreamPlaceholder
+                        toggleStream={() => toggleStream(device._id)}
+                        cameraName="Raspberry Pi"
+                      />
+                    )}
+                  </Paper>
+                </Grid>
+              </Grid>
+            </Box>
+          ) : (
+            <Paper 
+              sx={{ 
+                width: '100%',
+                aspectRatio: '16/9',
+                mb: 2, 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                bgcolor: 'grey.100',
+                position: 'relative',
+                maxHeight: '400px' // Fallback für ältere Browser
+              }}
+            >
             {isStreaming ? (
               <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
                 {/* Loading-Indikator */}
@@ -610,6 +899,7 @@ const Dashboard = () => {
               </Box>
             )}
           </Paper>
+          )}
 
           {/* Bewegungs-Steuerung */}
           <Box mb={2}>

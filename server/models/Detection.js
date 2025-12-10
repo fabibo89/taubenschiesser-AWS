@@ -16,6 +16,27 @@ const detectionSchema = new mongoose.Schema({
     filename: String,
     size: Number
   },
+  // Dual camera support - images from both cameras
+  tapo_image: {
+    url: String,
+    filename: String,
+    size: Number
+  },
+  tapo_zoomed_image: {
+    url: String,
+    filename: String,
+    size: Number
+  },
+  raspberry_pi_image: {
+    url: String,
+    filename: String,
+    size: Number
+  },
+  raspberry_pi_zoomed_image: {
+    url: String,
+    filename: String,
+    size: Number
+  },
   detections: [{
     class: String,
     confidence: Number,
@@ -32,7 +53,12 @@ const detectionSchema = new mongoose.Schema({
       height: Number
     },
     size_category: String,
-    detection_quality: String
+    detection_quality: String,
+    camera_source: {
+      type: String,
+      enum: ['tapo', 'raspberry-pi', 'both', 'unknown'],
+      default: 'unknown'
+    }
   }],
   target_bird: {
     class: String,
@@ -72,6 +98,11 @@ const detectionSchema = new mongoose.Schema({
   model: {
     name: String,
     version: String
+  },
+  camera_source: {
+    type: String,
+    enum: ['tapo', 'raspberry-pi', 'direct', 'local', 'unknown'],
+    default: 'unknown'
   }
 }, {
   timestamps: true

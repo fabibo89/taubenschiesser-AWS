@@ -103,13 +103,23 @@ class RtspFrameManager {
 
     ffmpeg.on('error', (error) => {
       logger.warn(`FFmpeg process error for device ${deviceId}: ${error.message}`);
-      info.emitter.emit('error', error);
+      // Only emit error if there are listeners to avoid unhandled error events
+      if (info.emitter.listenerCount('error') > 0) {
+        info.emitter.emit('error', error);
+      }
       this._dispose(deviceId);
     });
 
     ffmpeg.on('close', (code) => {
       logger.info(`FFmpeg process for device ${deviceId} exited with code ${code}`);
-      info.emitter.emit('error', new Error(`ffmpeg exited with code ${code}`));
+      // Only emit error if it's a real error (not null/0)
+      // null = killed by signal (normal cleanup), 0 = success
+      if (code !== null && code !== 0) {
+        // Only emit error if there are listeners to avoid unhandled error events
+        if (info.emitter.listenerCount('error') > 0) {
+          info.emitter.emit('error', new Error(`ffmpeg exited with code ${code}`));
+        }
+      }
       this._dispose(deviceId);
     });
 

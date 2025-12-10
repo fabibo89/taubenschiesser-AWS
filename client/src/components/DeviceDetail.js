@@ -331,6 +331,25 @@ const DeviceDetail = () => {
                       <strong>Tapo IP:</strong> {device.camera.tapo.ip}
                     </Typography>
                   )}
+                  {device.camera.raspberryPi?.ip && (
+                    <>
+                      <Typography variant="body2" color="textSecondary">
+                        <strong>Raspberry Pi IP/Hostname:</strong> {device.camera.raspberryPi.ip}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        <strong>Raspberry Pi Port:</strong> {device.camera.raspberryPi.port || 8080}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        <strong>Raspberry Pi Endpoint:</strong> {device.camera.raspberryPi.endpoint || '/image.jpg'}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        <strong>Raspberry Pi Stream:</strong> {device.camera.raspberryPi.streamEndpoint || '/stream.mjpeg'}
+                      </Typography>
+                      <Typography variant="body2" color="textSecondary">
+                        <strong>Bild drehen:</strong> {device.camera.raspberryPi.flip ? 'Ja (180°)' : 'Nein'}
+                      </Typography>
+                    </>
+                  )}
                   <Typography variant="body2" color="textSecondary">
                     <strong>Streaming:</strong> {device.camera.isStreaming ? 'Aktiv' : 'Inaktiv'}
                   </Typography>

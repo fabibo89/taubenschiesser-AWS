@@ -10,8 +10,10 @@ import json
 import logging
 import os
 import time
+import socket
+import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from threading import Lock
@@ -230,6 +232,9 @@ class HardwareMonitor:
         # Wait longer before starting to avoid rate limiting
         await asyncio.sleep(5)
         
+        # Track previous monitor status to detect when device is restarted
+        previous_monitor_status = {}
+        
         while True:
             try:
                 # logger.info("Fetching devices from API...")
@@ -247,8 +252,31 @@ class HardwareMonitor:
                                 if owner_id and owner_id not in self.user_mqtt_settings:
                                     await self.load_user_mqtt_settings(owner_id)
                                 
+                                device_id = device.get('_id')
+                                device_monitor_status = device.get('monitorStatus')
+                                
+                                # Check if device was just restarted (paused -> running)
+                                taubenschiesser_config = device.get('taubenschiesser', {})
+                                device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+                                
+                                if device_id and device_ip:
+                                    prev_status = previous_monitor_status.get(device_id)
+                                    if prev_status == 'paused' and device_monitor_status == 'running':
+                                        # Device was just restarted - set last_seen to 25 seconds ago to trigger immediate movement
+                                        logger.info(f"🔄 Device {device_ip} restarted (paused -> running), setting timer to trigger movement")
+                                        from datetime import timedelta
+                                        self.device_last_seen[device_ip] = datetime.now() - timedelta(seconds=25)
+                                        # Also clear any movement state
+                                        if device_ip in self.device_moving:
+                                            self.device_moving[device_ip] = False
+                                        if device_ip in self.device_movement_start:
+                                            del self.device_movement_start[device_ip]
+                                    
+                                    # Update previous status
+                                    previous_monitor_status[device_id] = device_monitor_status
+                                
                                 # Only process devices with monitorStatus: 'running'
-                                if device.get('monitorStatus') == 'running':
+                                if device_monitor_status == 'running':
                                     # logger.info(f"Processing device {device.get('_id')} with status: {device.get('monitorStatus')}")
                                     await self.process_taubenschiesser_device(device)
                                 else:
@@ -291,9 +319,10 @@ class HardwareMonitor:
             # Check if device is online (received MQTT message recently)
             # Note: We don't require MQTT messages to start moving - the device might not send continuous updates
             if device_ip not in self.device_last_seen:
-                logger.info(f"ℹ️ Device {device_ip} not seen via MQTT yet - will proceed with movement anyway")
-                # Set a default last_seen timestamp to allow movement
-                self.device_last_seen[device_ip] = datetime.now()
+                logger.info(f"ℹ️ Device {device_ip} not seen via MQTT yet - setting timer to trigger first movement")
+                # Set last_seen to 25 seconds ago to trigger immediate movement on first run
+                from datetime import timedelta
+                self.device_last_seen[device_ip] = datetime.now() - timedelta(seconds=25)
             
             # Check if device is moving
             if self.device_moving.get(device_ip, False):
@@ -449,8 +478,37 @@ class HardwareMonitor:
             await asyncio.sleep(2)
             await self.analyze_after_movement(device)
             
+            # Reset last_seen timestamp after analysis to start 20s wait period
+            self.device_last_seen[device_ip] = datetime.now()
+            logger.info(f"✅ Analysis complete for device {device_ip}, resetting wait timer (20s inactivity period starts now)")
+            
         except Exception as e:
             logger.error(f"Error moving device step: {e}")
+    
+    def apply_position_inversion(self, device: Dict, rotation: int, tilt: int) -> Tuple[int, int]:
+        """
+        Apply position inversion if enabled in device settings.
+        Returns inverted values (180 - value) if inversion is enabled, otherwise original values.
+        
+        Args:
+            device: Device configuration dictionary
+            rotation: Original rotation value
+            tilt: Original tilt value
+            
+        Returns:
+            Tuple of (rotation, tilt) with inversion applied if enabled
+        """
+        taubenschiesser_config = device.get('taubenschiesser', {})
+        if isinstance(taubenschiesser_config, dict):
+            invert_rotation = taubenschiesser_config.get('invertRotation', False)
+            invert_tilt = taubenschiesser_config.get('invertTilt', False)
+            
+            if invert_rotation:
+                rotation = 180 - rotation
+            if invert_tilt:
+                tilt = 180 - tilt
+        
+        return rotation, tilt
     
     async def move_device_route(self, device: Dict, time_since_last_seen: float = None):
         """Move device along configured route"""
@@ -474,11 +532,18 @@ class HardwareMonitor:
             route_index = self.movement_queue.get(device_ip, 0)
             route_item = route_coordinates[route_index]
             
+            # Get original rotation and tilt values
+            original_rotation = route_item.get('rotation', 0)
+            original_tilt = route_item.get('tilt', 0)
+            
+            # Apply position inversion if enabled
+            rotation, tilt = self.apply_position_inversion(device, original_rotation, original_tilt)
+            
             # Send movement event
             await self.send_monitor_event(device, 'device_moving', {
                 'message': f'Device bewegt sich zu Route-Punkt {route_index + 1}/{len(route_coordinates)}',
-                'rotation': route_item.get('rotation', 0),
-                'tilt': route_item.get('tilt', 0),
+                'rotation': rotation,
+                'tilt': tilt,
                 'route_index': route_index,
                 'total_points': len(route_coordinates),
                 'movement_type': 'route'
@@ -488,8 +553,8 @@ class HardwareMonitor:
             command = {
                 "type": "move",
                 "position": {
-                    "rot": route_item.get('rotation', 0),
-                    "tilt": route_item.get('tilt', 0)
+                    "rot": rotation,
+                    "tilt": tilt
                 },
                 "speed": 0
             }
@@ -510,9 +575,9 @@ class HardwareMonitor:
             
             # Create combined log message
             if time_since_last_seen is not None:
-                logger.info(f"🚀 Moving device {device_ip} - no activity for {time_since_last_seen:.1f}s 📍 Route: rotation={route_item.get('rotation')}, tilt={route_item.get('tilt')} (user: {owner_id})")
+                logger.info(f"🚀 Moving device {device_ip} - no activity for {time_since_last_seen:.1f}s 📍 Route: rotation={rotation}, tilt={tilt} (user: {owner_id})")
             else:
-                logger.info(f"📍 Sent route command to device {device_ip}: rotation={route_item.get('rotation')}, tilt={route_item.get('tilt')} (user: {owner_id})")
+                logger.info(f"📍 Sent route command to device {device_ip}: rotation={rotation}, tilt={tilt} (user: {owner_id})")
             
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
@@ -530,6 +595,10 @@ class HardwareMonitor:
             })
             await asyncio.sleep(2)
             await self.analyze_after_movement(device)
+            
+            # Reset last_seen timestamp after analysis to start 20s wait period
+            self.device_last_seen[device_ip] = datetime.now()
+            logger.info(f"✅ Analysis complete for device {device_ip}, resetting wait timer (20s inactivity period starts now)")
             
             # Update route index AFTER analysis is complete
             self.movement_queue[device_ip] = (route_index + 1) % len(route_coordinates)
@@ -629,7 +698,7 @@ class HardwareMonitor:
             logger.debug(f"Error sending position update: {e}")
     
     async def analyze_after_movement(self, device: Dict):
-        """Analyze camera after movement"""
+        """Analyze camera after movement - supports both Tapo and Raspberry Pi cameras"""
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -654,12 +723,31 @@ class HardwareMonitor:
             
             # Check for different camera types
             camera_config = device.get('camera', {})
+            camera_type = camera_config.get('type')
             
             # Check if using local image file instead of camera
             use_local_image = camera_config.get('useLocalImage', False)
             local_image_path = camera_config.get('localImagePath', '')
             
-            if use_local_image and local_image_path:
+            # Determine which cameras to check
+            has_tapo = False
+            has_raspberry_pi = False
+            
+            # Check for Tapo camera
+            tapo_config = camera_config.get('tapo', {})
+            if tapo_config and tapo_config.get('ip') and tapo_config.get('username') and tapo_config.get('password'):
+                has_tapo = True
+            
+            # Check for Raspberry Pi camera
+            pi_config = camera_config.get('raspberryPi', {})
+            if pi_config and pi_config.get('ip'):
+                has_raspberry_pi = True
+            
+            # If dual mode or both cameras configured, check both
+            if camera_type == 'dual' or (has_tapo and has_raspberry_pi):
+                logger.info(f"📷 Dual camera mode: Checking both Tapo and Raspberry Pi cameras for device {device_ip}")
+                await self.analyze_dual_cameras(device, device_ip, camera_config)
+            elif use_local_image and local_image_path:
                 # Use local image file
                 logger.info(f"📁 Using local image file for device {device_ip}: {local_image_path}")
                 await self.send_monitor_event(device, 'image_source', {
@@ -667,123 +755,596 @@ class HardwareMonitor:
                     'path': local_image_path
                 })
                 original_frame = await self.load_local_image(local_image_path)
+                if original_frame is not None:
+                    await self.process_single_camera(device, original_frame, 'local')
+            elif camera_type == 'raspberry-pi' or has_raspberry_pi:
+                # Only Raspberry Pi camera
+                await self.analyze_raspberry_pi_camera(device, device_ip, camera_config)
+            elif camera_type == 'tapo' or has_tapo:
+                # Only Tapo camera
+                await self.analyze_tapo_camera(device, device_ip, camera_config)
             else:
-                # Use camera/RTSP stream or HTTP (Raspberry Pi)
-                camera_type = camera_config.get('type')
-                rtsp_url = camera_config.get('rtspUrl')
-                
-                # Check for Raspberry Pi camera (HTTP)
-                if camera_type == 'raspberry-pi':
-                    pi_config = camera_config.get('raspberryPi', {})
-                    if pi_config:
-                        pi_ip = pi_config.get('ip')
-                        pi_port = pi_config.get('port', 8080)
-                        pi_endpoint = pi_config.get('endpoint', '/image.jpg')
-                        
-                        if pi_ip:
-                            image_url = f"http://{pi_ip}:{pi_port}{pi_endpoint}"
-                            logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
-                            await self.send_monitor_event(device, 'image_source', {
-                                'source': 'raspberry-pi',
-                                'ip': pi_ip,
-                                'port': pi_port,
-                                'endpoint': pi_endpoint
-                            })
-                            
-                            # Capture frame from Raspberry Pi
-                            logger.info(f"📷 Attempting to capture frame from Raspberry Pi: {device_ip}")
-                            await self.send_monitor_event(device, 'capturing_image', {
-                                'message': 'Capturing image from Raspberry Pi camera'
-                            })
-                            original_frame = await self.capture_frame_from_http(image_url)
-                        else:
-                            logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
-                            return
-                    else:
-                        logger.warning(f"No Raspberry Pi camera configuration for device {device_ip}")
-                        return
-                
-                # If no direct RTSP URL, check for Tapo camera
-                elif not rtsp_url and camera_type == 'tapo':
-                    tapo_config = camera_config.get('tapo', {})
-                    if tapo_config:
-                        tapo_ip = tapo_config.get('ip')
-                        tapo_username = tapo_config.get('username')
-                        tapo_password = tapo_config.get('password')
-                        tapo_stream = tapo_config.get('stream', 'stream1')
-                        
-                        if tapo_ip and tapo_username and tapo_password:
-                            # Construct RTSP URL for Tapo camera
-                            rtsp_url = f"rtsp://{tapo_username}:{tapo_password}@{tapo_ip}:554/{tapo_stream}"
-                            logger.info(f"Using Tapo camera RTSP URL for device {device_ip}")
-                            await self.send_monitor_event(device, 'image_source', {
-                                'source': 'tapo',
-                                'ip': tapo_ip,
-                                'stream': tapo_stream
-                            })
-                        else:
-                            logger.warning(f"Tapo camera configuration incomplete for device {device_ip}")
-                            return
-                    else:
-                        logger.warning(f"No Tapo camera configuration for device {device_ip}")
-                        return
-                elif not rtsp_url:
-                    logger.warning(f"No camera configured for device {device_ip}")
-                    return
-                
-                # Capture frame from RTSP camera
-                if camera_type != 'raspberry-pi':
-                    logger.info(f"📷 Attempting to capture frame from device {device_ip}")
-                    await self.send_monitor_event(device, 'capturing_image', {
-                        'message': 'Capturing image from camera'
-                    })
-                    original_frame = await self.capture_frame(rtsp_url)
-            
-            if original_frame is not None:
-                height, width = original_frame.shape[:2]
-                logger.info(f"✅ Frame captured successfully: {width}x{height} pixels")
-                
-                # Send original image
-                _, buffer = cv2.imencode('.jpg', original_frame)
-                original_image_base64 = base64.b64encode(buffer).decode('utf-8')
-                
-                await self.send_monitor_event(device, 'image_captured', {
-                    'width': width,
-                    'height': height,
-                    'image': f"data:image/jpeg;base64,{original_image_base64}"
-                })
-                
-                # Apply zoom if in route mode
-                zoomed_frame = await self.apply_zoom_to_frame(device, original_frame)
-                
-                # Send zoomed image if different
-                if zoomed_frame is not original_frame:
-                    zoom_height, zoom_width = zoomed_frame.shape[:2]
-                    _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
-                    zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
-                    
-                    await self.send_monitor_event(device, 'image_zoomed', {
-                        'width': zoom_width,
-                        'height': zoom_height,
-                        'zoom_factor': round(width / zoom_width, 2) if zoom_width > 0 else 1,
-                        'image': f"data:image/jpeg;base64,{zoomed_image_base64}"
-                    })
-                
-                # Analyze with CV service (using zoomed frame for better detection)
-                await self.send_monitor_event(device, 'analyzing', {
-                    'message': 'Analyzing image with CV service'
-                })
-                await self.analyze_frame_for_birds(device, original_frame, zoomed_frame)
-            else:
-                logger.warning(f"❌ Could not capture frame from device {device_ip}")
+                logger.warning(f"No camera configured for device {device_ip}")
                 await self.send_monitor_event(device, 'error', {
-                    'message': 'Could not capture frame from camera'
+                    'message': 'No camera configured'
                 })
                 
         except Exception as e:
             logger.error(f"Error analyzing after movement: {e}")
             await self.send_monitor_event(device, 'error', {
                 'message': str(e)
+            })
+    
+    async def analyze_dual_cameras(self, device: Dict, device_ip: str, camera_config: Dict):
+        """Analyze both Tapo and Raspberry Pi cameras and save combined detection if found"""
+        try:
+            # Store frames and results from both cameras
+            tapo_original_frame = None
+            tapo_zoomed_frame = None
+            tapo_cv_result = None
+            raspberry_pi_original_frame = None
+            raspberry_pi_zoomed_frame = None
+            raspberry_pi_cv_result = None
+            
+            # Analyze both cameras in parallel for faster processing
+            tapo_task = None
+            pi_task = None
+            
+            tapo_config = camera_config.get('tapo', {})
+            if tapo_config and tapo_config.get('ip'):
+                logger.info(f"📷 Starting Tapo camera analysis for device {device_ip}")
+                tapo_task = asyncio.create_task(
+                    self.analyze_tapo_camera_for_dual(device, device_ip, camera_config)
+                )
+            
+            pi_config = camera_config.get('raspberryPi', {})
+            if pi_config and pi_config.get('ip'):
+                logger.info(f"📷 Starting Raspberry Pi camera analysis for device {device_ip}")
+                pi_task = asyncio.create_task(
+                    self.analyze_raspberry_pi_camera_for_dual(device, device_ip, camera_config)
+                )
+            
+            # Wait for both cameras to complete (with timeout protection)
+            if tapo_task:
+                try:
+                    tapo_result = await asyncio.wait_for(tapo_task, timeout=60.0)  # 60s timeout per camera
+                    if tapo_result:
+                        tapo_original_frame, tapo_zoomed_frame, tapo_cv_result = tapo_result
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏰ Tapo camera analysis timeout for device {device_ip}")
+                except Exception as e:
+                    logger.error(f"Error in Tapo camera analysis: {e}")
+            
+            if pi_task:
+                try:
+                    pi_result = await asyncio.wait_for(pi_task, timeout=60.0)  # 60s timeout per camera
+                    if pi_result:
+                        raspberry_pi_original_frame, raspberry_pi_zoomed_frame, raspberry_pi_cv_result = pi_result
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏰ Raspberry Pi camera analysis timeout for device {device_ip}")
+                except Exception as e:
+                    logger.error(f"Error in Raspberry Pi camera analysis: {e}")
+            
+            # Check if any detection was found
+            tapo_birds_found = tapo_cv_result and tapo_cv_result.get('birds_found', False)
+            pi_birds_found = raspberry_pi_cv_result and raspberry_pi_cv_result.get('birds_found', False)
+            
+            # If any detection found, save combined detection with both images
+            if tapo_birds_found or pi_birds_found:
+                logger.info(f"🦅 Detection found! Saving combined detection with both camera images")
+                await self.save_combined_detection_to_db(
+                    device,
+                    tapo_original_frame, tapo_zoomed_frame, tapo_cv_result,
+                    raspberry_pi_original_frame, raspberry_pi_zoomed_frame, raspberry_pi_cv_result
+                )
+                
+                # Trigger shoot (use best target bird from either camera)
+                target_bird = None
+                if tapo_cv_result and tapo_cv_result.get('detections'):
+                    birds = [d for d in tapo_cv_result.get('detections', []) if d.get('class') == 'bird']
+                    if birds:
+                        target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                if not target_bird and raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
+                    birds = [d for d in raspberry_pi_cv_result.get('detections', []) if d.get('class') == 'bird']
+                    if birds:
+                        target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                
+                await self.trigger_shoot(device, target_bird=target_bird)
+            else:
+                # No birds found - still send completion event and show images
+                logger.info(f"ℹ️ No birds detected in dual camera analysis for device {device_ip}")
+                
+                # Send images to frontend even if no birds found
+                if tapo_original_frame is not None:
+                    _, buffer = cv2.imencode('.jpg', tapo_original_frame)
+                    tapo_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                    await self.send_monitor_event(device, 'image_captured', {
+                        'image': f"data:image/jpeg;base64,{tapo_image_base64}",
+                        'camera': 'tapo'
+                    })
+                
+                if raspberry_pi_original_frame is not None:
+                    _, buffer = cv2.imencode('.jpg', raspberry_pi_original_frame)
+                    pi_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                    await self.send_monitor_event(device, 'image_captured', {
+                        'image': f"data:image/jpeg;base64,{pi_image_base64}",
+                        'camera': 'raspberry-pi'
+                    })
+                
+                # Send CV analysis complete event even if no birds found
+                combined_bird_count = 0
+                if tapo_cv_result:
+                    combined_bird_count += tapo_cv_result.get('bird_count', 0)
+                if raspberry_pi_cv_result:
+                    combined_bird_count += raspberry_pi_cv_result.get('bird_count', 0)
+                
+                await self.send_monitor_event(device, 'cv_analysis_complete', {
+                    'bird_count': combined_bird_count,
+                    'detections': [],
+                    'birds_found': False,
+                    'confidence_level': 0,
+                    'processing_time': 0,
+                    'camera': 'dual'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error analyzing dual cameras: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Dual camera analysis error: {str(e)}'
+            })
+    
+    async def analyze_tapo_camera_for_dual(self, device: Dict, device_ip: str, camera_config: Dict):
+        """Analyze Tapo camera and return frames and CV result (for dual camera mode)"""
+        try:
+            tapo_config = camera_config.get('tapo', {})
+            tapo_ip = tapo_config.get('ip')
+            tapo_username = tapo_config.get('username')
+            tapo_password = tapo_config.get('password')
+            tapo_stream = tapo_config.get('stream', 'stream1')
+            
+            if not (tapo_ip and tapo_username and tapo_password):
+                logger.warning(f"Tapo camera configuration incomplete for device {device_ip}")
+                return None
+            
+            # Construct RTSP URL for Tapo camera
+            rtsp_url = f"rtsp://{tapo_username}:{tapo_password}@{tapo_ip}:554/{tapo_stream}"
+            logger.info(f"Using Tapo camera RTSP URL for device {device_ip}")
+            await self.send_monitor_event(device, 'image_source', {
+                'source': 'tapo',
+                'ip': tapo_ip,
+                'stream': tapo_stream,
+                'camera_label': 'tapo'
+            })
+            
+            # Capture frame from RTSP camera
+            logger.info(f"📷 Attempting to capture frame from Tapo camera: {device_ip}")
+            await self.send_monitor_event(device, 'capturing_image', {
+                'message': 'Capturing image from Tapo camera',
+                'camera': 'tapo'
+            })
+            original_frame = await self.capture_frame(rtsp_url)
+            
+            if original_frame is None:
+                logger.warning(f"❌ Could not capture frame from Tapo camera for device {device_ip}")
+                await self.send_monitor_event(device, 'error', {
+                    'message': 'Could not capture frame from Tapo camera',
+                    'camera': 'tapo'
+                })
+                return None
+            
+            # Process and analyze
+            height, width = original_frame.shape[:2]
+            logger.info(f"✅ Tapo frame captured: {width}x{height} pixels")
+            
+            # Send original image
+            _, buffer = cv2.imencode('.jpg', original_frame)
+            original_image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            await self.send_monitor_event(device, 'image_captured', {
+                'width': width,
+                'height': height,
+                'image': f"data:image/jpeg;base64,{original_image_base64}",
+                'camera': 'tapo'
+            })
+            
+            # Apply zoom if in route mode
+            zoomed_frame = await self.apply_zoom_to_frame(device, original_frame)
+            
+            # Send zoomed image if different
+            if zoomed_frame is not original_frame:
+                zoom_height, zoom_width = zoomed_frame.shape[:2]
+                _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
+                zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
+                
+                await self.send_monitor_event(device, 'image_zoomed', {
+                    'width': zoom_width,
+                    'height': zoom_height,
+                    'zoom_factor': round(width / zoom_width, 2) if zoom_width > 0 else 1,
+                    'image': f"data:image/jpeg;base64,{zoomed_image_base64}",
+                    'camera': 'tapo'
+                })
+            
+            # Analyze with CV service
+            await self.send_monitor_event(device, 'analyzing', {
+                'message': 'Analyzing Tapo image with CV service',
+                'camera': 'tapo'
+            })
+            
+            cv_result = await self.analyze_frame_for_birds_dual(device, original_frame, zoomed_frame, 'tapo')
+            
+            return (original_frame, zoomed_frame, cv_result)
+                
+        except Exception as e:
+            logger.error(f"Error analyzing Tapo camera: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Tapo camera error: {str(e)}',
+                'camera': 'tapo'
+            })
+            return None
+    
+    async def analyze_raspberry_pi_camera_for_dual(self, device: Dict, device_ip: str, camera_config: Dict):
+        """Analyze Raspberry Pi camera and return frames and CV result (for dual camera mode)"""
+        try:
+            pi_config = camera_config.get('raspberryPi', {})
+            pi_ip = pi_config.get('ip')
+            pi_port = pi_config.get('port', 8080)
+            pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+            pi_flip = pi_config.get('flip', False)
+            
+            if not pi_ip:
+                logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
+                return None
+            
+            # Resolve hostname to IP if needed (in case hostname is used instead of IP)
+            resolved_ip = pi_ip
+            try:
+                # Check if it's already an IP address
+                socket.inet_aton(pi_ip)
+            except socket.error:
+                # It's a hostname, try to resolve it
+                try:
+                    resolved_ip = socket.gethostbyname(pi_ip)
+                    logger.debug(f"Resolved hostname {pi_ip} to IP {resolved_ip}")
+                except socket.gaierror as e:
+                    logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
+                    resolved_ip = pi_ip
+            
+            # Get FOV values for FOV-based zoom adjustment
+            tapo_config = camera_config.get('tapo', {})
+            tapo_fov = tapo_config.get('fov', 110)  # Default Tapo FOV
+            pi_fov = pi_config.get('fov', 75)  # Default Raspberry Pi FOV
+            
+            # Get zoom factor from route configuration if in route mode
+            route_zoom_factor = 1.0
+            actions = device.get('actions', {})
+            if actions.get('mode') == 'route':
+                route_coordinates = actions.get('route', {}).get('coordinates', [])
+                if route_coordinates:
+                    route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                    if route_index < len(route_coordinates):
+                        route_zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
+            
+            # Calculate total zoom factor for Raspberry Pi
+            # Logic:
+            # - Tapo is master with FOV = tapo_fov (e.g., 110°)
+            # - Raspberry Pi has smaller FOV = pi_fov (e.g., 75°)
+            # - Raspberry Pi already shows a smaller field of view (more zoomed in)
+            # - When route zoom is applied (e.g., 2x), it's relative to Tapo's FOV
+            # - Raspberry Pi needs less zoom: route_zoom × (pi_fov / tapo_fov)
+            #   because it already has a smaller FOV, so it needs proportionally less zoom
+            # 
+            # Formula: total_zoom = route_zoom × (pi_fov / tapo_fov)
+            # Example: route_zoom=2, pi_fov=75°, tapo_fov=110° → total_zoom = 2 × (75/110) = 1.364
+            total_zoom_factor = 1.0
+            if tapo_fov > 0 and pi_fov > 0:
+                if route_zoom_factor > 1.0:
+                    # Route zoom is applied: Raspberry Pi needs route_zoom × (pi_fov / tapo_fov)
+                    # This is because Raspberry Pi already has a smaller FOV, so it needs less zoom
+                    fov_ratio = pi_fov / tapo_fov
+                    total_zoom_factor = route_zoom_factor * fov_ratio
+                    logger.info(f"📐 Route zoom={route_zoom_factor}, FOV ratio (Pi/Tapo)={fov_ratio:.3f} → total zoom={total_zoom_factor:.3f}")
+                else:
+                    # No route zoom: Raspberry Pi already has smaller FOV, so no additional zoom needed
+                    # (The smaller FOV of Raspberry Pi is its natural state, matching Tapo's view)
+                    total_zoom_factor = 1.0
+                    logger.info(f"📐 No route zoom: Raspberry Pi FOV={pi_fov}° is naturally smaller than Tapo FOV={tapo_fov}°")
+            
+            # Build URL with query parameters
+            image_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+            query_params = []
+            
+            # Add zoom parameter if > 1.0 (Raspberry Pi handles zoom via query parameter)
+            if total_zoom_factor > 1.0:
+                query_params.append(f"zoom={total_zoom_factor:.3f}")
+                logger.info(f"🔍 Adding total zoom={total_zoom_factor:.3f} (Route zoom: {route_zoom_factor:.3f} × FOV ratio: {pi_fov/tapo_fov:.3f}) to Raspberry Pi URL for device {device_ip}")
+            
+            # Add flip parameter if needed
+            if pi_flip:
+                query_params.append("flip=true")
+            
+            # Add query parameters to URL
+            if query_params:
+                separator = '&' if '?' in image_url else '?'
+                image_url = f"{image_url}{separator}{'&'.join(query_params)}"
+            
+            logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
+            await self.send_monitor_event(device, 'image_source', {
+                'source': 'raspberry-pi',
+                'ip': pi_ip,
+                'port': pi_port,
+                'endpoint': pi_endpoint,
+                'camera_label': 'raspberry-pi'
+            })
+            
+            # Capture frame from Raspberry Pi
+            logger.info(f"📷 Attempting to capture frame from Raspberry Pi: {device_ip}")
+            await self.send_monitor_event(device, 'capturing_image', {
+                'message': 'Capturing image from Raspberry Pi camera',
+                'camera': 'raspberry-pi'
+            })
+            original_frame = await self.capture_frame_from_http(image_url)
+            
+            if original_frame is None:
+                logger.warning(f"❌ Could not capture frame from Raspberry Pi camera for device {device_ip}")
+                await self.send_monitor_event(device, 'error', {
+                    'message': 'Could not capture frame from Raspberry Pi camera',
+                    'camera': 'raspberry-pi'
+                })
+                return None
+            
+            # Process and analyze
+            height, width = original_frame.shape[:2]
+            logger.info(f"✅ Raspberry Pi frame captured: {width}x{height} pixels")
+            
+            # Raspberry Pi handles zoom via query parameter
+            # If total_zoom_factor > 1.0, the image we got is already zoomed
+            # We need to fetch the original (non-zoomed) image for display
+            if total_zoom_factor > 1.0:
+                # Fetch original (non-zoomed) image for display
+                original_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+                if pi_flip:
+                    original_url = f"{original_url}?flip=true"
+                
+                logger.info(f"📷 Fetching original (non-zoomed) image from Raspberry Pi for device {device_ip}")
+                original_non_zoomed_frame = await self.capture_frame_from_http(original_url)
+                
+                if original_non_zoomed_frame is not None:
+                    # Send original (non-zoomed) image
+                    orig_height, orig_width = original_non_zoomed_frame.shape[:2]
+                    _, orig_buffer = cv2.imencode('.jpg', original_non_zoomed_frame)
+                    original_non_zoomed_base64 = base64.b64encode(orig_buffer).decode('utf-8')
+                    
+                    await self.send_monitor_event(device, 'image_captured', {
+                        'width': orig_width,
+                        'height': orig_height,
+                        'image': f"data:image/jpeg;base64,{original_non_zoomed_base64}",
+                        'camera': 'raspberry-pi'
+                    })
+                    
+                    # Send zoomed image (the one we already fetched with zoom parameter)
+                    _, zoom_buffer = cv2.imencode('.jpg', original_frame)
+                    zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
+                    
+                    await self.send_monitor_event(device, 'image_zoomed', {
+                        'width': width,
+                        'height': height,
+                        'zoom_factor': total_zoom_factor,
+                        'image': f"data:image/jpeg;base64,{zoomed_image_base64}",
+                        'camera': 'raspberry-pi'
+                    })
+                    
+                    # Use zoomed frame for analysis
+                    zoomed_frame = original_frame
+                    original_frame = original_non_zoomed_frame  # Update for return value
+                else:
+                    # Fallback: couldn't fetch original, use zoomed as both
+                    logger.warning(f"⚠️ Could not fetch original image, using zoomed as both original and zoomed")
+                    _, buffer = cv2.imencode('.jpg', original_frame)
+                    original_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    await self.send_monitor_event(device, 'image_captured', {
+                        'width': width,
+                        'height': height,
+                        'image': f"data:image/jpeg;base64,{original_image_base64}",
+                        'camera': 'raspberry-pi'
+                    })
+                    zoomed_frame = original_frame
+            else:
+                # No zoom: original and zoomed are the same
+                _, buffer = cv2.imencode('.jpg', original_frame)
+                original_image_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                await self.send_monitor_event(device, 'image_captured', {
+                    'width': width,
+                    'height': height,
+                    'image': f"data:image/jpeg;base64,{original_image_base64}",
+                    'camera': 'raspberry-pi'
+                })
+                zoomed_frame = original_frame
+            
+            # Analyze with CV service (using zoomed frame for better detection)
+            await self.send_monitor_event(device, 'analyzing', {
+                'message': 'Analyzing Raspberry Pi image with CV service',
+                'camera': 'raspberry-pi'
+            })
+            
+            cv_result = await self.analyze_frame_for_birds_dual(device, original_frame, zoomed_frame, 'raspberry-pi')
+            
+            return (original_frame, zoomed_frame, cv_result)
+                
+        except Exception as e:
+            logger.error(f"Error analyzing Raspberry Pi camera: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Raspberry Pi camera error: {str(e)}',
+                'camera': 'raspberry-pi'
+            })
+            return None
+    
+    async def analyze_tapo_camera(self, device: Dict, device_ip: str, camera_config: Dict, camera_label: str = 'tapo'):
+        """Analyze Tapo camera"""
+        try:
+            tapo_config = camera_config.get('tapo', {})
+            tapo_ip = tapo_config.get('ip')
+            tapo_username = tapo_config.get('username')
+            tapo_password = tapo_config.get('password')
+            tapo_stream = tapo_config.get('stream', 'stream1')
+            
+            if not (tapo_ip and tapo_username and tapo_password):
+                logger.warning(f"Tapo camera configuration incomplete for device {device_ip}")
+                return
+            
+            # Construct RTSP URL for Tapo camera
+            rtsp_url = f"rtsp://{tapo_username}:{tapo_password}@{tapo_ip}:554/{tapo_stream}"
+            logger.info(f"Using Tapo camera RTSP URL for device {device_ip}")
+            await self.send_monitor_event(device, 'image_source', {
+                'source': 'tapo',
+                'ip': tapo_ip,
+                'stream': tapo_stream,
+                'camera_label': camera_label
+            })
+            
+            # Capture frame from RTSP camera
+            logger.info(f"📷 Attempting to capture frame from Tapo camera: {device_ip}")
+            await self.send_monitor_event(device, 'capturing_image', {
+                'message': 'Capturing image from Tapo camera',
+                'camera': 'tapo'
+            })
+            original_frame = await self.capture_frame(rtsp_url)
+            
+            if original_frame is not None:
+                await self.process_single_camera(device, original_frame, 'tapo', camera_label)
+            else:
+                logger.warning(f"❌ Could not capture frame from Tapo camera for device {device_ip}")
+                await self.send_monitor_event(device, 'error', {
+                    'message': 'Could not capture frame from Tapo camera',
+                    'camera': 'tapo'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error analyzing Tapo camera: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Tapo camera error: {str(e)}',
+                'camera': 'tapo'
+            })
+    
+    async def analyze_raspberry_pi_camera(self, device: Dict, device_ip: str, camera_config: Dict, camera_label: str = 'raspberry-pi'):
+        """Analyze Raspberry Pi camera"""
+        try:
+            pi_config = camera_config.get('raspberryPi', {})
+            pi_ip = pi_config.get('ip')
+            pi_port = pi_config.get('port', 8080)
+            pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+            
+            if not pi_ip:
+                logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
+                return
+            
+            # Resolve hostname to IP if needed (in case hostname is used instead of IP)
+            resolved_ip = pi_ip
+            try:
+                # Check if it's already an IP address
+                socket.inet_aton(pi_ip)
+            except socket.error:
+                # It's a hostname, try to resolve it
+                try:
+                    resolved_ip = socket.gethostbyname(pi_ip)
+                    logger.debug(f"Resolved hostname {pi_ip} to IP {resolved_ip}")
+                except socket.gaierror as e:
+                    logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
+                    resolved_ip = pi_ip
+            
+            image_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+            logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
+            await self.send_monitor_event(device, 'image_source', {
+                'source': 'raspberry-pi',
+                'ip': pi_ip,
+                'port': pi_port,
+                'endpoint': pi_endpoint,
+                'camera_label': camera_label
+            })
+            
+            # Capture frame from Raspberry Pi
+            logger.info(f"📷 Attempting to capture frame from Raspberry Pi: {device_ip}")
+            await self.send_monitor_event(device, 'capturing_image', {
+                'message': 'Capturing image from Raspberry Pi camera',
+                'camera': 'raspberry-pi'
+            })
+            original_frame = await self.capture_frame_from_http(image_url)
+            
+            if original_frame is not None:
+                await self.process_single_camera(device, original_frame, 'raspberry-pi', camera_label)
+            else:
+                logger.warning(f"❌ Could not capture frame from Raspberry Pi camera for device {device_ip}")
+                await self.send_monitor_event(device, 'error', {
+                    'message': 'Could not capture frame from Raspberry Pi camera',
+                    'camera': 'raspberry-pi'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error analyzing Raspberry Pi camera: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Raspberry Pi camera error: {str(e)}',
+                'camera': 'raspberry-pi'
+            })
+    
+    async def process_single_camera(self, device: Dict, original_frame: np.ndarray, camera_source: str, camera_label: str = None):
+        """Process a single camera frame (Tapo or Raspberry Pi)"""
+        try:
+            height, width = original_frame.shape[:2]
+            logger.info(f"✅ Frame captured successfully from {camera_source}: {width}x{height} pixels")
+            
+            # Send original image with camera label
+            _, buffer = cv2.imencode('.jpg', original_frame)
+            original_image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            event_data = {
+                'width': width,
+                'height': height,
+                'image': f"data:image/jpeg;base64,{original_image_base64}",
+                'camera': camera_source
+            }
+            if camera_label:
+                event_data['camera_label'] = camera_label
+            
+            await self.send_monitor_event(device, 'image_captured', event_data)
+            
+            # Apply zoom if in route mode (only for Tapo, Raspberry Pi handles zoom itself)
+            if camera_source == 'tapo':
+                zoomed_frame = await self.apply_zoom_to_frame(device, original_frame)
+            else:
+                # Raspberry Pi handles zoom itself via query parameters
+                zoomed_frame = original_frame
+            
+            # Send zoomed image if different
+            if zoomed_frame is not original_frame:
+                zoom_height, zoom_width = zoomed_frame.shape[:2]
+                _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
+                zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
+                
+                zoom_event_data = {
+                    'width': zoom_width,
+                    'height': zoom_height,
+                    'zoom_factor': round(width / zoom_width, 2) if zoom_width > 0 else 1,
+                    'image': f"data:image/jpeg;base64,{zoomed_image_base64}",
+                    'camera': camera_source
+                }
+                if camera_label:
+                    zoom_event_data['camera_label'] = camera_label
+                
+                await self.send_monitor_event(device, 'image_zoomed', zoom_event_data)
+            
+            # Analyze with CV service (using zoomed frame for better detection)
+            await self.send_monitor_event(device, 'analyzing', {
+                'message': f'Analyzing image with CV service ({camera_source})',
+                'camera': camera_source
+            })
+            await self.analyze_frame_for_birds(device, original_frame, zoomed_frame, camera_source)
+                
+        except Exception as e:
+            logger.error(f"Error processing camera {camera_source}: {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'Error processing {camera_source} camera: {str(e)}',
+                'camera': camera_source
             })
     
     async def apply_zoom_to_frame(self, device: Dict, frame: np.ndarray) -> np.ndarray:
@@ -883,27 +1444,26 @@ class HardwareMonitor:
             logger.error(f"Error applying zoom to frame: {e}")
             return frame
     
-    async def analyze_frame_for_birds(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray):
-        """Analyze frame for birds and trigger shoot if found"""
+    async def analyze_frame_for_birds_dual(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, camera_source: str = 'unknown'):
+        """Analyze frame for birds (for dual camera mode - returns result without saving)"""
         try:
-            # Get IP from taubenschiesser.ip (nested structure)
-            taubenschiesser_config = device.get('taubenschiesser', {})
-            device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
             device_id = device.get('_id') or device.get('deviceId')
             
             # Use zoomed frame for better detection
             _, buffer = cv2.imencode('.jpg', zoomed_frame)
             
-            logger.info(f"🔍 Sending frame to CV service for analysis (device: {device_ip})")
+            logger.info(f"🔍 Sending frame to CV service for analysis (camera: {camera_source})")
             
-            # Send to CV service
+            # Send to CV service with timeout
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()
                 data.add_field('file', buffer.tobytes(), filename='camera.jpg', content_type='image/jpeg')
                 
+                timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout for CV analysis
                 async with session.post(
                     f"{self.cv_service_url}/detect_birds_optimized",
-                    data=data
+                    data=data,
+                    timeout=timeout
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
@@ -930,49 +1490,278 @@ class HardwareMonitor:
                             'birds_found': result.get('birds_found', False),
                             'confidence_level': result.get('confidence_level', 0),
                             'total_objects': len(detections),
-                            'objects_by_class': all_objects
+                            'objects_by_class': all_objects,
+                            'camera': camera_source
                         })
                         
                         # Log detections only if objects found
                         if detections:
-                            logger.info(f"🤖 CV Analysis: {bird_count} birds found, processing time: {processing_time:.2f}s")
+                            logger.info(f"🤖 CV Analysis ({camera_source}): {bird_count} birds found, processing time: {processing_time:.2f}s")
                             for idx, detection in enumerate(detections, 1):
                                 obj_class = detection.get('class', 'unknown')
                                 confidence = detection.get('confidence', 0)
                                 logger.info(f"  Detection #{idx}: {obj_class} (confidence: {confidence:.2f})")
                         else:
-                            logger.info(f"🤖 CV Analysis: No objects detected (processing time: {processing_time:.2f}s)")
+                            logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time:.2f}s)")
                         
                         if result.get('birds_found', False):
                             confidence = result.get('confidence_level', 0)
                             
-                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip}: {bird_count} birds, max confidence: {confidence:.2f}")
+                            logger.info(f"🦅 BIRDS DETECTED ({camera_source}): {bird_count} birds, max confidence: {confidence:.2f}")
                             
                             # Send bird detection event
                             await self.send_monitor_event(device, 'birds_detected', {
                                 'bird_count': bird_count,
                                 'confidence': confidence,
-                                'message': f'{bird_count} birds detected with confidence {confidence:.2f}'
+                                'message': f'{bird_count} birds detected with confidence {confidence:.2f} ({camera_source})',
+                                'camera': camera_source
+                            })
+                        
+                        return result
+                    else:
+                        logger.error(f"❌ CV analysis failed ({camera_source}): HTTP {response.status}")
+                        await self.send_monitor_event(device, 'error', {
+                            'message': f'CV analysis failed: HTTP {response.status}',
+                            'camera': camera_source
+                        })
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Error analyzing frame for birds ({camera_source}): {e}")
+            await self.send_monitor_event(device, 'error', {
+                'message': f'CV analysis error: {str(e)}',
+                'camera': camera_source
+            })
+            return None
+    
+    async def analyze_frame_for_birds(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, camera_source: str = 'unknown'):
+        """Analyze frame for birds and trigger shoot if found"""
+        try:
+            # Get IP from taubenschiesser.ip (nested structure)
+            taubenschiesser_config = device.get('taubenschiesser', {})
+            device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+            device_id = device.get('_id') or device.get('deviceId')
+            
+            # Use zoomed frame for better detection
+            _, buffer = cv2.imencode('.jpg', zoomed_frame)
+            
+            logger.info(f"🔍 Sending frame to CV service for analysis (device: {device_ip}, camera: {camera_source})")
+            
+            # Send to CV service with timeout
+            async with aiohttp.ClientSession() as session:
+                data = aiohttp.FormData()
+                data.add_field('file', buffer.tobytes(), filename='camera.jpg', content_type='image/jpeg')
+                
+                timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout for CV analysis
+                async with session.post(
+                    f"{self.cv_service_url}/detect_birds_optimized",
+                    data=data,
+                    timeout=timeout
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        
+                        # Log CV service response details
+                        bird_count = result.get('bird_count', 0)
+                        detections = result.get('detections', [])
+                        processing_time = result.get('processing_time', 0)
+                        
+                        # Count all objects (not just birds)
+                        all_objects = {}
+                        for detection in detections:
+                            obj_class = detection.get('class', 'unknown')
+                            if obj_class in all_objects:
+                                all_objects[obj_class] += 1
+                            else:
+                                all_objects[obj_class] = 1
+                        
+                        # Send CV analysis result event
+                        await self.send_monitor_event(device, 'cv_analysis_complete', {
+                            'bird_count': bird_count,
+                            'detections': detections,
+                            'processing_time': processing_time,
+                            'birds_found': result.get('birds_found', False),
+                            'confidence_level': result.get('confidence_level', 0),
+                            'total_objects': len(detections),
+                            'objects_by_class': all_objects,
+                            'camera': camera_source
+                        })
+                        
+                        # Log detections only if objects found
+                        if detections:
+                            logger.info(f"🤖 CV Analysis ({camera_source}): {bird_count} birds found, processing time: {processing_time:.2f}s")
+                            for idx, detection in enumerate(detections, 1):
+                                obj_class = detection.get('class', 'unknown')
+                                confidence = detection.get('confidence', 0)
+                                logger.info(f"  Detection #{idx}: {obj_class} (confidence: {confidence:.2f})")
+                        else:
+                            logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time:.2f}s)")
+                        
+                        if result.get('birds_found', False):
+                            confidence = result.get('confidence_level', 0)
+                            
+                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {bird_count} birds, max confidence: {confidence:.2f}")
+                            
+                            # Send bird detection event
+                            await self.send_monitor_event(device, 'birds_detected', {
+                                'bird_count': bird_count,
+                                'confidence': confidence,
+                                'message': f'{bird_count} birds detected with confidence {confidence:.2f} ({camera_source})',
+                                'camera': camera_source
                             })
                             
                             # Save detection to database with both images and detailed info
-                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result)
+                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source)
                             
-                            # Trigger shoot with targeting
+                            # Trigger shoot with targeting (only once, not per camera)
+                            # We'll trigger shoot only if this is the first camera or if birds were detected on this camera
                             await self.trigger_shoot(device, target_bird=target_bird)
                     else:
-                        logger.error(f"❌ CV analysis failed for device {device_ip}: HTTP {response.status}")
+                        logger.error(f"❌ CV analysis failed for device {device_ip} ({camera_source}): HTTP {response.status}")
                         await self.send_monitor_event(device, 'error', {
-                            'message': f'CV analysis failed: HTTP {response.status}'
+                            'message': f'CV analysis failed: HTTP {response.status}',
+                            'camera': camera_source
                         })
                         
         except Exception as e:
-            logger.error(f"Error analyzing frame for birds: {e}")
+            logger.error(f"Error analyzing frame for birds ({camera_source}): {e}")
             await self.send_monitor_event(device, 'error', {
-                'message': f'CV analysis error: {str(e)}'
+                'message': f'CV analysis error: {str(e)}',
+                'camera': camera_source
             })
     
-    async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict):
+    async def save_combined_detection_to_db(self, device: Dict, 
+                                            tapo_original_frame: Optional[np.ndarray], tapo_zoomed_frame: Optional[np.ndarray], tapo_cv_result: Optional[Dict],
+                                            raspberry_pi_original_frame: Optional[np.ndarray], raspberry_pi_zoomed_frame: Optional[np.ndarray], raspberry_pi_cv_result: Optional[Dict]):
+        """Save combined detection with images from both cameras"""
+        try:
+            device_id = device.get('_id') or device.get('deviceId')
+            taubenschiesser_config = device.get('taubenschiesser', {})
+            device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+            
+            # Combine detections from both cameras, marking which camera detected what
+            all_detections = []
+            
+            if tapo_cv_result and tapo_cv_result.get('detections'):
+                for detection in tapo_cv_result.get('detections', []):
+                    detection['camera_source'] = 'tapo'
+                    all_detections.append(detection)
+            
+            if raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
+                for detection in raspberry_pi_cv_result.get('detections', []):
+                    detection['camera_source'] = 'raspberry-pi'
+                    all_detections.append(detection)
+            
+            # Find target bird (highest confidence bird from either camera)
+            target_bird = None
+            if all_detections:
+                birds = [d for d in all_detections if d.get('class') == 'bird']
+                if birds:
+                    target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                    logger.info(f"🎯 Target bird selected: confidence={target_bird.get('confidence', 0):.2f}, camera={target_bird.get('camera_source', 'unknown')}")
+            
+            # Get zoom factor
+            zoom_factor = 1.0
+            actions = device.get('actions', {})
+            if actions.get('mode') == 'route':
+                route_coordinates = actions.get('route', {}).get('coordinates', [])
+                route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                if route_index < len(route_coordinates):
+                    zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
+            
+            # Prepare image data
+            detection_data = {
+                "deviceId": device_id,
+                "detections": all_detections,
+                "target_bird": target_bird,
+                "bird_count": len([d for d in all_detections if d.get('class') == 'bird']),
+                "confidence_level": max(
+                    tapo_cv_result.get('confidence_level', 0) if tapo_cv_result else 0,
+                    raspberry_pi_cv_result.get('confidence_level', 0) if raspberry_pi_cv_result else 0
+                ),
+                "processing_time": (
+                    (tapo_cv_result.get('processing_time', 0) if tapo_cv_result else 0) +
+                    (raspberry_pi_cv_result.get('processing_time', 0) if raspberry_pi_cv_result else 0)
+                ),
+                "zoom_factor": zoom_factor,
+                "camera_source": "both",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Add Tapo images if available
+            if tapo_original_frame is not None:
+                _, tapo_original_buffer = cv2.imencode('.jpg', tapo_original_frame)
+                tapo_original_base64 = base64.b64encode(tapo_original_buffer).decode('utf-8')
+                detection_data["tapo_original_image"] = f"data:image/jpeg;base64,{tapo_original_base64}"
+                
+                if tapo_zoomed_frame is not None and tapo_zoomed_frame is not tapo_original_frame:
+                    _, tapo_zoomed_buffer = cv2.imencode('.jpg', tapo_zoomed_frame)
+                    tapo_zoomed_base64 = base64.b64encode(tapo_zoomed_buffer).decode('utf-8')
+                    detection_data["tapo_zoomed_image"] = f"data:image/jpeg;base64,{tapo_zoomed_base64}"
+                else:
+                    # If no zoom, use original as zoomed
+                    detection_data["tapo_zoomed_image"] = detection_data["tapo_original_image"]
+                
+                # Store image info
+                detection_data["tapo_image_info"] = {
+                    "original_size": {
+                        "width": tapo_original_frame.shape[1],
+                        "height": tapo_original_frame.shape[0]
+                    },
+                    "zoomed_size": {
+                        "width": tapo_zoomed_frame.shape[1] if tapo_zoomed_frame is not None and tapo_zoomed_frame is not tapo_original_frame else tapo_original_frame.shape[1],
+                        "height": tapo_zoomed_frame.shape[0] if tapo_zoomed_frame is not None and tapo_zoomed_frame is not tapo_original_frame else tapo_original_frame.shape[0]
+                    }
+                }
+            
+            # Add Raspberry Pi images if available
+            if raspberry_pi_original_frame is not None:
+                _, pi_original_buffer = cv2.imencode('.jpg', raspberry_pi_original_frame)
+                pi_original_base64 = base64.b64encode(pi_original_buffer).decode('utf-8')
+                detection_data["raspberry_pi_original_image"] = f"data:image/jpeg;base64,{pi_original_base64}"
+                
+                if raspberry_pi_zoomed_frame is not None and raspberry_pi_zoomed_frame is not raspberry_pi_original_frame:
+                    _, pi_zoomed_buffer = cv2.imencode('.jpg', raspberry_pi_zoomed_frame)
+                    pi_zoomed_base64 = base64.b64encode(pi_zoomed_buffer).decode('utf-8')
+                    detection_data["raspberry_pi_zoomed_image"] = f"data:image/jpeg;base64,{pi_zoomed_base64}"
+                else:
+                    # If no zoom, use original as zoomed
+                    detection_data["raspberry_pi_zoomed_image"] = detection_data["raspberry_pi_original_image"]
+                
+                # Store image info
+                detection_data["raspberry_pi_image_info"] = {
+                    "original_size": {
+                        "width": raspberry_pi_original_frame.shape[1],
+                        "height": raspberry_pi_original_frame.shape[0]
+                    },
+                    "zoomed_size": {
+                        "width": raspberry_pi_zoomed_frame.shape[1] if raspberry_pi_zoomed_frame is not None and raspberry_pi_zoomed_frame is not raspberry_pi_original_frame else raspberry_pi_original_frame.shape[1],
+                        "height": raspberry_pi_zoomed_frame.shape[0] if raspberry_pi_zoomed_frame is not None and raspberry_pi_zoomed_frame is not raspberry_pi_original_frame else raspberry_pi_original_frame.shape[0]
+                    }
+                }
+            
+            # Send to internal API endpoint
+            headers = {'Authorization': f'Bearer {self.service_token}'}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.api_url}/api/hardware/detection",
+                    json=detection_data,
+                    headers=headers
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"Combined detection saved for device {device_ip}: {len(all_detections)} objects from both cameras")
+                        await self.update_device_last_detection(device_id)
+                    else:
+                        logger.error(f"Failed to save combined detection for device {device_ip}: {response.status}")
+            
+            return target_bird
+                        
+        except Exception as e:
+            logger.error(f"Error saving combined detection: {e}")
+            return None
+    
+    async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict, camera_source: str = 'unknown'):
         """Save detection to database via API with both images and detailed detection info"""
         try:
             device_id = device.get('_id') or device.get('deviceId')
@@ -1006,7 +1795,7 @@ class HardwareMonitor:
                 if birds:
                     # Sort by confidence and take the highest
                     target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                    logger.info(f"🎯 Target bird selected: confidence={target_bird.get('confidence', 0):.2f}, bbox={target_bird.get('bbox')}")
+                    logger.info(f"🎯 Target bird selected ({camera_source}): confidence={target_bird.get('confidence', 0):.2f}, bbox={target_bird.get('bbox')}")
             
             # Store image info for angle calculations
             image_info = {
@@ -1033,6 +1822,7 @@ class HardwareMonitor:
                 "processing_time": cv_result.get('processing_time', 0),
                 "zoom_factor": zoom_factor,
                 "image_info": image_info,
+                "camera_source": camera_source,  # Store which camera detected this
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -1046,18 +1836,18 @@ class HardwareMonitor:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        logger.info(f"Detection saved to database for device {device_ip}: {result.get('detection_count', 0)} objects, zoom: {zoom_factor}x")
+                        logger.info(f"Detection saved to database for device {device_ip} ({camera_source}): {result.get('detection_count', 0)} objects, zoom: {zoom_factor}x")
                         
                         # Update device last detection time
                         await self.update_device_last_detection(device_id)
                         
                     else:
-                        logger.error(f"Failed to save detection to database for device {device_ip}: {response.status}")
+                        logger.error(f"Failed to save detection to database for device {device_ip} ({camera_source}): {response.status}")
             
             return target_bird
                         
         except Exception as e:
-            logger.error(f"Error saving detection to database: {e}")
+            logger.error(f"Error saving detection to database ({camera_source}): {e}")
             return None
     
     async def update_device_last_detection(self, device_id: str):
@@ -1140,8 +1930,10 @@ class HardwareMonitor:
                     route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
                     if route_index < len(route_coordinates):
                         current_pos = route_coordinates[route_index]
-                        current_rotation = current_pos.get('rotation', 0)
-                        current_tilt = current_pos.get('tilt', 0)
+                        original_rotation = current_pos.get('rotation', 0)
+                        original_tilt = current_pos.get('tilt', 0)
+                        # Apply position inversion if enabled
+                        current_rotation, current_tilt = self.apply_position_inversion(device, original_rotation, original_tilt)
                         zoom_factor = current_pos.get('zoom', 1.0)
                         
                         # Calculate adjustment needed
@@ -1328,8 +2120,12 @@ class HardwareMonitor:
     async def capture_frame_from_http(self, image_url: str) -> Optional[np.ndarray]:
         """Capture a frame from HTTP endpoint (e.g. Raspberry Pi)"""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            # Increase timeout and add connection timeout
+            timeout = aiohttp.ClientTimeout(total=15, connect=5)  # 15s total, 5s connect
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                logger.debug(f"Fetching image from: {image_url}")
+                async with session.get(image_url) as response:
                     if response.status == 200:
                         image_data = await response.read()
                         
@@ -1355,37 +2151,51 @@ class HardwareMonitor:
             return None
     
     async def capture_frame(self, rtsp_url: str) -> Optional[np.ndarray]:
-        """Capture a frame from RTSP stream"""
+        """Capture a frame from RTSP stream with timeout"""
         try:
-            with self.camera_lock:
-                cap = cv2.VideoCapture(rtsp_url)
-                
-                if not cap.isOpened():
-                    logger.warning(f"❌ Could not open RTSP stream")
-                    return None
-                
-                ret, frame = cap.read()
-                
-                # Manche Kameras liefern nicht sofort ein gültiges Frame – ein paar Versuche erlauben
-                attempt = 1
-                while (not ret or frame is None) and attempt < 6:
-                    time.sleep(0.1)
-                    ret, frame = cap.read()
-                    attempt += 1
-                
-                cap.release()
-                
-                if ret and frame is not None:
-                    height, width = frame.shape[:2]
-                    logger.debug(f"📸 Frame captured from RTSP: {width}x{height} pixels (attempt {attempt})")
-                    return frame
-                else:
-                    logger.warning(f"❌ Could not read frame from RTSP stream after {attempt} attempts (ret={ret})")
-                    return None
-                    
+            # Run synchronous capture in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, self._capture_frame_sync, rtsp_url),
+                timeout=15.0  # 15 second timeout for RTSP capture
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"❌ Timeout while capturing frame from RTSP stream: {rtsp_url}")
+            return None
         except Exception as e:
             logger.error(f"❌ Error capturing frame: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
+    
+    def _capture_frame_sync(self, rtsp_url: str) -> Optional[np.ndarray]:
+        """Synchronous frame capture (called from async with timeout)"""
+        with self.camera_lock:
+            cap = cv2.VideoCapture(rtsp_url)
+            
+            if not cap.isOpened():
+                logger.warning(f"❌ Could not open RTSP stream")
+                cap.release()
+                return None
+            
+            ret, frame = cap.read()
+            
+            # Manche Kameras liefern nicht sofort ein gültiges Frame – ein paar Versuche erlauben
+            attempt = 1
+            while (not ret or frame is None) and attempt < 6:
+                time.sleep(0.1)
+                ret, frame = cap.read()
+                attempt += 1
+            
+            cap.release()
+            
+            if ret and frame is not None:
+                height, width = frame.shape[:2]
+                logger.debug(f"📸 Frame captured from RTSP: {width}x{height} pixels (attempt {attempt})")
+                return frame
+            else:
+                logger.warning(f"❌ Could not read frame from RTSP stream after {attempt} attempts (ret={ret})")
+                return None
     
     async def load_local_image(self, image_path: str) -> Optional[np.ndarray]:
         """Load image from local file"""

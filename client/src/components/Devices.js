@@ -14,13 +14,16 @@ import {
   DialogActions,
   TextField,
   FormControl,
+  FormControlLabel,
   InputLabel,
   Select,
   MenuItem,
   Alert,
   Paper,
   Slider,
-  CircularProgress
+  CircularProgress,
+  Checkbox,
+  Switch
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -51,12 +54,13 @@ const Devices = () => {
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '' },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false },
     camera: { 
       type: 'tapo',
       directUrl: '',
       rtspUrl: '',
-      tapo: { ip: '', username: '', password: '', stream: 'stream1' },
+      tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
+      raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
       useLocalImage: false,
       localImagePath: ''
     }
@@ -108,12 +112,17 @@ const Devices = () => {
       setFormData({
         name: device.name,
         location: device.location || { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: device.taubenschiesser || { ip: '' },
+        taubenschiesser: {
+          ip: device.taubenschiesser?.ip || '',
+          invertRotation: device.taubenschiesser?.invertRotation || false,
+          invertTilt: device.taubenschiesser?.invertTilt || false
+        },
         camera: device.camera || { 
           type: 'tapo',
           directUrl: '',
           rtspUrl: '',
-          tapo: { ip: '', username: '', password: '', stream: 'stream1' },
+          tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
+          raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
           useLocalImage: false,
           localImagePath: ''
         }
@@ -123,12 +132,13 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '' },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false },
         camera: { 
           type: 'tapo',
           directUrl: '',
           rtspUrl: '',
-          tapo: { ip: '', username: '', password: '', stream: 'stream1' },
+          tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
+          raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
           useLocalImage: false,
           localImagePath: ''
         }
@@ -449,6 +459,41 @@ const Devices = () => {
               placeholder="192.168.1.100"
               required
             />
+            <Box sx={{ mt: 2, mb: 1 }}>
+              <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>
+                Position-Invertierung
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={formData.taubenschiesser.invertRotation || false}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: { ...formData.taubenschiesser, invertRotation: e.target.checked }
+                    })}
+                  />
+                }
+                label="Rotation invertieren (180° - Wert)"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={formData.taubenschiesser.invertTilt || false}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: { ...formData.taubenschiesser, invertTilt: e.target.checked }
+                    })}
+                  />
+                }
+                label="Kippung invertieren (180° - Wert)"
+              />
+              <Alert severity="info" sx={{ mt: 1 }}>
+                <Typography variant="body2">
+                  Wenn aktiviert, werden alle Positionen aus den Routen-Elementen invertiert (180° - Wert).
+                  Nützlich, wenn das Gerät in umgekehrter Richtung montiert ist.
+                </Typography>
+              </Alert>
+            </Box>
 
             {/* Camera Configuration */}
             <FormControl fullWidth margin="dense">
@@ -472,6 +517,8 @@ const Devices = () => {
               >
                 <MenuItem value="direct">Direkter RTSP-Link</MenuItem>
                 <MenuItem value="tapo">Tapo Kamera</MenuItem>
+                <MenuItem value="raspberry-pi">Raspberry Pi Kamera</MenuItem>
+                <MenuItem value="dual">Dual (Tapo + Raspberry Pi)</MenuItem>
                 <MenuItem value="local">Lokales Bild (Test)</MenuItem>
               </Select>
             </FormControl>
@@ -541,6 +588,23 @@ const Devices = () => {
                     <MenuItem value="stream2">Stream 2 (640x480, 30fps)</MenuItem>
                   </Select>
                 </FormControl>
+                <TextField
+                  margin="dense"
+                  label="Diagonal Field of View (FOV) in Grad"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.tapo.fov || 110}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      tapo: { ...formData.camera.tapo, fov: parseFloat(e.target.value) || 110 }
+                    }
+                  })}
+                  helperText="Diagonaler Bildwinkel in Grad (Standard: 110° für Tapo)"
+                  inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
               </>
             )}
 
@@ -558,6 +622,352 @@ const Devices = () => {
                 })}
                 placeholder="rtsp://user:pass@ip:port/stream"
               />
+            )}
+
+            {/* Raspberry Pi Camera Configuration */}
+            {formData.camera.type === 'raspberry-pi' && (
+              <>
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi IP/Hostname"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.ip || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        ip: e.target.value,
+                        port: formData.camera.raspberryPi?.port || 8080,
+                        endpoint: formData.camera.raspberryPi?.endpoint || '/image.jpg',
+                        streamEndpoint: formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'
+                      }
+                    }
+                  })}
+                  placeholder="PiCam oder 192.168.1.100"
+                  helperText="Hostname (z.B. PiCam) oder IP-Adresse"
+                />
+                <TextField
+                  margin="dense"
+                  label="Port"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.raspberryPi?.port || 8080}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        port: parseInt(e.target.value) || 8080
+                      }
+                    }
+                  })}
+                  helperText="Standard: 8080"
+                />
+                <TextField
+                  margin="dense"
+                  label="Image Endpoint"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.endpoint || '/image.jpg'}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        endpoint: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Endpoint für Einzelbilder (Standard: /image.jpg)"
+                />
+                <TextField
+                  margin="dense"
+                  label="Stream Endpoint"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        streamEndpoint: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Endpoint für MJPEG-Stream (Standard: /stream.mjpeg)"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={formData.camera.raspberryPi?.flip || false}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        camera: {
+                          ...formData.camera,
+                          raspberryPi: { 
+                            ...(formData.camera.raspberryPi || {}),
+                            flip: e.target.checked
+                          }
+                        }
+                      })}
+                    />
+                  }
+                  label="Bild um 180° drehen"
+                />
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.raspberryPi?.fov || 75}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        fov: parseFloat(e.target.value) || 75
+                      }
+                    }
+                  })}
+                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3)"
+                  inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
+              </>
+            )}
+
+            {/* Dual Camera Configuration */}
+            {formData.camera.type === 'dual' && (
+              <>
+                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, fontWeight: 'bold' }}>
+                  Tapo Kamera
+                </Typography>
+                <TextField
+                  margin="dense"
+                  label="Kamera IP"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.tapo?.ip || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      tapo: { 
+                        ...(formData.camera.tapo || {}),
+                        ip: e.target.value,
+                        username: formData.camera.tapo?.username || '',
+                        password: formData.camera.tapo?.password || '',
+                        stream: formData.camera.tapo?.stream || 'stream1'
+                      }
+                    }
+                  })}
+                  placeholder="192.168.1.101"
+                />
+                <TextField
+                  margin="dense"
+                  label="Benutzername"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.tapo?.username || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      tapo: { 
+                        ...(formData.camera.tapo || {}),
+                        username: e.target.value
+                      }
+                    }
+                  })}
+                />
+                <TextField
+                  margin="dense"
+                  label="Passwort"
+                  fullWidth
+                  variant="outlined"
+                  type="text"
+                  value={formData.camera.tapo?.password || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      tapo: { 
+                        ...(formData.camera.tapo || {}),
+                        password: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Passwort ist sichtbar für Bearbeitung"
+                />
+                <FormControl fullWidth margin="dense">
+                  <InputLabel>Stream</InputLabel>
+                  <Select
+                    value={formData.camera.tapo?.stream || 'stream1'}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      camera: {
+                        ...formData.camera,
+                        tapo: { 
+                          ...(formData.camera.tapo || {}),
+                          stream: e.target.value
+                        }
+                      }
+                    })}
+                    label="Stream"
+                  >
+                    <MenuItem value="stream1">Stream 1 (1920x1080, 30fps)</MenuItem>
+                    <MenuItem value="stream2">Stream 2 (640x480, 30fps)</MenuItem>
+                  </Select>
+                </FormControl>
+                <TextField
+                  margin="dense"
+                  label="Tapo Diagonal FOV (Grad)"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.tapo?.fov || 110}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      tapo: { 
+                        ...(formData.camera.tapo || {}),
+                        fov: parseFloat(e.target.value) || 110
+                      }
+                    }
+                  })}
+                  helperText="Diagonaler Bildwinkel in Grad (Standard: 110° für Tapo, Master-Kamera)"
+                  inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
+
+                <Typography variant="subtitle2" sx={{ mt: 3, mb: 1, fontWeight: 'bold' }}>
+                  Raspberry Pi Kamera
+                </Typography>
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi IP/Hostname"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.ip || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        ip: e.target.value,
+                        port: formData.camera.raspberryPi?.port || 8080,
+                        endpoint: formData.camera.raspberryPi?.endpoint || '/image.jpg',
+                        streamEndpoint: formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'
+                      }
+                    }
+                  })}
+                  placeholder="PiCam oder 192.168.1.100"
+                  helperText="Hostname (z.B. PiCam) oder IP-Adresse"
+                />
+                <TextField
+                  margin="dense"
+                  label="Port"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.raspberryPi?.port || 8080}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        port: parseInt(e.target.value) || 8080
+                      }
+                    }
+                  })}
+                  helperText="Standard: 8080"
+                />
+                <TextField
+                  margin="dense"
+                  label="Image Endpoint"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.endpoint || '/image.jpg'}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        endpoint: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Endpoint für Einzelbilder (Standard: /image.jpg)"
+                />
+                <TextField
+                  margin="dense"
+                  label="Stream Endpoint"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        streamEndpoint: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Endpoint für MJPEG-Stream (Standard: /stream.mjpeg)"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={formData.camera.raspberryPi?.flip || false}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        camera: {
+                          ...formData.camera,
+                          raspberryPi: { 
+                            ...(formData.camera.raspberryPi || {}),
+                            flip: e.target.checked
+                          }
+                        }
+                      })}
+                    />
+                  }
+                  label="Bild um 180° drehen"
+                />
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.raspberryPi?.fov || 75}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        fov: parseFloat(e.target.value) || 75
+                      }
+                    }
+                  })}
+                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3, wird automatisch an Tapo-FOV angepasst)"
+                  inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
+              </>
             )}
 
             {/* Local Image Configuration */}

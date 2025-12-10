@@ -194,7 +194,8 @@ class DeviceMonitor {
   }
 
   getCameraIp(device) {
-    if (device.camera.type === 'tapo' && device.camera.tapo && device.camera.tapo.ip) {
+    // Prüfe auf Tapo Kamera - funktioniert für type='tapo' und type='dual'
+    if (device.camera.tapo && device.camera.tapo.ip) {
       return device.camera.tapo.ip;
     } else if (device.camera.directUrl) {
       // Extrahiere IP aus RTSP URL
