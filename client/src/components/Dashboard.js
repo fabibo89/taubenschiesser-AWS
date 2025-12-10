@@ -132,8 +132,8 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
           />
         ) : (
           <>
-            {/* Altes Bild - bleibt sichtbar */}
-            {currentImage && (
+            {/* Altes Bild - wird ausgeblendet wenn neues Bild lädt */}
+            {currentImage && !isLoading && (
               <img
                 src={currentImage}
                 alt={`Previous ${cameraName} Stream`}
@@ -150,7 +150,7 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
               />
             )}
             
-            {/* Neues Bild - lädt im Hintergrund */}
+            {/* Neues Bild - bleibt immer sichtbar, auch während des Ladens */}
             <img
               key={streamUrl}
               src={streamUrl}
@@ -164,20 +164,6 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
                 height: '100%',
                 objectFit: 'cover',
                 borderRadius: '4px',
-                opacity: isLoading ? 0 : 1,
-                transition: 'opacity 0.3s ease',
-                zIndex: 2
-              }}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                borderRadius: '4px',
-                opacity: isLoading ? 0 : 1,
-                transition: 'opacity 0.3s ease',
                 zIndex: 2
               }}
               onError={(e) => {
@@ -197,6 +183,7 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
               }}
               onLoadStart={() => {
                 console.log(`${cameraName} image loading started for:`, streamUrl);
+                setIsLoading(true);
               }}
             />
           </>
