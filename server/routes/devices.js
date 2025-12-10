@@ -8,6 +8,33 @@ const hardwareHelper = require('../utils/hardwareHelper');
 
 const router = express.Router();
 
+// Helper function to get internal API URL (for server-to-server calls)
+function getInternalApiUrl() {
+  const port = process.env.PORT || 5001;
+  // Use localhost for internal calls (works in Docker and locally)
+  return `http://localhost:${port}`;
+}
+
+// Helper function to log axios errors without request body
+function logAxiosError(message, error) {
+  logger.error(message, {
+    message: error.message,
+    code: error.code,
+    syscall: error.syscall,
+    hostname: error.hostname,
+    address: error.address,
+    port: error.port,
+    url: error.config?.url,
+    method: error.config?.method,
+    response: error.response ? {
+      status: error.response.status,
+      statusText: error.response.statusText,
+      data: error.response.data
+    } : undefined
+    // Explicitly NOT logging error.config (contains request body with image data)
+  });
+}
+
 // Get all devices for user
 router.get('/', authenticateToken, async (req, res) => {
   try {
@@ -720,7 +747,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           formData.append('deviceId', device._id.toString());
 
           const cvResponse = await axios.post(
-            `${req.protocol}://${req.get('host')}/api/cv/detect`,
+            `${getInternalApiUrl()}/api/cv/detect`,
             formData,
             {
               headers: {
@@ -744,7 +771,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
             }
           };
         } catch (error) {
-          logger.error('Error capturing/analyzing Tapo camera:', error);
+          logAxiosError('Error capturing/analyzing Tapo camera:', error);
           const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
           result.tapo = { error: errorMessage };
         }
@@ -789,7 +816,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
             formData.append('deviceId', device._id.toString());
 
             const cvResponse = await axios.post(
-              `${req.protocol}://${req.get('host')}/api/cv/detect`,
+              `${getInternalApiUrl()}/api/cv/detect`,
               formData,
               {
                 headers: {
@@ -813,7 +840,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
             }
           };
         } catch (error) {
-          logger.error('Error capturing/analyzing Raspberry Pi camera:', error);
+          logAxiosError('Error capturing/analyzing Raspberry Pi camera:', error);
           const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
           result.raspberryPi = { error: errorMessage };
         }
@@ -845,7 +872,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
         formData.append('deviceId', device._id.toString());
 
         const cvResponse = await axios.post(
-          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          `${getInternalApiUrl()}/api/cv/detect`,
           formData,
           {
             headers: {
@@ -867,7 +894,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           image_info: cvResponse.data.image_info
         };
       } catch (error) {
-        logger.error('Error capturing/analyzing camera:', error);
+        logAxiosError('Error capturing/analyzing camera:', error);
         const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
         result.error = errorMessage;
       }
@@ -875,7 +902,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
 
     res.json(result);
   } catch (error) {
-    logger.error('Position preview capture error:', error);
+    logAxiosError('Position preview capture error:', error);
     res.status(500).json({
       error: 'Failed to capture and analyze',
       message: error.message
@@ -934,7 +961,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
         formData.append('deviceId', device._id.toString());
 
         const cvResponse = await axios.post(
-          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          `${getInternalApiUrl()}/api/cv/detect`,
           formData,
           {
             headers: {
@@ -958,7 +985,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
           }
         };
       } catch (error) {
-        logger.error('Error capturing/analyzing Tapo camera:', error);
+        logAxiosError('Error capturing/analyzing Tapo camera:', error);
         const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
         result.tapo = { error: errorMessage };
       }
@@ -998,7 +1025,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
         formData.append('deviceId', device._id.toString());
 
         const cvResponse = await axios.post(
-          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          `${getInternalApiUrl()}/api/cv/detect`,
           formData,
           {
             headers: {
@@ -1022,7 +1049,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
           }
         };
       } catch (error) {
-        logger.error('Error capturing/analyzing Raspberry Pi camera:', error);
+        logAxiosError('Error capturing/analyzing Raspberry Pi camera:', error);
         const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
         result.raspberryPi = { error: errorMessage };
       }
@@ -1051,7 +1078,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
         formData.append('deviceId', device._id.toString());
 
         const cvResponse = await axios.post(
-          `${req.protocol}://${req.get('host')}/api/cv/detect`,
+          `${getInternalApiUrl()}/api/cv/detect`,
           formData,
           {
             headers: {
@@ -1073,7 +1100,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
           image_info: cvResponse.data.image_info
         };
       } catch (error) {
-        logger.error('Error capturing/analyzing camera:', error);
+        logAxiosError('Error capturing/analyzing camera:', error);
         const errorMessage = error.response?.data?.detail || error.response?.data?.error || error.message || 'Unknown error';
         result.error = errorMessage;
       }
@@ -1083,7 +1110,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
 
     res.json(result);
   } catch (error) {
-    logger.error('Position preview capture camera error:', error);
+    logAxiosError('Position preview capture camera error:', error);
     res.status(500).json({
       error: 'Failed to capture and analyze',
       message: error.message
