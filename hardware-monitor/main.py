@@ -1238,6 +1238,7 @@ class HardwareMonitor:
             pi_ip = pi_config.get('ip')
             pi_port = pi_config.get('port', 8080)
             pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+            pi_flip = pi_config.get('flip', False)
             
             if not pi_ip:
                 logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
@@ -1257,7 +1258,13 @@ class HardwareMonitor:
                     logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
                     resolved_ip = pi_ip
             
-            image_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+            # Build URL with query parameters (flip)
+            base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+            query_params = []
+            if pi_flip:
+                query_params.append("flip=true")
+            
+            image_url = f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
             logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
             await self.send_monitor_event(device, 'image_source', {
                 'source': 'raspberry-pi',
