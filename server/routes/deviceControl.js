@@ -313,6 +313,53 @@ router.post('/:id/stream', async (req, res) => {
       return res.status(404).json({ error: 'Gerät nicht gefunden' });
     }
 
+    // Für Raspberry Pi Kameras: Stream wird direkt im Frontend verwendet (HTTP MJPEG)
+    // Kein Backend-Stream-Service nötig
+    if (device.camera.type === 'raspberry-pi') {
+      if (action === 'start') {
+        // Für Raspberry Pi: Stream-URL direkt zurückgeben
+        const pi = device.camera.raspberryPi;
+        if (!pi || !pi.ip) {
+          return res.status(400).json({ error: 'Raspberry Pi Kamera nicht konfiguriert' });
+        }
+        const port = pi.port || 8080;
+        const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
+        let streamUrl = `http://${pi.ip}:${port}${streamEndpoint}`;
+        
+        // Add flip parameter if needed
+        if (pi.flip) {
+          const separator = streamEndpoint.includes('?') ? '&' : '?';
+          streamUrl = `${streamUrl}${separator}flip=true`;
+        }
+        
+        logger.info(`Raspberry Pi stream URL for device ${device.name}: ${streamUrl}`);
+        
+        return res.json({
+          success: true,
+          message: 'Stream-URL bereitgestellt',
+          device: {
+            id: device._id,
+            name: device.name,
+            streamAction: action
+          },
+          streamUrl: streamUrl
+        });
+      } else {
+        // Stop action für Raspberry Pi (nur Logging, da Frontend den Stream direkt verwaltet)
+        logger.info(`Raspberry Pi stream stopped for device ${device.name}`);
+        return res.json({
+          success: true,
+          message: 'Stream gestoppt',
+          device: {
+            id: device._id,
+            name: device.name,
+            streamAction: action
+          }
+        });
+      }
+    }
+
+    // Für andere Kamera-Typen: RTSP-Stream über Stream-Service
     const streamService = req.app.get('streamService');
     
     if (action === 'start') {
@@ -391,6 +438,46 @@ router.get('/:id/stream-status', async (req, res) => {
       return res.status(404).json({ error: 'Gerät nicht gefunden' });
     }
 
+    // Für Raspberry Pi Kameras: HTTP MJPEG Stream-URL zurückgeben
+    if (device.camera.type === 'raspberry-pi') {
+      const pi = device.camera.raspberryPi;
+      if (!pi || !pi.ip) {
+        return res.json({
+          deviceId: id,
+          deviceName: device.name,
+          cameraType: 'raspberry-pi',
+          streamStatus: {
+            active: false,
+            streamUrl: null,
+            error: 'Raspberry Pi Kamera nicht konfiguriert'
+          },
+          isActive: false
+        });
+      }
+      
+      const port = pi.port || 8080;
+      const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
+      let streamUrl = `http://${pi.ip}:${port}${streamEndpoint}`;
+      
+      // Add flip parameter if needed
+      if (pi.flip) {
+        const separator = streamEndpoint.includes('?') ? '&' : '?';
+        streamUrl = `${streamUrl}${separator}flip=true`;
+      }
+      
+      return res.json({
+        deviceId: id,
+        deviceName: device.name,
+        cameraType: 'raspberry-pi',
+        streamStatus: {
+          active: true,
+          streamUrl: streamUrl
+        },
+        isActive: true
+      });
+    }
+
+    // Für andere Kamera-Typen: RTSP-Stream-Status
     const streamStatus = streamService.getStreamStatus(id);
     const rtspUrl = device.getRtspUrl();
     const isActive = streamService.isStreamActive(id);
@@ -398,6 +485,7 @@ router.get('/:id/stream-status', async (req, res) => {
     res.json({
       deviceId: id,
       deviceName: device.name,
+      cameraType: device.camera.type,
       rtspUrl,
       streamStatus: {
         active: isActive,

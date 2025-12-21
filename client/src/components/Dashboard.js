@@ -798,105 +798,123 @@ const Dashboard = () => {
               }}
             >
             {isStreaming ? (
-              <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
-                {/* Loading-Indikator */}
-                {isLoading && (
-                  <Box sx={{
-                    position: 'absolute',
-                    top: 8,
-                    right: 8,
-                    zIndex: 10,
-                    backgroundColor: 'rgba(0,0,0,0.4)',
-                    color: 'rgba(255,255,255,0.8)',
-                    padding: '3px 6px',
-                    borderRadius: '3px',
-                    fontSize: '10px',
-                    fontWeight: 300
-                  }}>
-                    Aktualisiere...
-                  </Box>
-                )}
-                {streamUrl ? (
-                  <Box 
-                    sx={{ 
-                      position: 'relative', 
-                      width: '100%', 
-                      height: '100%',
-                      cursor: 'pointer',
-                      '&:hover': {
-                        opacity: 0.95
-                      }
-                    }}
-                    onClick={() => toggleStream(device._id)}
-                    title="Klicken um Stream zu stoppen"
-                  >
-                    {/* Altes Bild - bleibt sichtbar */}
-                    {currentImage && (
-                    <img
-                      src={currentImage}
-                      alt="Previous Device Stream"
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
+              // Für reine Raspberry Pi Kamera: Verwende StreamDisplay mit MJPEG
+              hasRaspberryPi && !hasTapo ? (
+                <StreamDisplay
+                  streamUrl={raspberryPiStreamUrl}
+                  currentImage={raspberryPiCurrentImage}
+                  isLoading={raspberryPiIsLoading}
+                  loadTimeoutRef={raspberryPiLoadTimeoutRef}
+                  setIsLoading={setRaspberryPiIsLoading}
+                  setCurrentImage={setRaspberryPiCurrentImage}
+                  setStreamUrl={setRaspberryPiStreamUrl}
+                  toggleStream={() => toggleStream(device._id)}
+                  cameraName="Raspberry Pi"
+                  isMjpeg={true}
+                  imageRef={raspberryPiImageRef}
+                />
+              ) : (
+                // Für andere Kameras (Tapo, Direct, etc.): Verwende bestehende Logik
+                <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+                  {/* Loading-Indikator */}
+                  {isLoading && (
+                    <Box sx={{
+                      position: 'absolute',
+                      top: 8,
+                      right: 8,
+                      zIndex: 10,
+                      backgroundColor: 'rgba(0,0,0,0.4)',
+                      color: 'rgba(255,255,255,0.8)',
+                      padding: '3px 6px',
+                      borderRadius: '3px',
+                      fontSize: '10px',
+                      fontWeight: 300
+                    }}>
+                      Aktualisiere...
+                    </Box>
+                  )}
+                  {streamUrl ? (
+                    <Box 
+                      sx={{ 
+                        position: 'relative', 
+                        width: '100%', 
                         height: '100%',
-                        objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
-                        borderRadius: '4px',
-                        zIndex: 1
-                      }}
-                    />
-                    )}
-                    
-                    {/* Neues Bild - lädt im Hintergrund */}
-                    <img
-                      key={streamUrl}
-                      src={streamUrl}
-                      alt="Device Stream"
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
-                        borderRadius: '4px',
-                        opacity: isLoading ? 0 : 1,
-                        transition: 'opacity 0.3s ease',
-                        zIndex: 2
-                      }}
-                      onError={(e) => {
-                        console.error('Image load error:', e);
-                        console.error('Image URL:', streamUrl);
-                        if (loadTimeoutRef.current) {
-                          clearTimeout(loadTimeoutRef.current);
+                        cursor: 'pointer',
+                        '&:hover': {
+                          opacity: 0.95
                         }
-                        setIsLoading(false);
                       }}
-                      onLoad={() => {
-                        console.log('Image loaded for:', streamUrl);
-                        if (loadTimeoutRef.current) {
-                          clearTimeout(loadTimeoutRef.current);
-                        }
-                        // Neues Bild ist fertig - ersetze das alte
-                        setCurrentImage(streamUrl);
-                        // Loading beendet
-                        setIsLoading(false);
-                      }}
-                      onLoadStart={() => {
-                        console.log('Image loading started for:', streamUrl);
-                      }}
-                    />
-                  </Box>
-                ) : (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                    <CircularProgress size={40} />
-                    <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-                      Stream wird vorbereitet...
-                    </Typography>
-                  </Box>
-                )}
-              </Box>
+                      onClick={() => toggleStream(device._id)}
+                      title="Klicken um Stream zu stoppen"
+                    >
+                      {/* Altes Bild - bleibt sichtbar */}
+                      {currentImage && (
+                      <img
+                        src={currentImage}
+                        alt="Previous Device Stream"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
+                          borderRadius: '4px',
+                          zIndex: 1
+                        }}
+                      />
+                      )}
+                      
+                      {/* Neues Bild - lädt im Hintergrund */}
+                      <img
+                        key={streamUrl}
+                        src={streamUrl}
+                        alt="Device Stream"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
+                          borderRadius: '4px',
+                          opacity: isLoading ? 0 : 1,
+                          transition: 'opacity 0.3s ease',
+                          zIndex: 2
+                        }}
+                        onError={(e) => {
+                          console.error('Image load error:', e);
+                          console.error('Image URL:', streamUrl);
+                          if (loadTimeoutRef.current) {
+                            clearTimeout(loadTimeoutRef.current);
+                          }
+                          setIsLoading(false);
+                        }}
+                        onLoad={() => {
+                          console.log('Image loaded for:', streamUrl);
+                          if (loadTimeoutRef.current) {
+                            clearTimeout(loadTimeoutRef.current);
+                          }
+                          // Neues Bild ist fertig - ersetze das alte
+                          setCurrentImage(streamUrl);
+                          // Loading beendet
+                          setIsLoading(false);
+                        }}
+                        onLoadStart={() => {
+                          console.log('Image loading started for:', streamUrl);
+                        }}
+                      />
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+                      <CircularProgress size={40} />
+                      <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+                        Stream wird vorbereitet...
+                      </Typography>
+                    </Box>
+                  )}
+                </Box>
+              )
             ) : (
               <Box textAlign="center">
                 <CameraIcon sx={{ fontSize: 48, color: 'grey.400', mb: 1 }} />

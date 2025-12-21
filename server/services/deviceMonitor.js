@@ -82,16 +82,68 @@ class DeviceMonitor {
   async checkDevice(device) {
     try {
       const taubenschiesserIp = device.getTaubenschiesserIp();
-      const cameraIp = this.getCameraIp(device);
       
       // Check if using local image
       const useLocalImage = device.camera && device.camera.useLocalImage && device.camera.localImagePath;
 
-      // Parallele Ping-Checks
-      const [taubenschiesserStatus, cameraStatus] = await Promise.all([
-        this.pingDevice(taubenschiesserIp, 'Taubenschiesser'),
-        useLocalImage ? Promise.resolve('online') : (cameraIp ? this.pingDevice(cameraIp, 'Kamera') : Promise.resolve('offline'))
-      ]);
+      // Determine camera IPs to check based on camera type
+      const cameraIps = [];
+      if (device.camera.type === 'dual') {
+        // Dual mode: check both cameras
+        if (device.camera.tapo && device.camera.tapo.ip) {
+          cameraIps.push({ ip: device.camera.tapo.ip, type: 'tapo' });
+        }
+        if (device.camera.raspberryPi && device.camera.raspberryPi.ip) {
+          cameraIps.push({ ip: device.camera.raspberryPi.ip, type: 'raspberry-pi' });
+        }
+      } else {
+        // Single camera mode: check one camera
+        const cameraIp = this.getCameraIp(device);
+        if (cameraIp) {
+          cameraIps.push({ ip: cameraIp, type: device.camera.type || 'unknown' });
+        }
+      }
+
+      // Prepare ping promises
+      const pingPromises = [
+        this.pingDevice(taubenschiesserIp, 'Taubenschiesser')
+      ];
+
+      if (useLocalImage) {
+        pingPromises.push(Promise.resolve('online'));
+      } else if (cameraIps.length > 0) {
+        // Check all cameras in parallel
+        const cameraPingPromises = cameraIps.map(cam => 
+          this.pingDevice(cam.ip, `Kamera (${cam.type})`)
+        );
+        pingPromises.push(Promise.all(cameraPingPromises));
+      } else {
+        pingPromises.push(Promise.resolve('offline'));
+      }
+
+      // Execute all ping checks in parallel
+      const results = await Promise.all(pingPromises);
+      const taubenschiesserStatus = results[0];
+      const cameraStatusResults = results[1];
+
+      // Determine overall camera status
+      let cameraStatus;
+      if (useLocalImage) {
+        cameraStatus = 'online';
+      } else if (Array.isArray(cameraStatusResults)) {
+        // Dual mode: camera is online if all cameras are online
+        // maintenance if at least one is online, offline if all are offline
+        const onlineCount = cameraStatusResults.filter(s => s === 'online').length;
+        if (onlineCount === cameraIps.length) {
+          cameraStatus = 'online';
+        } else if (onlineCount > 0) {
+          cameraStatus = 'maintenance'; // Some cameras online, some offline
+        } else {
+          cameraStatus = 'offline';
+        }
+      } else {
+        cameraStatus = cameraStatusResults;
+      }
 
       // Status-Updates nur wenn sich etwas geändert hat
       let needsUpdate = false;
@@ -116,7 +168,7 @@ class DeviceMonitor {
       if (device.cameraStatus !== cameraStatus) {
         updates.cameraStatus = cameraStatus;
         needsUpdate = true;
-        logger.info(`Device ${device.name}: Camera status changed to ${cameraStatus}`);
+        logger.info(`Device ${device.name}: Camera status changed to ${cameraStatus}${Array.isArray(cameraStatusResults) ? ` (${cameraStatusResults.join(', ')})` : ''}`);
         
         // Sofortige Socket.IO Benachrichtigung bei Status-Änderung
         if (this.io) {
@@ -197,7 +249,12 @@ class DeviceMonitor {
     // Prüfe auf Tapo Kamera - funktioniert für type='tapo' und type='dual'
     if (device.camera.tapo && device.camera.tapo.ip) {
       return device.camera.tapo.ip;
-    } else if (device.camera.directUrl) {
+    } 
+    // Prüfe auf Raspberry Pi Kamera
+    else if (device.camera.raspberryPi && device.camera.raspberryPi.ip) {
+      return device.camera.raspberryPi.ip;
+    } 
+    else if (device.camera.directUrl) {
       // Extrahiere IP aus RTSP URL
       const match = device.camera.directUrl.match(/@([^:]+):/);
       return match ? match[1] : null;
@@ -247,12 +304,72 @@ class DeviceMonitor {
 
       for (const device of devices) {
         const taubenschiesserIp = device.getTaubenschiesserIp();
-        const cameraIp = this.getCameraIp(device);
+        
+        // Check if using local image
+        const useLocalImage = device.camera && device.camera.useLocalImage && device.camera.localImagePath;
 
-        const [taubenschiesserStatus, cameraStatus] = await Promise.all([
-          this.pingDevice(taubenschiesserIp, 'Taubenschiesser'),
-          cameraIp ? this.pingDevice(cameraIp, 'Kamera') : Promise.resolve('offline')
-        ]);
+        // Determine camera IPs to check based on camera type
+        const cameraIps = [];
+        if (device.camera.type === 'dual') {
+          // Dual mode: check both cameras
+          if (device.camera.tapo && device.camera.tapo.ip) {
+            cameraIps.push({ ip: device.camera.tapo.ip, type: 'tapo' });
+          }
+          if (device.camera.raspberryPi && device.camera.raspberryPi.ip) {
+            cameraIps.push({ ip: device.camera.raspberryPi.ip, type: 'raspberry-pi' });
+          }
+        } else {
+          // Single camera mode: check one camera
+          const cameraIp = this.getCameraIp(device);
+          if (cameraIp) {
+            cameraIps.push({ ip: cameraIp, type: device.camera.type || 'unknown' });
+          }
+        }
+
+        // Prepare ping promises
+        const pingPromises = [
+          this.pingDevice(taubenschiesserIp, 'Taubenschiesser')
+        ];
+
+        if (useLocalImage) {
+          pingPromises.push(Promise.resolve('online'));
+        } else if (cameraIps.length > 0) {
+          // Check all cameras in parallel
+          const cameraPingPromises = cameraIps.map(cam => 
+            this.pingDevice(cam.ip, `Kamera (${cam.type})`)
+          );
+          pingPromises.push(Promise.all(cameraPingPromises));
+        } else {
+          pingPromises.push(Promise.resolve('offline'));
+        }
+
+        // Execute all ping checks in parallel
+        const results = await Promise.all(pingPromises);
+        const taubenschiesserStatus = results[0];
+        const cameraStatusResults = results[1];
+
+        // Determine overall camera status
+        let cameraStatus;
+        let cameraIp = null;
+        if (useLocalImage) {
+          cameraStatus = 'online';
+        } else if (Array.isArray(cameraStatusResults)) {
+          // Dual mode: camera is online if all cameras are online
+          // maintenance if at least one is online, offline if all are offline
+          const onlineCount = cameraStatusResults.filter(s => s === 'online').length;
+          if (onlineCount === cameraIps.length) {
+            cameraStatus = 'online';
+          } else if (onlineCount > 0) {
+            cameraStatus = 'maintenance'; // Some cameras online, some offline
+          } else {
+            cameraStatus = 'offline';
+          }
+          // For summary, use first camera IP or combined info
+          cameraIp = cameraIps.map(c => c.ip).join(', ');
+        } else {
+          cameraStatus = cameraStatusResults;
+          cameraIp = cameraIps.length > 0 ? cameraIps[0].ip : null;
+        }
 
         const overallStatus = this.calculateOverallStatus(taubenschiesserStatus, cameraStatus);
         summary[overallStatus]++;

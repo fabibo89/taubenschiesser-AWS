@@ -303,7 +303,16 @@ class HardwareHelper {
 
         const port = pi.port || 8080;
         const endpoint = pi.endpoint || '/image.jpg';
-        const url = `http://${pi.ip}:${port}${endpoint}`;
+        const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
+        
+        // Build query params (flip)
+        const queryParams = [];
+        if (pi.flip) {
+          queryParams.push('flip=true');
+        }
+        const url = queryParams.length > 0 
+          ? `${baseUrl}?${queryParams.join('&')}`
+          : baseUrl;
 
         logger.info(`Capturing frame from Raspberry Pi: ${url}`);
         
