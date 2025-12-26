@@ -19,7 +19,10 @@ import {
   FormControl,
   InputLabel,
   Select,
-  MenuItem
+  MenuItem,
+  IconButton,
+  InputAdornment,
+  Tooltip
 } from '@mui/material';
 import {
   Person as PersonIcon,
@@ -28,7 +31,10 @@ import {
   Notifications as NotificationsIcon,
   Palette as ThemeIcon,
   CheckCircle as SuccessIcon,
-  Error as ErrorIcon
+  Error as ErrorIcon,
+  ContentCopy as CopyIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
@@ -70,6 +76,8 @@ const Profile = () => {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState('');
   const [mqttTestResult, setMqttTestResult] = useState(null);
+  const [tokenVisible, setTokenVisible] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
 
   // Check for settings tab from URL
   useEffect(() => {
@@ -286,6 +294,25 @@ const Profile = () => {
     }
   };
 
+  // Get token from localStorage
+  const getToken = () => {
+    return localStorage.getItem('token') || 'Nicht verfügbar';
+  };
+
+  const handleCopyToken = async () => {
+    const token = getToken();
+    if (token && token !== 'Nicht verfügbar') {
+      try {
+        await navigator.clipboard.writeText(token);
+        setTokenCopied(true);
+        toast.success('Token in Zwischenablage kopiert!');
+        setTimeout(() => setTokenCopied(false), 2000);
+      } catch (err) {
+        toast.error('Fehler beim Kopieren');
+      }
+    }
+  };
+
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       <Typography variant="h4" gutterBottom>
@@ -453,6 +480,55 @@ const Profile = () => {
                     <Typography variant="body2" color="textSecondary">
                       <strong>Geräte:</strong> {user?.devices?.length || 0}
                     </Typography>
+                  </Grid>
+                  
+                  {/* API Token Section */}
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold' }}>
+                      🔑 API Token (für Home Assistant)
+                    </Typography>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      <Typography variant="body2">
+                        Kopiere diesen Token für die Home Assistant Integration. 
+                        Der Token ist 7 Tage gültig.
+                      </Typography>
+                    </Alert>
+                    <TextField
+                      fullWidth
+                      label="API Token"
+                      value={tokenVisible ? getToken() : '••••••••••••••••'}
+                      margin="normal"
+                      disabled
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end">
+                            <Tooltip title={tokenVisible ? "Token ausblenden" : "Token anzeigen"}>
+                              <IconButton
+                                onClick={() => setTokenVisible(!tokenVisible)}
+                                edge="end"
+                              >
+                                {tokenVisible ? <VisibilityOffIcon /> : <VisibilityIcon />}
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Token kopieren">
+                              <IconButton
+                                onClick={handleCopyToken}
+                                edge="end"
+                                color={tokenCopied ? "success" : "default"}
+                              >
+                                <CopyIcon />
+                              </IconButton>
+                            </Tooltip>
+                          </InputAdornment>
+                        )
+                      }}
+                    />
+                    {tokenCopied && (
+                      <Alert severity="success" sx={{ mt: 1 }}>
+                        Token wurde in die Zwischenablage kopiert!
+                      </Alert>
+                    )}
                   </Grid>
                 </Grid>
               </CardContent>
