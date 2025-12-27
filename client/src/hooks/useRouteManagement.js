@@ -128,7 +128,7 @@ export const useRouteManagement = (deviceId) => {
     console.log('🔧 handleUpdateImage called with index:', index);
     console.log('🔧 API_URL:', API_URL);
     console.log('🔧 Device ID:', currentDeviceId);
-    console.log('🔧 Token exists:', !!localStorage.getItem('token'));
+    console.log('🔧 Token exists:', !!localStorage.getItem('access_token'));
     
     setUpdatingImages(prev => new Set(prev).add(index));
     
@@ -143,7 +143,7 @@ export const useRouteManagement = (deviceId) => {
         {},
         {
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`
           }
         }
       );

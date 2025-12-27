@@ -296,7 +296,7 @@ const Profile = () => {
 
   // Get token from localStorage
   const getToken = () => {
-    return localStorage.getItem('token') || 'Nicht verfügbar';
+    return localStorage.getItem('access_token') || 'Nicht verfügbar';
   };
 
   const handleCopyToken = async () => {

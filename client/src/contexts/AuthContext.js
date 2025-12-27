@@ -17,9 +17,9 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    const access_token = localStorage.getItem('access_token');
+    if (access_token) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       fetchUser();
     } else {
       setLoading(false);
@@ -31,8 +31,35 @@ export const AuthProvider = ({ children }) => {
       const response = await axios.get('/api/auth/me');
       setUser(response.data);
     } catch (error) {
-      localStorage.removeItem('token');
-      delete axios.defaults.headers.common['Authorization'];
+      // Try to refresh token if we have a refresh token
+      const refresh_token = localStorage.getItem('refresh_token');
+      if (refresh_token && error.response?.status === 401) {
+        try {
+          const refreshResponse = await axios.post('/api/auth/refresh', { refresh_token });
+          const { access_token: new_access_token, refresh_token: new_refresh_token } = refreshResponse.data;
+          
+          localStorage.setItem('access_token', new_access_token);
+          if (new_refresh_token) {
+            localStorage.setItem('refresh_token', new_refresh_token);
+          }
+          
+          axios.defaults.headers.common['Authorization'] = `Bearer ${new_access_token}`;
+          
+          // Retry fetching user
+          const retryResponse = await axios.get('/api/auth/me');
+          setUser(retryResponse.data);
+        } catch (refreshError) {
+          // Refresh failed, clear tokens and logout
+          localStorage.removeItem('access_token');
+          localStorage.removeItem('refresh_token');
+          delete axios.defaults.headers.common['Authorization'];
+        }
+      } else {
+        // No refresh token or other error
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('refresh_token');
+        delete axios.defaults.headers.common['Authorization'];
+      }
     } finally {
       setLoading(false);
     }
@@ -41,10 +68,13 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     try {
       const response = await axios.post('/api/auth/login', { email, password });
-      const { token, user } = response.data;
+      const { access_token, refresh_token, user } = response.data;
       
-      localStorage.setItem('token', token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      localStorage.setItem('access_token', access_token);
+      if (refresh_token) {
+        localStorage.setItem('refresh_token', refresh_token);
+      }
+      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       setUser(user);
       
       toast.success('Erfolgreich angemeldet!');
@@ -63,10 +93,13 @@ export const AuthProvider = ({ children }) => {
         email,
         password
       });
-      const { token, user } = response.data;
+      const { access_token, refresh_token, user } = response.data;
       
-      localStorage.setItem('token', token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      localStorage.setItem('access_token', access_token);
+      if (refresh_token) {
+        localStorage.setItem('refresh_token', refresh_token);
+      }
+      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       setUser(user);
       
       toast.success('Registrierung erfolgreich!');
@@ -79,7 +112,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
     delete axios.defaults.headers.common['Authorization'];
     setUser(null);
     toast.info('Abgemeldet');

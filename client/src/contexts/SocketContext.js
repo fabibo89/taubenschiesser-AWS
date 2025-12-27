@@ -16,7 +16,14 @@ export const SocketProvider = ({ children }) => {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const newSocket = io(process.env.REACT_APP_API_URL || 'http://localhost:5001', {
+    // Socket.IO URL-Konfiguration:
+    // - Nutze immer relativen Pfad (undefined = Socket.IO nutzt window.location.origin)
+    // - Funktioniert lokal: React Dev Server Proxy leitet /socket.io/ an localhost:5001 weiter
+    // - Funktioniert in Docker: Nginx Proxy leitet /socket.io/ an api:5000 weiter
+    // - Keine explizite URL nötig, da beide Umgebungen Proxy verwenden
+    const socketUrl = undefined; // Relativer Pfad - funktioniert in allen Umgebungen
+    
+    const newSocket = io(socketUrl, {
       autoConnect: true,
       reconnection: true,
       reconnectionAttempts: 5,

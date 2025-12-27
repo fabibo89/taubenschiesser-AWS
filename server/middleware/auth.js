@@ -19,6 +19,11 @@ const authenticateToken = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
     
+    // Verify token type (only access tokens are allowed)
+    if (decoded.type && decoded.type !== 'access') {
+      return res.status(401).json({ error: 'Invalid token type. Access token required.' });
+    }
+    
     // Verify user still exists and is active
     const user = await User.findById(decoded.userId);
     if (!user || !user.isActive) {

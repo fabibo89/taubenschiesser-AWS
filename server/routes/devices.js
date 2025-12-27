@@ -55,7 +55,14 @@ router.get('/', authenticateToken, async (req, res) => {
     
     const devices = await Device.find(query).sort({ lastSeen: -1 });
     
-    res.json(devices);
+    // Calculate status dynamically for each device
+    const devicesWithStatus = devices.map(device => {
+      const deviceObj = device.toObject(); // Convert Mongoose document to plain object
+      deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+      return deviceObj;
+    });
+    
+    res.json(devicesWithStatus);
   } catch (error) {
     logger.error('Get devices error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -74,7 +81,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
     
-    res.json(device);
+    const deviceObj = device.toObject();
+    deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+    
+    res.json(deviceObj);
   } catch (error) {
     logger.error('Get device error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -152,7 +162,10 @@ router.put('/:id', authenticateToken, async (req, res) => {
     
     await device.save();
     
-    res.json(device);
+    const deviceObj = device.toObject();
+    deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+    
+    res.json(deviceObj);
   } catch (error) {
     logger.error('Update device error:', error);
     res.status(500).json({ error: 'Server error' });
