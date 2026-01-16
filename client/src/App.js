@@ -9,6 +9,7 @@ import Dashboard from './components/Dashboard';
 import Devices from './components/Devices';
 import DeviceDetail from './components/DeviceDetail';
 import Detections from './components/Detections';
+import TaubenTinder from './components/TaubenTinder';
 import ImageUpload from './components/ImageUpload';
 import Profile from './components/Profile';
 import HardwareMonitor from './components/HardwareMonitor';
@@ -49,6 +50,7 @@ function AppContent() {
           <Route path="/devices" element={<Devices />} />
           <Route path="/devices/:id" element={<DeviceDetail />} />
           <Route path="/detections" element={<Detections />} />
+          <Route path="/tauben-tinder" element={<TaubenTinder />} />
           <Route path="/upload" element={<ImageUpload />} />
           <Route path="/monitor" element={<HardwareMonitor />} />
           <Route path="/position-preview" element={<PositionPreview />} />

@@ -28,10 +28,15 @@ import {
   Visibility as DetectionIcon,
   Close as CloseIcon,
   Image as ImageIcon,
-  Delete as DeleteIcon
+  Delete as DeleteIcon,
+  Favorite as FavoriteIcon,
+  Cancel as CancelIcon,
+  ArrowBack as ArrowBackIcon,
+  ArrowForward as ArrowForwardIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
+import { toast } from 'react-toastify';
 
 const Detections = () => {
   const [detections, setDetections] = useState([]);
@@ -39,8 +44,11 @@ const Detections = () => {
   const [filters, setFilters] = useState({
     deviceId: '',
     dateFrom: '',
-    dateTo: ''
+    dateTo: '',
+    classificationStatus: ''
   });
+  const [classificationDialogOpen, setClassificationDialogOpen] = useState(false);
+  const [detectionToClassify, setDetectionToClassify] = useState(null);
   const [pagination, setPagination] = useState({
     page: 0,
     pageSize: 20,
@@ -64,6 +72,7 @@ const Detections = () => {
       if (filters.deviceId) params.append('deviceId', filters.deviceId);
       if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
       if (filters.dateTo) params.append('dateTo', filters.dateTo);
+      if (filters.classificationStatus) params.append('classificationStatus', filters.classificationStatus);
 
       const response = await axios.get(`/api/cv/detections?${params}`);
       setDetections(response.data.detections);
@@ -99,6 +108,28 @@ const Detections = () => {
     setSelectedDetection(null);
   };
 
+  const handlePreviousDetection = () => {
+    if (!selectedDetection || detections.length === 0) return;
+    
+    const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
+    if (currentIndex > 0) {
+      setSelectedDetection(detections[currentIndex - 1]);
+    }
+  };
+
+  const handleNextDetection = () => {
+    if (!selectedDetection || detections.length === 0) return;
+    
+    const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
+    if (currentIndex < detections.length - 1) {
+      setSelectedDetection(detections[currentIndex + 1]);
+    }
+  };
+
+  const currentDetectionIndex = selectedDetection 
+    ? detections.findIndex(d => d._id === selectedDetection._id)
+    : -1;
+
   const handleDeleteDetection = async (detection) => {
     if (!detection) return;
 
@@ -122,6 +153,48 @@ const Detections = () => {
     } catch (error) {
       console.error('Error deleting detection:', error);
       alert('Fehler beim Löschen der Erkennung');
+    }
+  };
+
+  const handleOpenClassificationDialog = (detection) => {
+    setDetectionToClassify(detection);
+    setClassificationDialogOpen(true);
+  };
+
+  const handleCloseClassificationDialog = () => {
+    setClassificationDialogOpen(false);
+    setDetectionToClassify(null);
+  };
+
+  const handleClassifyDetection = async (action) => {
+    if (!detectionToClassify) return;
+
+    try {
+      if (action === 'delete') {
+        await axios.delete(`/api/cv/detections/${detectionToClassify._id}`);
+        toast.success('Erkennung gelöscht');
+      } else {
+        await axios.patch(`/api/cv/detections/${detectionToClassify._id}/classify`, {
+          action: action
+        });
+        toast.success(
+          action === 'confirm_pigeon' 
+            ? 'Als Taube klassifiziert' 
+            : 'Als "Keine Taube" klassifiziert'
+        );
+      }
+      
+      // Aktualisiere die Liste
+      await fetchDetections();
+      handleCloseClassificationDialog();
+      
+      // Falls die aktuelle Detailansicht diese Erkennung zeigt, aktualisiere sie
+      if (selectedDetection && selectedDetection._id === detectionToClassify._id) {
+        await fetchDetections();
+      }
+    } catch (error) {
+      console.error('Error classifying detection:', error);
+      toast.error('Fehler beim Klassifizieren der Erkennung');
     }
   };
 
@@ -241,9 +314,64 @@ const Detections = () => {
       )
     },
     {
+      field: 'classification_status',
+      headerName: 'Klassifizierung',
+      width: 150,
+      renderCell: (params) => {
+        const status = params.value;
+        const handleClick = (e) => {
+          e.stopPropagation();
+          handleOpenClassificationDialog(params.row);
+        };
+        
+        if (!status || status === 'unclassified') {
+          return (
+            <Chip 
+              label="Unkategorisiert" 
+              size="small" 
+              variant="outlined" 
+              onClick={handleClick}
+              sx={{ cursor: 'pointer' }}
+            />
+          );
+        } else if (status === 'confirmed_pigeon') {
+          return (
+            <Chip 
+              label="Taube" 
+              size="small" 
+              color="success" 
+              icon={<FavoriteIcon />}
+              onClick={handleClick}
+              sx={{ cursor: 'pointer' }}
+            />
+          );
+        } else if (status === 'no_pigeon') {
+          return (
+            <Chip 
+              label="Keine Taube" 
+              size="small" 
+              color="error" 
+              icon={<CancelIcon />}
+              onClick={handleClick}
+              sx={{ cursor: 'pointer' }}
+            />
+          );
+        }
+        return (
+          <Chip 
+            label={status} 
+            size="small" 
+            variant="outlined"
+            onClick={handleClick}
+            sx={{ cursor: 'pointer' }}
+          />
+        );
+      }
+    },
+    {
       field: 'actions',
       headerName: 'Aktionen',
-      width: 160,
+      width: 120,
       sortable: false,
       renderCell: (params) => (
         <Box>
@@ -323,6 +451,43 @@ const Detections = () => {
                 Filter anwenden
               </Button>
             </Grid>
+            {/* Classification Status Filter Buttons */}
+            <Grid item xs={12}>
+              <Box display="flex" gap={1} flexWrap="wrap">
+                <Button
+                  variant={filters.classificationStatus === '' ? 'contained' : 'outlined'}
+                  onClick={() => handleFilterChange('classificationStatus', '')}
+                  size="small"
+                >
+                  Alle
+                </Button>
+                <Button
+                  variant={filters.classificationStatus === 'unclassified' ? 'contained' : 'outlined'}
+                  onClick={() => handleFilterChange('classificationStatus', 'unclassified')}
+                  size="small"
+                >
+                  Unkategorisiert
+                </Button>
+                <Button
+                  variant={filters.classificationStatus === 'confirmed_pigeon' ? 'contained' : 'outlined'}
+                  onClick={() => handleFilterChange('classificationStatus', 'confirmed_pigeon')}
+                  size="small"
+                  color="success"
+                  startIcon={<FavoriteIcon />}
+                >
+                  Taube
+                </Button>
+                <Button
+                  variant={filters.classificationStatus === 'no_pigeon' ? 'contained' : 'outlined'}
+                  onClick={() => handleFilterChange('classificationStatus', 'no_pigeon')}
+                  size="small"
+                  color="error"
+                  startIcon={<CancelIcon />}
+                >
+                  Keine Taube
+                </Button>
+              </Box>
+            </Grid>
           </Grid>
         </CardContent>
       </Card>
@@ -368,9 +533,27 @@ const Detections = () => {
       >
         <DialogTitle>
           <Box display="flex" justifyContent="space-between" alignItems="center">
-            <Typography variant="h6">
-              Erkennungs-Bilder
-            </Typography>
+            <Box display="flex" alignItems="center" gap={2}>
+              <IconButton
+                onClick={handlePreviousDetection}
+                disabled={currentDetectionIndex <= 0}
+                size="small"
+                title="Vorheriges Bild"
+              >
+                <ArrowBackIcon />
+              </IconButton>
+              <Typography variant="h6">
+                Erkennungs-Bilder {selectedDetection && `(${currentDetectionIndex + 1} / ${detections.length})`}
+              </Typography>
+              <IconButton
+                onClick={handleNextDetection}
+                disabled={currentDetectionIndex >= detections.length - 1}
+                size="small"
+                title="Nächstes Bild"
+              >
+                <ArrowForwardIcon />
+              </IconButton>
+            </Box>
             <IconButton onClick={handleCloseImageDialog} size="small">
               <CloseIcon />
             </IconButton>
@@ -668,6 +851,80 @@ const Detections = () => {
               Erkennung löschen
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Classification Dialog */}
+      <Dialog
+        open={classificationDialogOpen}
+        onClose={handleCloseClassificationDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Zuordnung anpassen
+        </DialogTitle>
+        <DialogContent>
+          {detectionToClassify && (
+            <Box>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Aktuelle Zuordnung:
+              </Typography>
+              <Box mb={3}>
+                {!detectionToClassify.classification_status || detectionToClassify.classification_status === 'unclassified' ? (
+                  <Chip label="Unkategorisiert" variant="outlined" />
+                ) : detectionToClassify.classification_status === 'confirmed_pigeon' ? (
+                  <Chip label="Taube" color="success" icon={<FavoriteIcon />} />
+                ) : (
+                  <Chip label="Keine Taube" color="error" icon={<CancelIcon />} />
+                )}
+              </Box>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Neue Zuordnung wählen:
+              </Typography>
+              <Box display="flex" flexDirection="column" gap={2} mt={2}>
+                <Button
+                  variant={detectionToClassify.classification_status === 'confirmed_pigeon' ? 'contained' : 'outlined'}
+                  color="success"
+                  startIcon={<FavoriteIcon />}
+                  onClick={() => handleClassifyDetection('confirm_pigeon')}
+                  fullWidth
+                >
+                  Taube
+                </Button>
+                <Button
+                  variant={detectionToClassify.classification_status === 'no_pigeon' ? 'contained' : 'outlined'}
+                  color="error"
+                  startIcon={<CancelIcon />}
+                  onClick={() => handleClassifyDetection('no_pigeon')}
+                  fullWidth
+                >
+                  Keine Taube
+                </Button>
+                <Button
+                  variant={!detectionToClassify.classification_status || detectionToClassify.classification_status === 'unclassified' ? 'contained' : 'outlined'}
+                  onClick={() => handleClassifyDetection('unclassified')}
+                  fullWidth
+                >
+                  Unkategorisiert
+                </Button>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  startIcon={<DeleteIcon />}
+                  onClick={() => handleClassifyDetection('delete')}
+                  fullWidth
+                >
+                  Erkennung löschen
+                </Button>
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseClassificationDialog}>
+            Abbrechen
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

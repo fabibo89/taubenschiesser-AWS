@@ -200,10 +200,17 @@ router.post('/detect', upload.single('image'), async (req, res) => {
 // Get detection history
 router.get('/detections', authenticateToken, async (req, res) => {
   try {
-    const { deviceId, page = 1, limit = 20 } = req.query;
+    const { deviceId, page = 1, limit = 20, classificationStatus } = req.query;
     const skip = (page - 1) * limit;
 
-    let query = {};
+    // Get all devices owned by user for filtering
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id);
+
+    let query = {
+      device: { $in: deviceIds }
+    };
+
     if (deviceId) {
       const device = await Device.findOne({ 
         deviceId, 
@@ -213,6 +220,18 @@ router.get('/detections', authenticateToken, async (req, res) => {
         return res.status(404).json({ error: 'Device not found' });
       }
       query.device = device._id;
+    }
+
+    // Filter by classification status
+    if (classificationStatus) {
+      if (classificationStatus === 'unclassified') {
+        query.$or = [
+          { classification_status: null },
+          { classification_status: { $exists: false } }
+        ];
+      } else {
+        query.classification_status = classificationStatus;
+      }
     }
 
     const detections = await Detection.find(query)
@@ -235,6 +254,45 @@ router.get('/detections', authenticateToken, async (req, res) => {
   } catch (error) {
     logger.error('Get detections error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get unclassified detections for Tinder view (must be before /detections/:id)
+router.get('/detections/unclassified', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    
+    // Get all devices owned by user
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id);
+    
+    // If user has no devices, return empty array
+    if (deviceIds.length === 0) {
+      return res.json({ detections: [] });
+    }
+    
+    const detections = await Detection.find({
+      device: { $in: deviceIds },
+      $or: [
+        { classification_status: null },
+        { classification_status: { $exists: false } }
+      ]
+    })
+      .sort({ processedAt: -1 })
+      .limit(parseInt(limit))
+      .populate('device', 'name deviceId type');
+
+    res.json({ detections });
+  } catch (error) {
+    logger.error('Get unclassified detections error:', error);
+    logger.error('Get unclassified detections error details:', {
+      message: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({ 
+      error: 'Server error',
+      details: error.message 
+    });
   }
 });
 
@@ -284,37 +342,10 @@ router.delete('/detections/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Get unclassified detections for Tinder view
-router.get('/detections/unclassified', authenticateToken, async (req, res) => {
-  try {
-    const { limit = 50 } = req.query;
-    
-    // Get all devices owned by user
-    const devices = await Device.find({ owner: req.user.userId }).select('_id');
-    const deviceIds = devices.map(d => d._id);
-    
-    const detections = await Detection.find({
-      device: { $in: deviceIds },
-      $or: [
-        { classification_status: null },
-        { classification_status: { $exists: false } }
-      ]
-    })
-      .sort({ processedAt: -1 })
-      .limit(parseInt(limit))
-      .populate('device', 'name deviceId type');
-
-    res.json({ detections });
-  } catch (error) {
-    logger.error('Get unclassified detections error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
 // Classify detection (swipe actions)
 router.patch('/detections/:id/classify', authenticateToken, async (req, res) => {
   try {
-    const { action } = req.body; // 'confirm_pigeon', 'correctly_identified', 'delete'
+    const { action } = req.body; // 'confirm_pigeon', 'no_pigeon', 'delete'
     
     const detection = await Detection.findById(req.params.id)
       .populate('device', 'owner');
@@ -337,11 +368,17 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     // Update classification status
     const statusMap = {
       'confirm_pigeon': 'confirmed_pigeon',
-      'correctly_identified': 'correctly_identified'
+      'no_pigeon': 'no_pigeon',
+      'unclassified': null
     };
     
-    detection.classification_status = statusMap[action] || 'unclassified';
-    detection.classifiedAt = new Date();
+    if (action === 'unclassified') {
+      detection.classification_status = null;
+      detection.classifiedAt = null;
+    } else {
+      detection.classification_status = statusMap[action] || null;
+      detection.classifiedAt = new Date();
+    }
     await detection.save();
     
     res.json({ 

@@ -106,7 +106,7 @@ const detectionSchema = new mongoose.Schema({
   },
   classification_status: {
     type: String,
-    enum: ['unclassified', 'confirmed_pigeon', 'correctly_identified', null],
+    enum: ['unclassified', 'confirmed_pigeon', 'no_pigeon', null],
     default: null
   },
   classifiedAt: {
