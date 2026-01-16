@@ -351,6 +351,8 @@ Das **deploy-local.sh** Script automatisiert das gesamte Deployment und führt d
 chmod +x deploy-local.sh
 ```
 
+> **💡 Tipp:** Falls du den Fehler `Permission denied` bekommst, liegt es daran, dass das Script keine Ausführungsrechte hat. Mit `chmod +x deploy-local.sh` machst du die Datei ausführbar. Alternativ kannst du das Script auch mit `bash deploy-local.sh` ausführen.
+
 **Script starten:**
 
 ```bash
@@ -1104,6 +1106,17 @@ python app.py
 ```
 
 ### Lokaler Server
+
+**Permission denied beim deploy-local.sh:**
+```bash
+# Fehlermeldung: -bash: ./deploy-local.sh: Permission denied
+# Lösung: Script ausführbar machen
+chmod +x deploy-local.sh
+./deploy-local.sh
+
+# Alternative: Mit bash direkt ausführen
+bash deploy-local.sh
+```
 
 **Container startet nicht:**
 ```bash

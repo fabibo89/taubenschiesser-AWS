@@ -110,12 +110,19 @@ python cv-service/app.py      # CV Service
 **Lokaler Server mit externer MongoDB:**
 
 ```bash
+# Script ausführbar machen (einmalig, beim ersten Mal)
+chmod +x deploy-local.sh
+
 # Erst-Installation
 ./deploy-local.sh
 # Wähle: 2 (Produktion)
 
 # Updates von GitHub
+chmod +x update-prod.sh
 ./update-prod.sh
+```
+
+> **💡 Falls "Permission denied":** Das Script muss einmalig ausführbar gemacht werden mit `chmod +x deploy-local.sh`. Alternativ: `bash deploy-local.sh` verwenden.
 
 # Manuell:
 docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d   # Starten

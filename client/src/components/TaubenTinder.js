@@ -415,10 +415,10 @@ const TaubenTinder = () => {
                 <FavoriteIcon sx={{ fontSize: 80, color: '#4caf50', opacity: 0.8 }} />
               )}
               {swipeDirection === 'left' && (
-                <DeleteIcon sx={{ fontSize: 80, color: '#ff9800', opacity: 0.8 }} />
+                <CloseIcon sx={{ fontSize: 80, color: '#ff9800', opacity: 0.8 }} />
               )}
               {swipeDirection === 'up' && (
-                <CloseIcon sx={{ fontSize: 80, color: '#f44336', opacity: 0.8 }} />
+                <DeleteIcon sx={{ fontSize: 80, color: '#f44336', opacity: 0.8 }} />
               )}
             </Box>
           )}
@@ -440,7 +440,7 @@ const TaubenTinder = () => {
             sx={{ width: 64, height: 64 }}
             title="Keine Taube (Links swipen)"
           >
-            <DeleteIcon fontSize="large" />
+            <CloseIcon fontSize="large" />
           </IconButton>
           <IconButton
             size="large"
@@ -449,7 +449,7 @@ const TaubenTinder = () => {
             sx={{ width: 64, height: 64 }}
             title="Löschen (Hoch swipen)"
           >
-            <CloseIcon fontSize="large" />
+            <DeleteIcon fontSize="large" />
           </IconButton>
           <IconButton
             size="large"
