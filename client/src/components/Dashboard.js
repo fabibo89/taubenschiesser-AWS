@@ -42,6 +42,16 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../contexts/SocketContext';
 import axios from 'axios';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  Legend,
+  ResponsiveContainer
+} from 'recharts';
 
 // Helper component for stream display
 const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false, imageRef = null }) => {
@@ -223,6 +233,7 @@ const Dashboard = () => {
   const [deviceStatuses, setDeviceStatuses] = useState({}); // { [deviceId]: { status, message, timestamp } }
   const [loading, setLoading] = useState(true);
   const [streamingDevices, setStreamingDevices] = useState({});
+  const [detectionStats, setDetectionStats] = useState({});
   const navigate = useNavigate();
   const { socket, connected } = useSocket();
 
@@ -290,13 +301,22 @@ const Dashboard = () => {
 
   const fetchDashboardData = async () => {
     try {
-      const [devicesResponse, detectionsResponse] = await Promise.all([
+      const [devicesResponse, detectionsResponse, statsResponse] = await Promise.all([
         axios.get('/api/devices'),
-        axios.get('/api/cv/detections?limit=5')
+        axios.get('/api/cv/detections?limit=5'),
+        axios.get('/api/cv/detections/statistics?days=30').catch(() => ({ data: { statistics: [] } }))
       ]);
 
       const devicesData = devicesResponse.data;
       const detections = detectionsResponse.data.detections || [];
+      const stats = statsResponse.data.statistics || [];
+
+      // Convert statistics to map by deviceId
+      const statsMap = {};
+      stats.forEach(stat => {
+        statsMap[stat.deviceId] = stat.data;
+      });
+      setDetectionStats(statsMap);
 
       // Ensure monitorStatus is set for all devices
       const devicesWithStatus = devicesData.map(device => ({
@@ -522,6 +542,64 @@ const Dashboard = () => {
       default:
         return 'default';
     }
+  };
+
+  // Detection Chart Component
+  const DetectionChart = ({ device }) => {
+    const data = detectionStats[device._id] || [];
+    
+    if (data.length === 0) {
+      return (
+        <Typography variant="body2" color="textSecondary" align="center" sx={{ py: 2 }}>
+          Keine Daten für diesen Zeitraum
+        </Typography>
+      );
+    }
+
+    return (
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis 
+            dataKey="date" 
+            tick={{ fontSize: 12 }}
+            angle={-45}
+            textAnchor="end"
+            height={80}
+            tickFormatter={(value) => {
+              const date = new Date(value);
+              return `${date.getDate()}.${date.getMonth() + 1}`;
+            }}
+          />
+          <YAxis />
+          <RechartsTooltip 
+            labelFormatter={(value) => {
+              const date = new Date(value);
+              return date.toLocaleDateString('de-DE');
+            }}
+          />
+          <Legend />
+          <Bar 
+            dataKey="unclassified" 
+            stackId="a" 
+            fill="#9e9e9e" 
+            name="Unkategorisiert" 
+          />
+          <Bar 
+            dataKey="confirmed_pigeon" 
+            stackId="a" 
+            fill="#4caf50" 
+            name="Taube" 
+          />
+          <Bar 
+            dataKey="no_pigeon" 
+            stackId="a" 
+            fill="#f44336" 
+            name="Keine Taube" 
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    );
   };
 
   // Geräte-Komponente
@@ -1105,6 +1183,14 @@ const Dashboard = () => {
             <Typography variant="caption" color="textSecondary">
               Letztes Signal: {device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'Nie'}
             </Typography>
+          </Box>
+
+          {/* Detection Statistics Chart */}
+          <Box sx={{ mt: 3, borderTop: '1px solid #e0e0e0', pt: 2 }}>
+            <Typography variant="subtitle2" gutterBottom>
+              Erkennungen pro Tag (letzte 30 Tage)
+            </Typography>
+            <DetectionChart device={device} />
           </Box>
         </CardContent>
       </Card>

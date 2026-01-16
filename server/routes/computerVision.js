@@ -391,6 +391,94 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
   }
 });
 
+// Get detection statistics grouped by day and classification
+router.get('/detections/statistics', authenticateToken, async (req, res) => {
+  try {
+    const { deviceId, days = 30 } = req.query;
+    
+    // Get all devices owned by user
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id);
+    
+    if (deviceIds.length === 0) {
+      return res.json({ statistics: [] });
+    }
+    
+    let query = {
+      device: { $in: deviceIds }
+    };
+    
+    if (deviceId) {
+      // Validate that device belongs to user
+      const device = await Device.findOne({ _id: deviceId, owner: req.user.userId });
+      if (!device) {
+        return res.status(404).json({ error: 'Device not found' });
+      }
+      query.device = device._id;
+    }
+    
+    // Calculate date range
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+    startDate.setHours(0, 0, 0, 0);
+    query.processedAt = { $gte: startDate };
+    
+    const detections = await Detection.find(query)
+      .select('device processedAt classification_status')
+      .populate('device', 'name _id');
+    
+    // Group by device, date, and classification
+    const stats = {};
+    
+    detections.forEach(detection => {
+      if (!detection.device) return;
+      
+      const devId = detection.device._id.toString();
+      const date = new Date(detection.processedAt).toISOString().split('T')[0]; // YYYY-MM-DD
+      const classification = detection.classification_status || 'unclassified';
+      
+      if (!stats[devId]) {
+        stats[devId] = {
+          deviceId: devId,
+          deviceName: detection.device.name,
+          data: {}
+        };
+      }
+      
+      if (!stats[devId].data[date]) {
+        stats[devId].data[date] = {
+          date,
+          unclassified: 0,
+          confirmed_pigeon: 0,
+          no_pigeon: 0
+        };
+      }
+      
+      if (classification === 'unclassified' || !classification) {
+        stats[devId].data[date].unclassified++;
+      } else if (classification === 'confirmed_pigeon') {
+        stats[devId].data[date].confirmed_pigeon++;
+      } else if (classification === 'no_pigeon') {
+        stats[devId].data[date].no_pigeon++;
+      }
+    });
+    
+    // Convert to array format for frontend
+    const result = Object.values(stats).map(stat => ({
+      deviceId: stat.deviceId,
+      deviceName: stat.deviceName,
+      data: Object.values(stat.data).sort((a, b) => 
+        new Date(a.date) - new Date(b.date)
+      )
+    }));
+    
+    res.json({ statistics: result });
+  } catch (error) {
+    logger.error('Get detection statistics error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // CV service health check
 router.get('/health', async (req, res) => {
   try {

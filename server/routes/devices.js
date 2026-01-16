@@ -54,11 +54,80 @@ router.get('/', authenticateToken, async (req, res) => {
     }
     
     const devices = await Device.find(query).sort({ lastSeen: -1 });
+    const deviceIds = devices.map(d => d._id);
     
-    // Calculate status dynamically for each device
+    // Get today's date range (start of today to end of today)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Get yesterday's date range
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    // Count all detections per device per day (based on processedAt)
+    // Only run aggregation if we have devices
+    let countMap = {};
+    if (deviceIds.length > 0) {
+      const detectionCounts = await Detection.aggregate([
+        {
+          $match: {
+            device: { $in: deviceIds },
+            processedAt: { $gte: yesterday, $lt: tomorrow }
+          }
+        },
+        {
+          $project: {
+            device: 1,
+            processedAt: 1,
+            // Get date as YYYY-MM-DD string
+            date: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$processedAt'
+              }
+            }
+          }
+        },
+        {
+          $group: {
+            _id: {
+              device: '$device',
+              date: '$date'
+            },
+            count: { $sum: 1 }
+          }
+        }
+      ]);
+      
+      // Create a map: { deviceId: { '2024-01-15': count } }
+      detectionCounts.forEach(stat => {
+        const devId = stat._id.device.toString();
+        const date = stat._id.date;
+        
+        if (!countMap[devId]) {
+          countMap[devId] = {};
+        }
+        countMap[devId][date] = stat.count;
+      });
+    }
+    
+    // Calculate status dynamically for each device and add daily detection counts
+    const todayStr = today.toISOString().split('T')[0];
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    
     const devicesWithStatus = devices.map(device => {
       const deviceObj = device.toObject(); // Convert Mongoose document to plain object
       deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+      
+      // Get today's and yesterday's counts
+      const deviceCounts = countMap[device._id.toString()] || {};
+      deviceObj.detectionCounts = {
+        today: deviceCounts[todayStr] || 0,
+        yesterday: deviceCounts[yesterdayStr] || 0
+      };
+      
       return deviceObj;
     });
     
