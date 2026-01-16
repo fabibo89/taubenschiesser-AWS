@@ -472,6 +472,11 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       )
     }));
     
+    logger.info(`[DetectionStats] Returning statistics for ${result.length} devices, total detections: ${detections.length}`);
+    result.forEach(stat => {
+      logger.info(`[DetectionStats] Device ${stat.deviceId} (${stat.deviceName}): ${stat.data.length} days with data`);
+    });
+    
     res.json({ statistics: result });
   } catch (error) {
     logger.error('Get detection statistics error:', error);

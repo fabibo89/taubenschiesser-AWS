@@ -312,10 +312,18 @@ const Dashboard = () => {
       const stats = statsResponse.data.statistics || [];
 
       // Convert statistics to map by deviceId
+      // Ensure deviceId is always a string for consistent lookup
       const statsMap = {};
       stats.forEach(stat => {
-        statsMap[stat.deviceId] = stat.data;
+        // Ensure deviceId is string
+        const deviceIdStr = String(stat.deviceId);
+        statsMap[deviceIdStr] = stat.data;
+        console.log(`[DetectionStats] Mapped stats for device ${deviceIdStr}:`, stat.data?.length || 0, 'days');
       });
+      
+      console.log('[DetectionStats] Stats map:', Object.keys(statsMap));
+      console.log('[DetectionStats] Devices:', devicesData.map(d => ({ id: d._id, name: d.name })));
+      
       setDetectionStats(statsMap);
 
       // Ensure monitorStatus is set for all devices
@@ -546,7 +554,16 @@ const Dashboard = () => {
 
   // Detection Chart Component
   const DetectionChart = ({ device }) => {
-    const data = detectionStats[device._id] || [];
+    // Ensure device._id is converted to string for consistent lookup
+    const deviceIdStr = String(device._id);
+    const data = detectionStats[deviceIdStr] || [];
+    
+    console.log(`[DetectionChart] Device ${deviceIdStr} (${device.name}):`, {
+      hasData: data.length > 0,
+      dataLength: data.length,
+      availableStats: Object.keys(detectionStats),
+      data: data.slice(0, 3) // Log first 3 entries
+    });
     
     if (data.length === 0) {
       return (
