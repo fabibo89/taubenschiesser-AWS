@@ -431,35 +431,58 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
     const stats = {};
     
     detections.forEach(detection => {
-      if (!detection.device) return;
-      
-      const devId = detection.device._id.toString();
-      const date = new Date(detection.processedAt).toISOString().split('T')[0]; // YYYY-MM-DD
-      const classification = detection.classification_status || 'unclassified';
-      
-      if (!stats[devId]) {
-        stats[devId] = {
-          deviceId: devId,
-          deviceName: detection.device.name,
-          data: {}
-        };
+      // Skip if device not populated
+      if (!detection.device || !detection.device._id) {
+        logger.warn(`[DetectionStats] Skipping detection with missing device: ${detection._id}`);
+        return;
       }
       
-      if (!stats[devId].data[date]) {
-        stats[devId].data[date] = {
-          date,
-          unclassified: 0,
-          confirmed_pigeon: 0,
-          no_pigeon: 0
-        };
+      // Skip if processedAt is missing or invalid
+      if (!detection.processedAt) {
+        logger.warn(`[DetectionStats] Skipping detection with missing processedAt: ${detection._id}`);
+        return;
       }
       
-      if (classification === 'unclassified' || !classification) {
-        stats[devId].data[date].unclassified++;
-      } else if (classification === 'confirmed_pigeon') {
-        stats[devId].data[date].confirmed_pigeon++;
-      } else if (classification === 'no_pigeon') {
-        stats[devId].data[date].no_pigeon++;
+      try {
+        const devId = detection.device._id.toString();
+        const dateObj = new Date(detection.processedAt);
+        
+        // Validate date
+        if (isNaN(dateObj.getTime())) {
+          logger.warn(`[DetectionStats] Invalid date for detection ${detection._id}: ${detection.processedAt}`);
+          return;
+        }
+        
+        const date = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
+        const classification = detection.classification_status || 'unclassified';
+        
+        if (!stats[devId]) {
+          stats[devId] = {
+            deviceId: devId,
+            deviceName: detection.device.name || 'Unknown',
+            data: {}
+          };
+        }
+        
+        if (!stats[devId].data[date]) {
+          stats[devId].data[date] = {
+            date,
+            unclassified: 0,
+            confirmed_pigeon: 0,
+            no_pigeon: 0
+          };
+        }
+        
+        if (classification === 'unclassified' || !classification) {
+          stats[devId].data[date].unclassified++;
+        } else if (classification === 'confirmed_pigeon') {
+          stats[devId].data[date].confirmed_pigeon++;
+        } else if (classification === 'no_pigeon') {
+          stats[devId].data[date].no_pigeon++;
+        }
+      } catch (err) {
+        logger.warn(`[DetectionStats] Error processing detection ${detection._id}:`, err.message);
+        // Continue with next detection instead of crashing
       }
     });
     
@@ -480,7 +503,15 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
     res.json({ statistics: result });
   } catch (error) {
     logger.error('Get detection statistics error:', error);
-    res.status(500).json({ error: 'Server error' });
+    logger.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      userId: req.user?.userId
+    });
+    res.status(500).json({ 
+      error: 'Server error',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
+    });
   }
 });
 
