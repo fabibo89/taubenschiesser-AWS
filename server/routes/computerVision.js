@@ -296,102 +296,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
   }
 });
 
-// Get single detection
-router.get('/detections/:id', authenticateToken, async (req, res) => {
-  try {
-    const detection = await Detection.findById(req.params.id)
-      .populate('device', 'name deviceId type owner');
-    
-    if (!detection) {
-      return res.status(404).json({ error: 'Detection not found' });
-    }
-
-    // Check if user owns the device
-    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    res.json(detection);
-  } catch (error) {
-    logger.error('Get detection error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Delete single detection (and associated images references)
-router.delete('/detections/:id', authenticateToken, async (req, res) => {
-  try {
-    const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
-
-    if (!detection) {
-      return res.status(404).json({ error: 'Detection not found' });
-    }
-
-    // Ensure the current user owns the related device
-    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    await Detection.deleteOne({ _id: detection._id });
-
-    res.json({ message: 'Detection deleted successfully' });
-  } catch (error) {
-    logger.error('Delete detection error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Classify detection (swipe actions)
-router.patch('/detections/:id/classify', authenticateToken, async (req, res) => {
-  try {
-    const { action } = req.body; // 'confirm_pigeon', 'no_pigeon', 'delete'
-    
-    const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
-    
-    if (!detection) {
-      return res.status(404).json({ error: 'Detection not found' });
-    }
-    
-    // Check ownership
-    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    
-    if (action === 'delete') {
-      // Delete detection
-      await Detection.deleteOne({ _id: detection._id });
-      return res.json({ message: 'Detection deleted successfully' });
-    }
-    
-    // Update classification status
-    const statusMap = {
-      'confirm_pigeon': 'confirmed_pigeon',
-      'no_pigeon': 'no_pigeon',
-      'unclassified': null
-    };
-    
-    if (action === 'unclassified') {
-      detection.classification_status = null;
-      detection.classifiedAt = null;
-    } else {
-      detection.classification_status = statusMap[action] || null;
-      detection.classifiedAt = new Date();
-    }
-    await detection.save();
-    
-    res.json({ 
-      message: 'Detection classified successfully',
-      detection 
-    });
-  } catch (error) {
-    logger.error('Classify detection error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Get detection statistics grouped by day and classification
+// Get detection statistics grouped by day and classification (must be before /detections/:id)
 router.get('/detections/statistics', authenticateToken, async (req, res) => {
   try {
     const { deviceId, days = 30 } = req.query;
@@ -512,6 +417,101 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       error: 'Server error',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
     });
+  }
+});
+
+// Get single detection
+router.get('/detections/:id', authenticateToken, async (req, res) => {
+  try {
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'name deviceId type owner');
+    
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    // Check if user owns the device
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    res.json(detection);
+  } catch (error) {
+    logger.error('Get detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete single detection (and associated images references)
+router.delete('/detections/:id', authenticateToken, async (req, res) => {
+  try {
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    // Ensure the current user owns the related device
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    await Detection.deleteOne({ _id: detection._id });
+
+    res.json({ message: 'Detection deleted successfully' });
+  } catch (error) {
+    logger.error('Delete detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Classify detection (swipe actions)
+router.patch('/detections/:id/classify', authenticateToken, async (req, res) => {
+  try {
+    const { action } = req.body; // 'confirm_pigeon', 'no_pigeon', 'delete'
+    
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner');
+    
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    
+    // Check ownership
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (action === 'delete') {
+      // Delete detection
+      await Detection.deleteOne({ _id: detection._id });
+      return res.json({ message: 'Detection deleted successfully' });
+    }
+    
+    // Update classification status
+    const statusMap = {
+      'confirm_pigeon': 'confirmed_pigeon',
+      'no_pigeon': 'no_pigeon',
+      'unclassified': null
+    };
+    
+    if (action === 'unclassified') {
+      detection.classification_status = null;
+      detection.classifiedAt = null;
+    } else {
+      detection.classification_status = statusMap[action] || null;
+      detection.classifiedAt = new Date();
+    }
+    await detection.save();
+    
+    res.json({ 
+      message: 'Detection classified successfully',
+      detection 
+    });
+  } catch (error) {
+    logger.error('Classify detection error:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
