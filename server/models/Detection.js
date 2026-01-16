@@ -103,6 +103,14 @@ const detectionSchema = new mongoose.Schema({
     type: String,
     enum: ['tapo', 'raspberry-pi', 'direct', 'local', 'unknown'],
     default: 'unknown'
+  },
+  classification_status: {
+    type: String,
+    enum: ['unclassified', 'confirmed_pigeon', 'correctly_identified', null],
+    default: null
+  },
+  classifiedAt: {
+    type: Date
   }
 }, {
   timestamps: true

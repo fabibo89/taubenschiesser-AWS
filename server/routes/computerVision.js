@@ -284,6 +284,76 @@ router.delete('/detections/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Get unclassified detections for Tinder view
+router.get('/detections/unclassified', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    
+    // Get all devices owned by user
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id);
+    
+    const detections = await Detection.find({
+      device: { $in: deviceIds },
+      $or: [
+        { classification_status: null },
+        { classification_status: { $exists: false } }
+      ]
+    })
+      .sort({ processedAt: -1 })
+      .limit(parseInt(limit))
+      .populate('device', 'name deviceId type');
+
+    res.json({ detections });
+  } catch (error) {
+    logger.error('Get unclassified detections error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Classify detection (swipe actions)
+router.patch('/detections/:id/classify', authenticateToken, async (req, res) => {
+  try {
+    const { action } = req.body; // 'confirm_pigeon', 'correctly_identified', 'delete'
+    
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner');
+    
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    
+    // Check ownership
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (action === 'delete') {
+      // Delete detection
+      await Detection.deleteOne({ _id: detection._id });
+      return res.json({ message: 'Detection deleted successfully' });
+    }
+    
+    // Update classification status
+    const statusMap = {
+      'confirm_pigeon': 'confirmed_pigeon',
+      'correctly_identified': 'correctly_identified'
+    };
+    
+    detection.classification_status = statusMap[action] || 'unclassified';
+    detection.classifiedAt = new Date();
+    await detection.save();
+    
+    res.json({ 
+      message: 'Detection classified successfully',
+      detection 
+    });
+  } catch (error) {
+    logger.error('Classify detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // CV service health check
 router.get('/health', async (req, res) => {
   try {

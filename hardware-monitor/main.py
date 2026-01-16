@@ -827,10 +827,13 @@ class HardwareMonitor:
             
             # Check if any detection was found
             tapo_birds_found = tapo_cv_result and tapo_cv_result.get('birds_found', False)
+            tapo_bird_count = tapo_cv_result.get('bird_count', 0) if tapo_cv_result else 0
             pi_birds_found = raspberry_pi_cv_result and raspberry_pi_cv_result.get('birds_found', False)
+            pi_bird_count = raspberry_pi_cv_result.get('bird_count', 0) if raspberry_pi_cv_result else 0
             
-            # If any detection found, save combined detection with both images
-            if tapo_birds_found or pi_birds_found:
+            # Only save if birds are found AND bird_count > 0 (consistent with single camera mode)
+            combined_bird_count = tapo_bird_count + pi_bird_count
+            if (tapo_birds_found or pi_birds_found) and combined_bird_count > 0:
                 logger.info(f"🦅 Detection found! Saving combined detection with both camera images")
                 await self.save_combined_detection_to_db(
                     device,
@@ -1608,7 +1611,8 @@ class HardwareMonitor:
                         else:
                             logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time:.2f}s)")
                         
-                        if result.get('birds_found', False):
+                        # Only save if birds_found AND bird_count > 0 (consistent with dual camera mode)
+                        if result.get('birds_found', False) and bird_count > 0:
                             confidence = result.get('confidence_level', 0)
                             
                             logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {bird_count} birds, max confidence: {confidence:.2f}")
@@ -1651,25 +1655,35 @@ class HardwareMonitor:
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
             
             # Combine detections from both cameras, marking which camera detected what
+            # IMPORTANT: Only store BIRD detections, not all objects
             all_detections = []
+            bird_detections = []
             
             if tapo_cv_result and tapo_cv_result.get('detections'):
                 for detection in tapo_cv_result.get('detections', []):
                     detection['camera_source'] = 'tapo'
-                    all_detections.append(detection)
+                    # Only add bird detections
+                    if detection.get('class', '').lower() in ['bird', 'birds', 'vogel', 'vögel', 'pigeon', 'dove', 'sparrow', 'crow', 'raven', 'eagle', 'hawk']:
+                        bird_detections.append(detection)
+                    all_detections.append(detection)  # Keep for logging/debugging
             
             if raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
                 for detection in raspberry_pi_cv_result.get('detections', []):
                     detection['camera_source'] = 'raspberry-pi'
-                    all_detections.append(detection)
+                    # Only add bird detections
+                    if detection.get('class', '').lower() in ['bird', 'birds', 'vogel', 'vögel', 'pigeon', 'dove', 'sparrow', 'crow', 'raven', 'eagle', 'hawk']:
+                        bird_detections.append(detection)
+                    all_detections.append(detection)  # Keep for logging/debugging
+            
+            # Use only bird detections for saving
+            all_detections = bird_detections
             
             # Find target bird (highest confidence bird from either camera)
+            # all_detections now only contains birds, so we can use it directly
             target_bird = None
             if all_detections:
-                birds = [d for d in all_detections if d.get('class') == 'bird']
-                if birds:
-                    target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                    logger.info(f"🎯 Target bird selected: confidence={target_bird.get('confidence', 0):.2f}, camera={target_bird.get('camera_source', 'unknown')}")
+                target_bird = max(all_detections, key=lambda x: x.get('confidence', 0))
+                logger.info(f"🎯 Target bird selected: confidence={target_bird.get('confidence', 0):.2f}, camera={target_bird.get('camera_source', 'unknown')}")
             
             # Get zoom factor
             zoom_factor = 1.0
@@ -1681,11 +1695,12 @@ class HardwareMonitor:
                     zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
             
             # Prepare image data
+            # all_detections now only contains birds, so bird_count is just the length
             detection_data = {
                 "deviceId": device_id,
-                "detections": all_detections,
+                "detections": all_detections,  # Only bird detections now
                 "target_bird": target_bird,
-                "bird_count": len([d for d in all_detections if d.get('class') == 'bird']),
+                "bird_count": len(all_detections),  # All detections are birds
                 "confidence_level": max(
                     tapo_cv_result.get('confidence_level', 0) if tapo_cv_result else 0,
                     raspberry_pi_cv_result.get('confidence_level', 0) if raspberry_pi_cv_result else 0
@@ -1799,14 +1814,19 @@ class HardwareMonitor:
                     zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
             
             # Find target bird (highest confidence bird)
-            detections = cv_result.get('detections', [])
+            # IMPORTANT: Only filter BIRD detections, not all objects
+            all_detections = cv_result.get('detections', [])
+            bird_detections = []
+            for detection in all_detections:
+                # Only include bird detections
+                if detection.get('class', '').lower() in ['bird', 'birds', 'vogel', 'vögel', 'pigeon', 'dove', 'sparrow', 'crow', 'raven', 'eagle', 'hawk']:
+                    bird_detections.append(detection)
+            
             target_bird = None
-            if detections:
-                birds = [d for d in detections if d.get('class') == 'bird']
-                if birds:
-                    # Sort by confidence and take the highest
-                    target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                    logger.info(f"🎯 Target bird selected ({camera_source}): confidence={target_bird.get('confidence', 0):.2f}, bbox={target_bird.get('bbox')}")
+            if bird_detections:
+                # Sort by confidence and take the highest
+                target_bird = max(bird_detections, key=lambda x: x.get('confidence', 0))
+                logger.info(f"🎯 Target bird selected ({camera_source}): confidence={target_bird.get('confidence', 0):.2f}, bbox={target_bird.get('bbox')}")
             
             # Store image info for angle calculations
             image_info = {
@@ -1822,13 +1842,14 @@ class HardwareMonitor:
             self.last_image_info = image_info
             
             # Prepare detailed detection data
+            # IMPORTANT: Only store BIRD detections, not all objects
             detection_data = {
                 "deviceId": device_id,
                 "original_image": f"data:image/jpeg;base64,{original_image_base64}",
                 "zoomed_image": f"data:image/jpeg;base64,{zoomed_image_base64}",
-                "detections": cv_result.get('detections', []),
+                "detections": bird_detections,  # Only bird detections, not all objects
                 "target_bird": target_bird,  # Which bird was targeted for shooting
-                "bird_count": cv_result.get('bird_count', 0),
+                "bird_count": len(bird_detections),  # Count of bird detections only
                 "confidence_level": cv_result.get('confidence_level', 0),
                 "processing_time": cv_result.get('processing_time', 0),
                 "zoom_factor": zoom_factor,
