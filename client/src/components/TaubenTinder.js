@@ -25,14 +25,66 @@ const TaubenTinder = () => {
   const [swiping, setSwiping] = useState(false);
   const [swipeDirection, setSwipeDirection] = useState(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [renderedImageSize, setRenderedImageSize] = useState({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
   
   const cardRef = useRef(null);
   const touchStartRef = useRef(null);
   const mouseStartRef = useRef(null);
+  const imageRef = useRef(null);
+  const containerRef = useRef(null);
 
   useEffect(() => {
     fetchUnclassifiedDetections();
   }, []);
+
+  // Reset rendered image size when detection changes
+  useEffect(() => {
+    setRenderedImageSize({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
+  }, [currentIndex]);
+
+  // Recalculate image size on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (imageRef.current && containerRef.current && detections.length > 0 && currentIndex < detections.length) {
+        const currentDet = detections[currentIndex];
+        const imgInfo = currentDet.zoomed_image?.url 
+          ? currentDet.image_info?.zoomed_size 
+          : currentDet.image_info?.original_size;
+        
+        if (!imgInfo) return;
+        
+        const img = imageRef.current;
+        const container = containerRef.current;
+        
+        const containerWidth = container.clientWidth;
+        const containerHeight = container.clientHeight;
+        const imgNaturalWidth = imgInfo.width || img.naturalWidth;
+        const imgNaturalHeight = imgInfo.height || img.naturalHeight;
+        
+        const containerAspect = containerWidth / containerHeight;
+        const imageAspect = imgNaturalWidth / imgNaturalHeight;
+        
+        let renderedWidth, renderedHeight, offsetX, offsetY;
+        
+        if (imageAspect > containerAspect) {
+          renderedWidth = containerWidth;
+          renderedHeight = containerWidth / imageAspect;
+          offsetX = 0;
+          offsetY = (containerHeight - renderedHeight) / 2;
+        } else {
+          renderedWidth = containerHeight * imageAspect;
+          renderedHeight = containerHeight;
+          offsetX = (containerWidth - renderedWidth) / 2;
+          offsetY = 0;
+        }
+        
+        setRenderedImageSize({ width: renderedWidth, height: renderedHeight, offsetX, offsetY });
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [detections, currentIndex]);
 
   const fetchUnclassifiedDetections = async () => {
     try {
@@ -287,61 +339,107 @@ const TaubenTinder = () => {
           {/* Image with bounding boxes */}
           {displayImage && (
             <Box
+              ref={containerRef}
               sx={{
                 position: 'relative',
                 width: '100%',
                 height: '70%',
-                backgroundColor: '#000'
+                backgroundColor: '#000',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
               }}
             >
               <Box
+                ref={imageRef}
                 component="img"
                 src={displayImage}
                 alt="Detection"
+                onLoad={(e) => {
+                  const img = e.target;
+                  const container = containerRef.current;
+                  if (!container || !imageInfo) return;
+                  
+                  const containerWidth = container.clientWidth;
+                  const containerHeight = container.clientHeight;
+                  const imgNaturalWidth = imageInfo.width || img.naturalWidth;
+                  const imgNaturalHeight = imageInfo.height || img.naturalHeight;
+                  
+                  // Calculate actual rendered size with objectFit: contain
+                  const containerAspect = containerWidth / containerHeight;
+                  const imageAspect = imgNaturalWidth / imgNaturalHeight;
+                  
+                  let renderedWidth, renderedHeight, offsetX, offsetY;
+                  
+                  if (imageAspect > containerAspect) {
+                    // Image is wider - fit to width
+                    renderedWidth = containerWidth;
+                    renderedHeight = containerWidth / imageAspect;
+                    offsetX = 0;
+                    offsetY = (containerHeight - renderedHeight) / 2;
+                  } else {
+                    // Image is taller - fit to height
+                    renderedWidth = containerHeight * imageAspect;
+                    renderedHeight = containerHeight;
+                    offsetX = (containerWidth - renderedWidth) / 2;
+                    offsetY = 0;
+                  }
+                  
+                  setRenderedImageSize({ width: renderedWidth, height: renderedHeight, offsetX, offsetY });
+                }}
                 sx={{
-                  width: '100%',
-                  height: '100%',
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  width: 'auto',
+                  height: 'auto',
                   objectFit: 'contain',
                   display: 'block'
                 }}
               />
               
               {/* Draw bounding boxes */}
-              {imageInfo && currentDetection.detections?.map((detection, index) => {
+              {imageInfo && renderedImageSize.width > 0 && currentDetection.detections?.map((detection, index) => {
                 if (!detection.bbox && !detection.position) return null;
                 
                 const imgWidth = imageInfo.width || 1;
                 const imgHeight = imageInfo.height || 1;
                 
-                let leftPct, topPct, widthPct, heightPct;
+                let bboxLeft, bboxTop, bboxWidth, bboxHeight;
                 
                 if (currentDetection.zoomed_image?.url && detection.position) {
                   const { center_x, center_y, width, height } = detection.position;
-                  const bboxLeft = center_x - width / 2;
-                  const bboxTop = center_y - height / 2;
-                  leftPct = (bboxLeft / imgWidth) * 100;
-                  topPct = (bboxTop / imgHeight) * 100;
-                  widthPct = (width / imgWidth) * 100;
-                  heightPct = (height / imgHeight) * 100;
+                  bboxLeft = center_x - width / 2;
+                  bboxTop = center_y - height / 2;
+                  bboxWidth = width;
+                  bboxHeight = height;
                 } else if (detection.bbox) {
                   const { x, y, width, height } = detection.bbox;
-                  leftPct = (x / imgWidth) * 100;
-                  topPct = (y / imgHeight) * 100;
-                  widthPct = (width / imgWidth) * 100;
-                  heightPct = (height / imgHeight) * 100;
+                  bboxLeft = x;
+                  bboxTop = y;
+                  bboxWidth = width;
+                  bboxHeight = height;
                 } else {
                   return null;
                 }
+                
+                // Convert from image coordinates to rendered coordinates
+                const scaleX = renderedImageSize.width / imgWidth;
+                const scaleY = renderedImageSize.height / imgHeight;
+                
+                const leftPx = bboxLeft * scaleX + renderedImageSize.offsetX;
+                const topPx = bboxTop * scaleY + renderedImageSize.offsetY;
+                const widthPx = bboxWidth * scaleX;
+                const heightPx = bboxHeight * scaleY;
                 
                 return (
                   <Box
                     key={index}
                     sx={{
                       position: 'absolute',
-                      left: `${leftPct}%`,
-                      top: `${topPct}%`,
-                      width: `${widthPct}%`,
-                      height: `${heightPct}%`,
+                      left: `${leftPx}px`,
+                      top: `${topPx}px`,
+                      width: `${widthPx}px`,
+                      height: `${heightPx}px`,
                       border: '3px solid #ff1744',
                       boxShadow: '0 0 0 2px rgba(255, 23, 68, 0.5)',
                       pointerEvents: 'none',
