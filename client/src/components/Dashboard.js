@@ -7,10 +7,6 @@ import {
   Box,
   Chip,
   LinearProgress,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemIcon,
   IconButton,
   Button,
   ButtonGroup,
@@ -42,16 +38,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../contexts/SocketContext';
 import axios from 'axios';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  Legend,
-  ResponsiveContainer
-} from 'recharts';
+import Chart from 'react-apexcharts';
 
 // Helper component for stream display
 const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false, imageRef = null }) => {
@@ -222,12 +209,6 @@ const StreamPlaceholder = ({ toggleStream, cameraName }) => (
 );
 
 const Dashboard = () => {
-  const [stats, setStats] = useState({
-    totalDevices: 0,
-    onlineDevices: 0,
-    totalDetections: 0,
-    recentDetections: []
-  });
   const [devices, setDevices] = useState([]);
   const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
   const [deviceStatuses, setDeviceStatuses] = useState({}); // { [deviceId]: { status, message, timestamp } }
@@ -301,14 +282,12 @@ const Dashboard = () => {
 
   const fetchDashboardData = async () => {
     try {
-      const [devicesResponse, detectionsResponse, statsResponse] = await Promise.all([
+      const [devicesResponse, statsResponse] = await Promise.all([
         axios.get('/api/devices'),
-        axios.get('/api/cv/detections?limit=5'),
         axios.get('/api/cv/detections/statistics?days=30').catch(() => ({ data: { statistics: [] } }))
       ]);
 
       const devicesData = devicesResponse.data;
-      const detections = detectionsResponse.data.detections || [];
       const stats = statsResponse.data.statistics || [];
 
       // Convert statistics to map by deviceId
@@ -333,12 +312,6 @@ const Dashboard = () => {
       }));
 
       setDevices(devicesWithStatus);
-      setStats({
-        totalDevices: devicesWithStatus.length,
-        onlineDevices: devicesWithStatus.filter(d => d.status === 'online').length,
-        totalDetections: detections.length,
-        recentDetections: detections.slice(0, 5)
-      });
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
@@ -552,8 +525,8 @@ const Dashboard = () => {
     }
   };
 
-  // Detection Chart Component
-  const DetectionChart = ({ device }) => {
+  // Detection Chart Component - Using ApexCharts with memoization to prevent blinking
+  const DetectionChart = React.memo(({ device, detectionStats }) => {
     // Ensure device._id is converted to string for consistent lookup
     const deviceIdStr = String(device._id);
     const data = detectionStats[deviceIdStr] || [];
@@ -573,51 +546,114 @@ const Dashboard = () => {
       );
     }
 
+    // Prepare data for ApexCharts
+    const categories = data.map(item => {
+      const date = new Date(item.date);
+      return `${date.getDate()}.${date.getMonth() + 1}`;
+    });
+
+    const chartOptions = {
+      chart: {
+        type: 'bar',
+        stacked: true,
+        toolbar: {
+          show: false
+        },
+        animations: {
+          enabled: false // Disable animations to prevent blinking
+        }
+      },
+      plotOptions: {
+        bar: {
+          horizontal: false,
+          columnWidth: '55%',
+        },
+      },
+      dataLabels: {
+        enabled: false
+      },
+      stroke: {
+        show: true,
+        width: 1,
+        colors: ['#fff']
+      },
+      xaxis: {
+        categories: categories,
+        labels: {
+          rotate: -45,
+          rotateAlways: true,
+          style: {
+            fontSize: '12px'
+          }
+        }
+      },
+      yaxis: {
+        title: {
+          show: false
+        }
+      },
+      fill: {
+        opacity: 1
+      },
+      legend: {
+        position: 'bottom',
+        horizontalAlign: 'center',
+      },
+      colors: ['#9e9e9e', '#4caf50', '#f44336'],
+      tooltip: {
+        y: {
+          formatter: function (val) {
+            return val + " Erkennungen";
+          }
+        }
+      }
+    };
+
+    const series = [
+      {
+        name: 'Unkategorisiert',
+        data: data.map(item => item.unclassified || 0)
+      },
+      {
+        name: 'Taube',
+        data: data.map(item => item.confirmed_pigeon || 0)
+      },
+      {
+        name: 'Keine Taube',
+        data: data.map(item => item.no_pigeon || 0)
+      }
+    ];
+
     return (
-      <ResponsiveContainer width="100%" height={300}>
-        <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis 
-            dataKey="date" 
-            tick={{ fontSize: 12 }}
-            angle={-45}
-            textAnchor="end"
-            height={80}
-            tickFormatter={(value) => {
-              const date = new Date(value);
-              return `${date.getDate()}.${date.getMonth() + 1}`;
-            }}
-          />
-          <YAxis />
-          <RechartsTooltip 
-            labelFormatter={(value) => {
-              const date = new Date(value);
-              return date.toLocaleDateString('de-DE');
-            }}
-          />
-          <Legend />
-          <Bar 
-            dataKey="unclassified" 
-            stackId="a" 
-            fill="#9e9e9e" 
-            name="Unkategorisiert" 
-          />
-          <Bar 
-            dataKey="confirmed_pigeon" 
-            stackId="a" 
-            fill="#4caf50" 
-            name="Taube" 
-          />
-          <Bar 
-            dataKey="no_pigeon" 
-            stackId="a" 
-            fill="#f44336" 
-            name="Keine Taube" 
-          />
-        </BarChart>
-      </ResponsiveContainer>
+      <Chart
+        options={chartOptions}
+        series={series}
+        type="bar"
+        height={300}
+      />
     );
-  };
+  }, (prevProps, nextProps) => {
+    // Custom comparison: only re-render if device ID or detection stats changed
+    const prevDeviceId = String(prevProps.device._id);
+    const nextDeviceId = String(nextProps.device._id);
+    const prevData = prevProps.detectionStats[prevDeviceId] || [];
+    const nextData = nextProps.detectionStats[nextDeviceId] || [];
+    
+    // Compare device ID
+    if (prevDeviceId !== nextDeviceId) return false;
+    
+    // Compare data length
+    if (prevData.length !== nextData.length) return false;
+    
+    // Deep comparison of data (compare JSON strings for simplicity)
+    if (prevData.length > 0 && nextData.length > 0) {
+      const prevDataStr = JSON.stringify(prevData);
+      const nextDataStr = JSON.stringify(nextData);
+      if (prevDataStr !== nextDataStr) return false;
+    }
+    
+    return true; // Props are equal, skip re-render
+  });
 
   // Geräte-Komponente
   const DeviceCard = ({ device }) => {
@@ -1202,16 +1238,34 @@ const Dashboard = () => {
             </Typography>
           </Box>
 
-          {/* Detection Statistics Chart */}
-          <Box sx={{ mt: 3, borderTop: '1px solid #e0e0e0', pt: 2 }}>
-            <Typography variant="subtitle2" gutterBottom>
-              Erkennungen pro Tag (letzte 30 Tage)
-            </Typography>
-            <DetectionChart device={device} />
-          </Box>
         </CardContent>
       </Card>
     );
+  };
+
+  // Helper function to get today's detection count for a device
+  const getTodayDetections = (device) => {
+    const deviceIdStr = String(device._id);
+    const data = detectionStats[deviceIdStr] || [];
+    
+    if (data.length === 0) return { total: 0, unclassified: 0 };
+    
+    // Get today's date in YYYY-MM-DD format
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    
+    // Find today's data
+    const todayData = data.find(item => item.date === todayStr);
+    
+    if (!todayData) return { total: 0, unclassified: 0 };
+    
+    // Calculate totals
+    const unclassified = todayData.unclassified || 0;
+    const total = unclassified + 
+                  (todayData.confirmed_pigeon || 0) + 
+                  (todayData.no_pigeon || 0);
+    
+    return { total, unclassified };
   };
 
   if (loading) {
@@ -1231,141 +1285,44 @@ const Dashboard = () => {
         </Alert>
       )}
       
+      {/* Device Summary Cards with Today's Detections and Charts */}
+      {devices.length > 0 && (
+        <Grid container spacing={3} sx={{ mb: 4 }}>
+          {devices.map((device) => {
+            const { total, unclassified } = getTodayDetections(device);
+            return (
+              <Grid item xs={12} md={6} lg={4} key={device._id}>
+                <Card>
+                  <CardContent>
+                    <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
+                      <Typography variant="h6">
+                        {device.name}
+                      </Typography>
+                      <Box display="flex" gap={1}>
+                        <Chip 
+                          label={`${total} heute`}
+                          color="primary"
+                          variant="outlined"
+                        />
+                        {unclassified > 0 && (
+                          <Chip 
+                            label={`${unclassified} unkategorisiert`}
+                            color="warning"
+                            variant="outlined"
+                          />
+                        )}
+                      </Box>
+                    </Box>
+                    <DetectionChart device={device} detectionStats={detectionStats} />
+                  </CardContent>
+                </Card>
+              </Grid>
+            );
+          })}
+        </Grid>
+      )}
+      
       <Grid container spacing={3}>
-        {/* Statistics Cards */}
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center">
-                <DevicesIcon color="primary" sx={{ mr: 1 }} />
-                <Box>
-                  <Typography color="textSecondary" gutterBottom>
-                    Gesamt Geräte
-                  </Typography>
-                  <Typography variant="h4">
-                    {stats.totalDevices}
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center">
-                <OnlineIcon color="success" sx={{ mr: 1 }} />
-                <Box>
-                  <Typography color="textSecondary" gutterBottom>
-                    Online Geräte
-                  </Typography>
-                  <Typography variant="h4">
-                    {stats.onlineDevices}
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center">
-                <VisibilityIcon color="info" sx={{ mr: 1 }} />
-                <Box>
-                  <Typography color="textSecondary" gutterBottom>
-                    Erkennungen
-                  </Typography>
-                  <Typography variant="h4">
-                    {stats.totalDetections}
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Box display="flex" alignItems="center">
-                <Typography color="textSecondary" gutterBottom>
-                  Online Rate
-                </Typography>
-                <Typography variant="h4">
-                  {stats.totalDevices > 0 
-                    ? Math.round((stats.onlineDevices / stats.totalDevices) * 100)
-                    : 0}%
-                </Typography>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Recent Detections */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Letzte Erkennungen
-              </Typography>
-              {stats.recentDetections.length > 0 ? (
-                <List>
-                  {stats.recentDetections.map((detection, index) => (
-                    <ListItem key={index}>
-                      <ListItemIcon>
-                        <VisibilityIcon />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={`${detection.device?.name || 'Unbekanntes Gerät'}`}
-                        secondary={`${detection.detections?.length || 0} Objekte erkannt`}
-                      />
-                      <Chip
-                        label={new Date(detection.processedAt).toLocaleDateString()}
-                        size="small"
-                        variant="outlined"
-                      />
-                    </ListItem>
-                  ))}
-                </List>
-              ) : (
-                <Typography color="textSecondary">
-                  Keine Erkennungen verfügbar
-                </Typography>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Quick Actions */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Schnellzugriff
-              </Typography>
-              <Box display="flex" flexDirection="column" gap={2}>
-                <IconButton
-                  onClick={() => navigate('/devices')}
-                  sx={{ justifyContent: 'flex-start', textAlign: 'left' }}
-                >
-                  <DevicesIcon sx={{ mr: 1 }} />
-                  <Typography>Geräte verwalten</Typography>
-                </IconButton>
-                <IconButton
-                  onClick={() => navigate('/detections')}
-                  sx={{ justifyContent: 'flex-start', textAlign: 'left' }}
-                >
-                  <VisibilityIcon sx={{ mr: 1 }} />
-                  <Typography>Alle Erkennungen anzeigen</Typography>
-                </IconButton>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
         {/* Taubenschiesser Geräte */}
         <Grid item xs={12}>
           <Typography variant="h5" gutterBottom>
