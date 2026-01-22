@@ -13,6 +13,10 @@ import boto3
 from botocore.exceptions import ClientError
 import json
 from dotenv import load_dotenv
+import requests
+from io import BytesIO
+from PIL import Image
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -581,6 +585,11 @@ class ApplyZoomRequest(BaseModel):
     image: str  # Base64 encoded image
     zoom: float
 
+class StitchPanoramaRequest(BaseModel):
+    image_urls: Optional[List[str]] = None
+    image_base64_list: Optional[List[str]] = None
+    show_borders: Optional[bool] = False
+
 @app.post("/capture_frame")
 async def capture_frame(request: CaptureFrameRequest):
     """Capture a frame from RTSP stream"""
@@ -688,6 +697,796 @@ async def apply_zoom(request: ApplyZoomRequest):
     except Exception as e:
         print(f"Error applying zoom: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/stitch-panorama")
+async def stitch_panorama(request: StitchPanoramaRequest):
+    """Stitch multiple images into a panorama"""
+    try:
+        # Support both URLs and base64 data
+        image_urls = request.image_urls or []
+        image_base64_list = request.image_base64_list or []
+        
+        if (not image_urls and not image_base64_list) or (len(image_urls) + len(image_base64_list) < 2):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Mindestens 2 Bilder werden für Panorama benötigt",
+                    "error_code": "INSUFFICIENT_IMAGES"
+                }
+            )
+        
+        # 1. Bilder laden
+        images = []
+        image_sizes = []  # Speichere Größen der Originalbilder
+        failed_items = []
+        total_images = len(image_urls) + len(image_base64_list)
+        
+        # Process URLs
+        for i, url in enumerate(image_urls):
+            try:
+                print(f"Lade Bild {i+1}/{total_images} (URL): {url[:50]}...")
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                
+                img = Image.open(BytesIO(response.content))
+                img_array = np.array(img)
+                
+                # Konvertiere RGB zu BGR für OpenCV
+                if len(img_array.shape) == 3:
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                else:
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+                
+                images.append(img_bgr)
+                # Speichere Originalgröße (height, width)
+                image_sizes.append({
+                    "width": img_bgr.shape[1],
+                    "height": img_bgr.shape[0]
+                })
+                print(f"Bild {i+1} erfolgreich geladen: {img_bgr.shape}")
+                
+            except requests.RequestException as e:
+                print(f"Fehler beim Laden von Bild {i+1} ({url}): {e}")
+                failed_items.append({'index': i, 'type': 'url', 'url': url, 'error': str(e)})
+            except Exception as e:
+                print(f"Unerwarteter Fehler beim Verarbeiten von Bild {i+1}: {e}")
+                failed_items.append({'index': i, 'type': 'url', 'url': url, 'error': str(e)})
+        
+        # Process base64 images
+        for i, base64_data in enumerate(image_base64_list):
+            try:
+                img_index = len(image_urls) + i + 1
+                print(f"Lade Bild {img_index}/{total_images} (base64)")
+                
+                # Remove data URL prefix if present
+                if base64_data.startswith('data:image'):
+                    base64_data = base64_data.split(',')[1]
+                
+                # Decode base64
+                image_data = base64.b64decode(base64_data)
+                img = Image.open(BytesIO(image_data))
+                img_array = np.array(img)
+                
+                # Konvertiere RGB zu BGR für OpenCV
+                if len(img_array.shape) == 3:
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                else:
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+                
+                images.append(img_bgr)
+                # Speichere Originalgröße (height, width)
+                image_sizes.append({
+                    "width": img_bgr.shape[1],
+                    "height": img_bgr.shape[0]
+                })
+                print(f"Bild {img_index} erfolgreich geladen: {img_bgr.shape}")
+                
+            except Exception as e:
+                print(f"Fehler beim Verarbeiten von base64 Bild {img_index}: {e}")
+                failed_items.append({'index': img_index, 'type': 'base64', 'error': str(e)})
+        
+        if len(images) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Nur {len(images)} von {total_images} Bildern konnten geladen werden",
+                    "error_code": "LOAD_FAILED",
+                    "failed_items": failed_items
+                }
+            )
+        
+        if failed_items:
+            print(f"Warnung: {len(failed_items)} Bilder konnten nicht geladen werden, versuche mit {len(images)} Bildern")
+        
+        # 2. Stitching durchführen
+        print(f"Starte Stitching mit {len(images)} Bildern...")
+        
+        # Versuche cv2.detail.Stitcher mit Plane Warper zu verwenden (weniger Verzerrung)
+        # Falls das nicht funktioniert, verwende normalen Stitcher
+        try:
+            # Verwende detail.Stitcher für mehr Kontrolle
+            stitcher = cv2.detail.Stitcher.create()
+            stitcher.setPanoConfidenceThresh(0.5)  # Niedrigere Schwelle für bessere Ergebnisse
+            
+            # Plane Warper = weniger Verzerrung (planare Projektion statt sphärisch)
+            # Das sollte Feature-Matching zwischen Originalbildern und Panorama verbessern
+            try:
+                warper = cv2.detail.PlaneWarper()
+                stitcher.setWarper(warper)
+                print("Verwende Plane Warper für weniger Verzerrung")
+            except Exception as e:
+                print(f"Plane Warper nicht verfügbar: {e}, verwende Standard-Warper")
+            
+            # Führe Stitching durch
+            status, panorama = stitcher.stitch(images)
+            
+        except Exception as e:
+            print(f"cv2.detail.Stitcher nicht verfügbar oder Fehler: {e}")
+            print("Verwende normalen cv2.Stitcher...")
+            stitcher = cv2.Stitcher.create()
+            status, panorama = stitcher.stitch(images)
+        
+        # 3. Status-Codes interpretieren
+        # OpenCV Stitcher Status Codes (numerische Werte)
+        STITCHER_OK = 0
+        STITCHER_ERR_NEED_MORE_IMGS = 1
+        STITCHER_ERR_HOMOGRAFY_EST_FAIL = 2
+        STITCHER_ERR_CAMERA_PARAMS_ADJUST_FAIL = 3
+        STITCHER_ERR_MATCH_CONFIDENCE_FAIL = 4
+        STITCHER_ERR_PANO_INPUT_SIZE_FAIL = 5
+        
+        status_messages = {
+            STITCHER_OK: "Erfolgreich",
+            STITCHER_ERR_NEED_MORE_IMGS: "Nicht genug Bilder (mindestens 2 benötigt)",
+            STITCHER_ERR_HOMOGRAFY_EST_FAIL: "Homographie-Schätzung fehlgeschlagen - Bilder überlappen nicht genug",
+            STITCHER_ERR_CAMERA_PARAMS_ADJUST_FAIL: "Kamera-Parameter-Anpassung fehlgeschlagen",
+            STITCHER_ERR_MATCH_CONFIDENCE_FAIL: "Feature-Matching-Konfidenz zu niedrig",
+            STITCHER_ERR_PANO_INPUT_SIZE_FAIL: "Eingabebilder zu groß oder zu klein"
+        }
+        
+        if status == STITCHER_OK:
+            print(f"Stitching erfolgreich! Panorama-Größe: {panorama.shape}")
+            
+            # Statistiken berechnen
+            total_requested = len(image_urls) + len(image_base64_list)
+            total_loaded = len(images)
+            total_failed = len(failed_items)
+            
+            # Matrizen werden für das ORIGINAL-Panorama berechnet (vor Komprimierung)
+            # Keine Skalierung - kommt später wieder rein
+            homographies = []
+            transformation_matrices = []
+            
+            # Helper function für Template-Matching
+            def find_image_position_with_template_matching(panorama, original_image, roi_x_start, roi_x_end, scale=0.3):
+                """Finde Position des Originalbildes im Panorama mit Template-Matching"""
+                try:
+                    # Extrahiere ROI aus Panorama
+                    roi = panorama[:, roi_x_start:roi_x_end]
+                    
+                    # Prüfe VOR dem Resize, ob ROI groß genug für Template ist
+                    # Berechne benötigte Größe nach Skalierung
+                    img_width_scaled = int(original_image.shape[1] * scale)
+                    img_height_scaled = int(original_image.shape[0] * scale)
+                    roi_width_scaled = int(roi.shape[1] * scale)
+                    roi_height_scaled = int(roi.shape[0] * scale)
+                    
+                    # Wenn ROI nach Skalierung kleiner als Template wäre, passe Skalierung an
+                    if roi_width_scaled < img_width_scaled or roi_height_scaled < img_height_scaled:
+                        # Berechne maximale Skalierung, die noch passt
+                        max_scale_x = (roi.shape[1] / original_image.shape[1]) * 0.95
+                        max_scale_y = (roi.shape[0] / original_image.shape[0]) * 0.95
+                        scale = min(scale, max_scale_x, max_scale_y)
+                        
+                        if scale < 0.1:  # Zu klein, skip Template-Matching
+                            return None, None, 0.0
+                    
+                    # Reduziere Größe für Template-Matching (schneller und robuster)
+                    roi_small = cv2.resize(roi, (int(roi.shape[1] * scale), int(roi.shape[0] * scale)))
+                    img_small = cv2.resize(original_image, (int(original_image.shape[1] * scale), int(original_image.shape[0] * scale)))
+                    
+                    # Finale Prüfe (sollte jetzt immer passen)
+                    if roi_small.shape[0] < img_small.shape[0] or roi_small.shape[1] < img_small.shape[1]:
+                        return None, None, 0.0
+                    
+                    # Template-Matching mit mehreren Methoden
+                    # TM_CCOEFF_NORMED ist am robustesten
+                    result = cv2.matchTemplate(roi_small, img_small, cv2.TM_CCOEFF_NORMED)
+                    min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                    
+                    # Position zurück auf Original-Skala
+                    match_x = (max_loc[0] / scale) + roi_x_start
+                    match_y = max_loc[1] / scale
+                    
+                    return match_x, match_y, max_val
+                except Exception as e:
+                    print(f"  Template-Matching Fehler: {e}")
+                    return None, None, 0.0
+            
+            # Helper function to calculate transformation matrices
+            def calculate_transformation_matrices(panorama_img, original_images):
+                """Berechne Transformations-Matrizen für das gegebene Panorama"""
+                matrices = []
+                if len(original_images) < 2:
+                    return matrices
+                
+                print(f"Berechne Transformations-Matrizen basierend auf Panorama (Größe: {panorama_img.shape[1]}x{panorama_img.shape[0]})...")
+                print("Verwende Template-Matching + Feature-Matching Hybrid-Ansatz...")
+                
+                # Feature Detector für Matching zwischen Originalbildern und Panorama
+                # Versuche SIFT (genauer), dann AKAZE, dann ORB als Fallback
+                try:
+                    detector = cv2.SIFT_create(nfeatures=8000)
+                    use_sift = True
+                    print("Verwende SIFT für Feature Detection (8000 Features)")
+                except:
+                    try:
+                        detector = cv2.AKAZE_create()
+                        use_sift = False
+                        print("SIFT nicht verfügbar, verwende AKAZE")
+                    except:
+                        detector = cv2.ORB_create(nfeatures=8000)
+                        use_sift = False
+                        print("Verwende ORB für Feature Detection (8000 Features)")
+                
+                # Feature Detection auf Panorama (einmal für alle Bilder)
+                kp_pano, des_pano = detector.detectAndCompute(panorama_img, None)
+                print(f"Panorama Features: {len(kp_pano) if kp_pano else 0}")
+                
+                h_pano, w_pano = panorama_img.shape[:2]
+                
+                # Für jedes Originalbild: Finde Homographie direkt zum Panorama
+                for i, img in enumerate(original_images):
+                    try:
+                        print(f"Berechne Matrix für Bild {i+1}/{len(original_images)}...")
+                        
+                        # ROI-basierte Suche für bessere Performance und Genauigkeit
+                        # Schätze ungefähre Position des Bildes im Panorama
+                        estimated_x = (w_pano / len(original_images)) * i
+                        roi_width = int(w_pano / len(original_images) * 2.5)  # 2.5x Breite für Puffer
+                        roi_x_start = max(0, int(estimated_x - roi_width // 2))
+                        roi_x_end = min(w_pano, int(estimated_x + roi_width // 2))
+                        
+                        # Versuche zuerst Template-Matching für bessere ROI-Schätzung
+                        template_match_x, template_match_y, template_confidence = find_image_position_with_template_matching(
+                            panorama_img, img, roi_x_start, roi_x_end, scale=0.3
+                        )
+                        
+                        if template_match_x is not None and template_confidence > 0.3:  # Reduziert von 0.4 auf 0.3 für verzerrte Bilder
+                            # Verwende Template-Matching Position für bessere ROI
+                            print(f"  Template-Matching: Position gefunden bei x={template_match_x:.1f}, y={template_match_y:.1f}, Confidence={template_confidence:.2f}")
+                            # Verfeinere ROI um Template-Match Position
+                            refined_roi_width = int(img.shape[1] * 1.5)  # 1.5x Bildbreite
+                            roi_x_start = max(0, int(template_match_x - refined_roi_width // 2))
+                            roi_x_end = min(w_pano, int(template_match_x + refined_roi_width // 2))
+                        else:
+                            print(f"  Template-Matching: Keine gute Übereinstimmung (Confidence={template_confidence:.2f}), verwende geschätzte ROI")
+                        
+                        # Extrahiere ROI aus Panorama
+                        roi_panorama = panorama_img[:, roi_x_start:roi_x_end]
+                        kp_roi, des_roi = detector.detectAndCompute(roi_panorama, None)
+                        
+                        # Feature Detection auf Originalbild
+                        kp_img, des_img = detector.detectAndCompute(img, None)
+                        
+                        if des_img is not None and des_roi is not None and len(des_img) > 10 and len(des_roi) > 10:
+                            # Matcher - unterschiedlich für SIFT/AKAZE vs ORB
+                            if use_sift:
+                                # SIFT verwendet L2_NORM
+                                bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+                            else:
+                                # AKAZE/ORB verwenden HAMMING
+                                bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                            
+                            matches = bf.knnMatch(des_img, des_roi, k=2)
+                            
+                            # Lowe's ratio test - strenger für bessere Qualität
+                            good_matches = []
+                            for match_pair in matches:
+                                if len(match_pair) == 2:
+                                    m, n = match_pair
+                                    if m.distance < 0.7 * n.distance:  # Strenger: 0.7 statt 0.75
+                                        good_matches.append(m)
+                            
+                            print(f"  Bild {i+1}: {len(good_matches)} gute Matches gefunden (ROI: x={roi_x_start}-{roi_x_end})")
+                            
+                            if len(good_matches) > 10:  # Reduziert von 20 auf 10, da wir mehr Matrizen akzeptieren wollen
+                                # Extrahiere matched points
+                                # src_pts: Punkte im Originalbild
+                                # dst_pts: Punkte im ROI (müssen x-Koordinaten anpassen)
+                                src_pts = np.float32([kp_img[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                                dst_pts_roi = np.float32([kp_roi[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                                
+                                # Passe x-Koordinaten an (ROI-Offset hinzufügen)
+                                dst_pts = dst_pts_roi.copy()
+                                dst_pts[:, 0, 0] += roi_x_start
+                                
+                                # Finde Homographie vom Originalbild ins Panorama
+                                # cv2.findHomography(src, dst) findet Transformation von src zu dst
+                                # RANSAC Threshold: 3.0 ist robuster als 5.0
+                                M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
+                                
+                                if M is not None:
+                                    # Prüfe Qualität der Homographie
+                                    inlier_count = np.sum(mask) if mask is not None else len(good_matches)
+                                    inlier_ratio = inlier_count / len(good_matches) if len(good_matches) > 0 else 0
+                                    print(f"  Inlier-Ratio: {inlier_ratio:.2%} ({inlier_count}/{len(good_matches)})")
+                                    
+                                    # Prüfe, ob die Homographie plausibel ist
+                                    # Negative Determinante der ersten 2x2 Matrix deutet auf Spiegelung hin (oft falsch)
+                                    det = M[0,0] * M[1,1] - M[0,1] * M[1,0]
+                                    
+                                    # Prüfe auf extrem große Matrix-Werte (deuten auf falsche Homographie hin)
+                                    max_value = max(abs(M[0,0]), abs(M[0,1]), abs(M[1,0]), abs(M[1,1]))
+                                    
+                                    # Ablehnen wenn:
+                                    # 1. Negative Determinante (Spiegelung)
+                                    # 2. Extrem große Werte (> 5 deutet auf falsche Homographie hin)
+                                    # 3. Inlier-Ratio zu niedrig
+                                    use_fallback = False
+                                    if det < 0:
+                                        print(f"  ⚠️  Negative Determinante ({det:.4f}) - Homographie abgelehnt, verwende Fallback")
+                                        use_fallback = True
+                                    elif max_value > 10:  # Erhöht von 5 auf 10, da Panorama groß ist
+                                        print(f"  ⚠️  Extrem große Matrix-Werte (max: {max_value:.2f}) - Homographie abgelehnt, verwende Fallback")
+                                        use_fallback = True
+                                    elif inlier_ratio < 0.10:  # Reduziert von 30% auf 10%, da verzerrte Bilder schwieriger sind
+                                        print(f"  ⚠️  Inlier-Ratio sehr niedrig ({inlier_ratio:.2%} < 10%), verwende Fallback")
+                                        use_fallback = True
+                                    elif inlier_ratio < 0.20:
+                                        print(f"  ⚠️  Inlier-Ratio niedrig ({inlier_ratio:.2%} < 20%), verwende Matrix trotzdem (Stitcher war erfolgreich)")
+                                    
+                                    if use_fallback:
+                                        # Fallback: Geschätzte Transformation
+                                        h_img, w_img = img.shape[:2]
+                                        h_pano, w_pano = panorama_img.shape[:2]
+                                        estimated_x = (w_pano / len(original_images)) * i
+                                        M_estimated = np.array([
+                                            [1, 0, estimated_x],
+                                            [0, 1, 0],
+                                            [0, 0, 1]
+                                        ], dtype=np.float32)
+                                        matrices.append(M_estimated)
+                                    else:
+                                        matrices.append(M)
+                                        print(f"  Bild {i+1}: Homographie erfolgreich berechnet")
+                                    # Debug: Zeige vollständige Matrix
+                                    print(f"    Vollständige Matrix:")
+                                    print(f"      [{M[0,0]:.6f}, {M[0,1]:.6f}, {M[0,2]:.6f}]")
+                                    print(f"      [{M[1,0]:.6f}, {M[1,1]:.6f}, {M[1,2]:.6f}]")
+                                    print(f"      [{M[2,0]:.6f}, {M[2,1]:.6f}, {M[2,2]:.6f}]")
+                                    print(f"    Kurzform: tx={M[0,2]:.2f}, ty={M[1,2]:.2f}, px={M[2,0]:.6f}, py={M[2,1]:.6f}, w={M[2,2]:.2f}")
+                                else:
+                                    print(f"  Bild {i+1}: Homographie-Berechnung fehlgeschlagen, verwende Fallback")
+                                    # Fallback: Geschätzte Transformation
+                                    h_img, w_img = img.shape[:2]
+                                    h_pano, w_pano = panorama_img.shape[:2]
+                                    # Grobe Schätzung: Bilder sind horizontal angeordnet
+                                    estimated_x = (w_pano / len(original_images)) * i
+                                    M_estimated = np.array([
+                                        [1, 0, estimated_x],
+                                        [0, 1, 0],
+                                        [0, 0, 1]
+                                    ], dtype=np.float32)
+                                    matrices.append(M_estimated)
+                            else:
+                                print(f"  Bild {i+1}: Zu wenige Matches ({len(good_matches)}), verwende Fallback")
+                                # Fallback: Geschätzte Transformation
+                                h_img, w_img = img.shape[:2]
+                                h_pano, w_pano = panorama_img.shape[:2]
+                                estimated_x = (w_pano / len(original_images)) * i
+                                M_estimated = np.array([
+                                    [1, 0, estimated_x],
+                                    [0, 1, 0],
+                                    [0, 0, 1]
+                                ], dtype=np.float32)
+                                matrices.append(M_estimated)
+                        else:
+                            print(f"  Bild {i+1}: Zu wenige Features, verwende Fallback")
+                            # Fallback: Geschätzte Transformation
+                            h_img, w_img = img.shape[:2]
+                            h_pano, w_pano = panorama_img.shape[:2]
+                            estimated_x = (w_pano / len(original_images)) * i
+                            M_estimated = np.array([
+                                [1, 0, estimated_x],
+                                [0, 1, 0],
+                                [0, 0, 1]
+                            ], dtype=np.float32)
+                            matrices.append(M_estimated)
+                    except Exception as e:
+                        print(f"Fehler beim Berechnen der Homographie für Bild {i}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Fallback: Geschätzte Transformation
+                        h_img, w_img = img.shape[:2]
+                        h_pano, w_pano = panorama_img.shape[:2]
+                        estimated_x = (w_pano / len(original_images)) * i
+                        M_estimated = np.array([
+                            [1, 0, estimated_x],
+                            [0, 1, 0],
+                            [0, 0, 1]
+                        ], dtype=np.float32)
+                        matrices.append(M_estimated)
+                
+                print(f"Transformations-Matrizen berechnet: {len(matrices)} Matrizen")
+                return matrices
+            
+            if len(images) >= 2:
+                print(f"Berechne Transformations-Matrizen basierend auf finalem Panorama...")
+                
+                # Feature Detector für Matching zwischen Originalbildern und Panorama
+                orb = cv2.ORB_create(nfeatures=5000)
+                
+                # Feature Detection auf Panorama (einmal für alle Bilder)
+                kp_pano, des_pano = orb.detectAndCompute(panorama, None)
+                print(f"Panorama Features: {len(kp_pano) if kp_pano else 0}")
+                
+                # Für jedes Originalbild: Finde Homographie direkt zum finalen Panorama
+                h_pano, w_pano = panorama.shape[:2]
+                for i, img in enumerate(images):
+                    try:
+                        print(f"Berechne Matrix für Bild {i+1}/{len(images)}...")
+                        
+                        # ROI-basierte Suche: Schätze ungefähre Position des Bildes im Panorama
+                        estimated_x = (w_pano / len(images)) * i
+                        roi_width = int(w_pano / len(images) * 3.0)  # 3x Breite für Puffer
+                        roi_x_start = max(0, int(estimated_x - roi_width // 2))
+                        roi_x_end = min(w_pano, int(estimated_x + roi_width // 2))
+                        
+                        # Extrahiere ROI aus Panorama
+                        roi_panorama = panorama[:, roi_x_start:roi_x_end]
+                        kp_roi, des_roi = orb.detectAndCompute(roi_panorama, None)
+                        print(f"  ROI: x={roi_x_start}-{roi_x_end} (Breite: {roi_width}), Features: {len(kp_roi) if kp_roi else 0}")
+                        
+                        # Feature Detection auf Originalbild
+                        kp_img, des_img = orb.detectAndCompute(img, None)
+                        
+                        if des_img is not None and des_roi is not None and len(des_img) > 10 and len(des_roi) > 10:
+                            # Matcher
+                            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                            matches = bf.knnMatch(des_img, des_roi, k=2)
+                            
+                            # Lowe's ratio test - strenger für bessere Qualität
+                            good_matches = []
+                            for match_pair in matches:
+                                if len(match_pair) == 2:
+                                    m, n = match_pair
+                                    if m.distance < 0.7 * n.distance:  # Strenger: 0.7 statt 0.75
+                                        good_matches.append(m)
+                            
+                            print(f"  Bild {i+1}: {len(good_matches)} gute Matches gefunden (ROI: x={roi_x_start}-{roi_x_end})")
+                            
+                            if len(good_matches) > 10:  # Reduziert von 20 auf 10, da wir mehr Matrizen akzeptieren wollen
+                                # Extrahiere matched points
+                                # src_pts: Punkte im Originalbild
+                                # dst_pts: Punkte im ROI (müssen x-Koordinaten anpassen)
+                                src_pts = np.float32([kp_img[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                                dst_pts_roi = np.float32([kp_roi[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                                
+                                # Passe x-Koordinaten an (ROI-Offset hinzufügen)
+                                dst_pts = dst_pts_roi.copy()
+                                dst_pts[:, 0, 0] += roi_x_start
+                                
+                                # Finde Homographie vom Originalbild ins Panorama
+                                # cv2.findHomography(src, dst) findet Transformation von src zu dst
+                                # RANSAC Threshold: 3.0 ist robuster als 5.0
+                                M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
+                                
+                                if M is not None:
+                                    # Prüfe Qualität der Homographie
+                                    inlier_count = np.sum(mask) if mask is not None else len(good_matches)
+                                    inlier_ratio = inlier_count / len(good_matches) if len(good_matches) > 0 else 0
+                                    print(f"  Inlier-Ratio: {inlier_ratio:.2%} ({inlier_count}/{len(good_matches)})")
+                                    
+                                    # Prüfe, ob die Homographie plausibel ist
+                                    # Negative Determinante der ersten 2x2 Matrix deutet auf Spiegelung hin (oft falsch)
+                                    det = M[0,0] * M[1,1] - M[0,1] * M[1,0]
+                                    
+                                    # Prüfe auf extrem große Matrix-Werte (deuten auf falsche Homographie hin)
+                                    max_value = max(abs(M[0,0]), abs(M[0,1]), abs(M[1,0]), abs(M[1,1]))
+                                    
+                                    # Ablehnen wenn:
+                                    # 1. Negative Determinante (Spiegelung)
+                                    # 2. Extrem große Werte (> 5 deutet auf falsche Homographie hin)
+                                    # 3. Inlier-Ratio zu niedrig
+                                    use_fallback = False
+                                    if det < 0:
+                                        print(f"  ⚠️  Negative Determinante ({det:.4f}) - Homographie abgelehnt, verwende Fallback")
+                                        use_fallback = True
+                                    elif max_value > 10:  # Erhöht von 5 auf 10, da Panorama groß ist
+                                        print(f"  ⚠️  Extrem große Matrix-Werte (max: {max_value:.2f}) - Homographie abgelehnt, verwende Fallback")
+                                        use_fallback = True
+                                    elif inlier_ratio < 0.10:  # Reduziert von 30% auf 10%, da verzerrte Bilder schwieriger sind
+                                        print(f"  ⚠️  Inlier-Ratio sehr niedrig ({inlier_ratio:.2%} < 10%), verwende Fallback")
+                                        use_fallback = True
+                                    elif inlier_ratio < 0.20:
+                                        print(f"  ⚠️  Inlier-Ratio niedrig ({inlier_ratio:.2%} < 20%), verwende Matrix trotzdem (Stitcher war erfolgreich)")
+                                    
+                                    if use_fallback:
+                                        # Fallback: Geschätzte Transformation
+                                        h_img, w_img = img.shape[:2]
+                                        h_pano, w_pano = panorama.shape[:2]
+                                        estimated_x = (w_pano / len(images)) * i
+                                        M_estimated = np.array([
+                                            [1, 0, estimated_x],
+                                            [0, 1, 0],
+                                            [0, 0, 1]
+                                        ], dtype=np.float32)
+                                        homographies.append(M_estimated)
+                                    else:
+                                        homographies.append(M)
+                                        print(f"  Bild {i+1}: Homographie erfolgreich berechnet")
+                                else:
+                                    print(f"  Bild {i+1}: Homographie-Berechnung fehlgeschlagen, verwende Fallback")
+                                    # Fallback: Geschätzte Transformation
+                                    h_img, w_img = img.shape[:2]
+                                    h_pano, w_pano = panorama.shape[:2]
+                                    # Grobe Schätzung: Bilder sind horizontal angeordnet
+                                    estimated_x = (w_pano / len(images)) * i
+                                    M_estimated = np.array([
+                                        [1, 0, estimated_x],
+                                        [0, 1, 0],
+                                        [0, 0, 1]
+                                    ], dtype=np.float32)
+                                    homographies.append(M_estimated)
+                            else:
+                                print(f"  Bild {i+1}: Zu wenige Matches ({len(good_matches)}), verwende Fallback")
+                                # Fallback: Geschätzte Transformation
+                                h_img, w_img = img.shape[:2]
+                                h_pano, w_pano = panorama.shape[:2]
+                                estimated_x = (w_pano / len(images)) * i
+                                M_estimated = np.array([
+                                    [1, 0, estimated_x],
+                                    [0, 1, 0],
+                                    [0, 0, 1]
+                                ], dtype=np.float32)
+                                homographies.append(M_estimated)
+                        else:
+                            print(f"  Bild {i+1}: Zu wenige Features, verwende Fallback")
+                            # Fallback: Geschätzte Transformation
+                            h_img, w_img = img.shape[:2]
+                            h_pano, w_pano = panorama.shape[:2]
+                            estimated_x = (w_pano / len(images)) * i
+                            M_estimated = np.array([
+                                [1, 0, estimated_x],
+                                [0, 1, 0],
+                                [0, 0, 1]
+                            ], dtype=np.float32)
+                            homographies.append(M_estimated)
+                    except Exception as e:
+                        print(f"Fehler beim Berechnen der Homographie für Bild {i}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Fallback: Geschätzte Transformation
+                        h_img, w_img = img.shape[:2]
+                        h_pano, w_pano = panorama.shape[:2]
+                        estimated_x = (w_pano / len(images)) * i
+                        M_estimated = np.array([
+                            [1, 0, estimated_x],
+                            [0, 1, 0],
+                            [0, 0, 1]
+                        ], dtype=np.float32)
+                        homographies.append(M_estimated)
+                
+                # Matrizen werden später nach der Komprimierung berechnet
+                pass
+            
+            # Rahmen werden später nach der Komprimierung gezeichnet
+            if False:  # Temporär deaktiviert, wird nach Komprimierung aktiviert
+                h_pano_orig, w_pano_orig = panorama.shape[:2]
+                print(f"Zeichne Rahmen auf Panorama (Größe: {w_pano_orig}x{h_pano_orig})...")
+                panorama_with_borders = panorama.copy()
+                
+                # Farben für verschiedene Bilder
+                colors = [
+                    (255, 0, 0),    # Rot
+                    (0, 255, 0),    # Grün
+                    (0, 0, 255),    # Blau
+                    (255, 255, 0),  # Cyan
+                    (255, 0, 255),  # Magenta
+                    (0, 255, 255),  # Gelb
+                    (128, 0, 128),  # Lila
+                    (255, 165, 0),  # Orange
+                ]
+                
+                try:
+                    # Zeichne Rahmen für jedes Bild mit den bereits berechneten Homographien
+                    for i, (img, H) in enumerate(zip(images, homographies)):
+                        try:
+                            h_img, w_img = img.shape[:2]
+                            # Ecken des Originalbildes
+                            corners = np.float32([
+                                [0, 0],
+                                [w_img, 0],
+                                [w_img, h_img],
+                                [0, h_img]
+                            ]).reshape(-1, 1, 2)
+                            
+                            # Debug: Zeige Matrix-Werte
+                            print(f"  Bild {i+1} Matrix (Original-Bild {w_img}x{h_img}):")
+                            print(f"    H[0,2]={H[0,2]:.2f}, H[1,2]={H[1,2]:.2f}, H[2,0]={H[2,0]:.6f}, H[2,1]={H[2,1]:.6f}")
+                            
+                            # Transformiere Ecken ins Panorama-Koordinatensystem
+                            corners_transformed = cv2.perspectiveTransform(corners, H)
+                            
+                            # Debug: Zeige transformierte Ecken
+                            print(f"  Bild {i+1} Rahmen-Ecken auf Panorama ({w_pano_orig}x{h_pano_orig}):")
+                            for j, corner in enumerate(corners_transformed.reshape(-1, 2)):
+                                print(f"    Ecke {j+1}: ({corner[0]:.2f}, {corner[1]:.2f})")
+                            
+                            # Prüfe, ob Ecken innerhalb des Panoramas liegen
+                            corners_int = corners_transformed.astype(np.int32).reshape(-1, 2)
+                            for j, corner in enumerate(corners_int):
+                                if corner[0] < 0 or corner[0] >= w_pano_orig or corner[1] < 0 or corner[1] >= h_pano_orig:
+                                    print(f"    ⚠️  Ecke {j+1} außerhalb des Panoramas!")
+                            
+                            # Zeichne Rahmen - dickere Linien für bessere Sichtbarkeit
+                            cv2.polylines(panorama_with_borders, [corners_transformed.astype(np.int32)], True, colors[i % len(colors)], 5, cv2.LINE_AA)
+                            
+                            # Optional: Zeichne Bildnummer
+                            center = np.mean(corners_transformed, axis=0).astype(np.int32)[0]
+                            cv2.putText(panorama_with_borders, f"#{i+1}", tuple(center), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 1, colors[i % len(colors)], 2)
+                        except Exception as e:
+                            print(f"Fehler beim Zeichnen des Rahmens für Bild {i}: {e}")
+                    
+                    panorama = panorama_with_borders
+                except Exception as e:
+                    print(f"Fehler beim Zeichnen der Rahmen: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Falls Fehler, verwende Original-Panorama
+                    panorama = panorama.copy()
+            
+            # Berechne Matrizen für das ORIGINAL-Panorama
+            # Keine Skalierung - kommt später wieder rein
+            original_panorama = panorama.copy()  # Speichere Original-Panorama
+            if len(images) >= 2:
+                print(f"Berechne Matrizen für Original-Panorama ({panorama.shape[1]}x{panorama.shape[0]})...")
+                homographies = calculate_transformation_matrices(panorama, images)
+                # Konvertiere Matrizen zu Listen für JSON-Serialisierung
+                transformation_matrices = []
+                for H in homographies:
+                    transformation_matrices.append(H.tolist())
+            
+            # Wenn show_borders aktiviert ist, zeichne die Rahmen der Originalbilder auf das ORIGINAL-Panorama
+            if request.show_borders and len(homographies) > 0:
+                h_pano_orig, w_pano_orig = original_panorama.shape[:2]
+                print(f"Zeichne Rahmen auf Original-Panorama (Größe: {w_pano_orig}x{h_pano_orig})...")
+                panorama_with_borders = original_panorama.copy()
+                
+                # Farben für verschiedene Bilder
+                colors = [
+                    (255, 0, 0),    # Rot
+                    (0, 255, 0),    # Grün
+                    (0, 0, 255),    # Blau
+                    (255, 255, 0),  # Cyan
+                    (255, 0, 255),  # Magenta
+                    (0, 255, 255),  # Gelb
+                    (128, 0, 128),  # Lila
+                    (255, 165, 0),  # Orange
+                ]
+                
+                try:
+                    # Zeichne Rahmen für jedes Bild mit den berechneten Homographien
+                    for i, (img, H) in enumerate(zip(images, homographies)):
+                        try:
+                            h_img, w_img = img.shape[:2]
+                            # Ecken des Originalbildes
+                            corners = np.float32([
+                                [0, 0],
+                                [w_img, 0],
+                                [w_img, h_img],
+                                [0, h_img]
+                            ]).reshape(-1, 1, 2)
+                            
+                            # Debug: Zeige vollständige Matrix
+                            print(f"  Bild {i+1} Matrix (Original-Bild {w_img}x{h_img}):")
+                            print(f"    Vollständige Matrix:")
+                            print(f"      [{H[0,0]:.6f}, {H[0,1]:.6f}, {H[0,2]:.6f}]")
+                            print(f"      [{H[1,0]:.6f}, {H[1,1]:.6f}, {H[1,2]:.6f}]")
+                            print(f"      [{H[2,0]:.6f}, {H[2,1]:.6f}, {H[2,2]:.6f}]")
+                            print(f"    Kurzform: tx={H[0,2]:.2f}, ty={H[1,2]:.2f}, px={H[2,0]:.6f}, py={H[2,1]:.6f}, w={H[2,2]:.2f}")
+                            
+                            # Transformiere Ecken ins Panorama-Koordinatensystem
+                            corners_transformed = cv2.perspectiveTransform(corners, H)
+                            
+                            # Debug: Zeige transformierte Ecken
+                            print(f"  Bild {i+1} Rahmen-Ecken auf Panorama ({w_pano_orig}x{h_pano_orig}):")
+                            for j, corner in enumerate(corners_transformed.reshape(-1, 2)):
+                                print(f"    Ecke {j+1}: ({corner[0]:.2f}, {corner[1]:.2f})")
+                            
+                            # Prüfe, ob Ecken innerhalb des Panoramas liegen
+                            corners_int = corners_transformed.astype(np.int32).reshape(-1, 2)
+                            for j, corner in enumerate(corners_int):
+                                if corner[0] < 0 or corner[0] >= w_pano_orig or corner[1] < 0 or corner[1] >= h_pano_orig:
+                                    print(f"    ⚠️  Ecke {j+1} außerhalb des Panoramas!")
+                            
+                            # Zeichne Rahmen - dickere Linien für bessere Sichtbarkeit
+                            cv2.polylines(panorama_with_borders, [corners_transformed.astype(np.int32)], True, colors[i % len(colors)], 5, cv2.LINE_AA)
+                            
+                            # Optional: Zeichne Bildnummer
+                            center = np.mean(corners_transformed, axis=0).astype(np.int32)[0]
+                            cv2.putText(panorama_with_borders, f"#{i+1}", tuple(center), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 1, colors[i % len(colors)], 2)
+                        except Exception as e:
+                            print(f"Fehler beim Zeichnen des Rahmens für Bild {i}: {e}")
+                    
+                    original_panorama = panorama_with_borders
+                    panorama = panorama_with_borders  # Verwende Panorama mit Rahmen
+                except Exception as e:
+                    print(f"Fehler beim Zeichnen der Rahmen: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Falls Fehler, verwende Panorama ohne Rahmen
+            
+            # Panorama zu JPEG encodieren - OHNE Komprimierung, Original-Größe und Qualität
+            original_height, original_width = panorama.shape[:2]
+            print(f"Encodiere Panorama in Original-Größe: {original_width}x{original_height}")
+            
+            # Encodiere mit hoher Qualität (95) ohne Größenreduzierung
+            success, buffer = cv2.imencode('.jpg', panorama, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not success:
+                raise HTTPException(status_code=500, detail="Fehler beim Encodieren des Panoramas")
+            
+            panorama_base64 = base64.b64encode(buffer).decode('utf-8')
+            base64_size = len(panorama_base64)
+            print(f"✓ Panorama erfolgreich encodiert, Größe: {base64_size / 1024 / 1024:.2f} MB")
+            
+            return {
+                "success": True,
+                "panorama_base64": panorama_base64,
+                "status_message": status_messages[status],
+                "panorama_size": {
+                    "width": panorama.shape[1],
+                    "height": panorama.shape[0]
+                },
+                "statistics": {
+                    "total_requested": total_requested,
+                    "total_loaded": total_loaded,
+                    "total_failed": total_failed,
+                    "total_used": total_loaded  # Alle geladenen Bilder wurden verwendet
+                },
+                "transformation_matrices": transformation_matrices,  # Liste von 3x3 Homographie-Matrizen
+                "image_sizes": image_sizes,  # Liste von {width, height} für jedes Originalbild
+                "warnings": failed_items if failed_items else None
+            }
+        else:
+            error_msg = status_messages.get(status, f"Unbekannter Fehler (Status: {status})")
+            print(f"Stitching fehlgeschlagen: {error_msg}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": error_msg,
+                    "error_code": f"STITCH_STATUS_{status}",
+                    "status_code": status,
+                    "loaded_images": len(images),
+                    "failed_items": failed_items
+                }
+            )
+            
+    except HTTPException:
+        raise
+    except cv2.error as e:
+        print(f"OpenCV Fehler: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"OpenCV Fehler: {str(e)}",
+                "error_code": "OPENCV_ERROR"
+            }
+        )
+    except Exception as e:
+        print(f"Unerwarteter Fehler beim Stitching: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Unerwarteter Fehler: {str(e)}",
+                "error_code": "UNEXPECTED_ERROR"
+            }
+        )
 
 if __name__ == "__main__":
     import uvicorn

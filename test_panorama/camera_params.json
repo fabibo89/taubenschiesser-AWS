@@ -1,0 +1,45 @@
+{
+  "image_1.jpg": {
+    "rotation": 65,
+    "tilt": 52,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_2.jpg": {
+    "rotation": 40,
+    "tilt": 65,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_3.jpg": {
+    "rotation": 21,
+    "tilt": 70,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_4.jpg": {
+    "rotation": 21,
+    "tilt": 40,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_5.jpg": {
+    "rotation": 40,
+    "tilt": 55,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_6.jpg": {
+    "rotation": 90,
+    "tilt": 40,
+    "zoom": 1.0,
+    "fov": 66
+  },
+  "image_7.jpg": {
+    "rotation": 160,
+    "tilt": 50,
+    "zoom": 1.0,
+    "fov": 66
+  }
+}
+

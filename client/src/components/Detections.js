@@ -20,7 +20,8 @@ import {
   DialogContent,
   DialogActions,
   IconButton,
-  CardMedia
+  CardMedia,
+  LinearProgress
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -398,6 +399,7 @@ const Detections = () => {
 
   return (
     <Box>
+      {loading && <LinearProgress />}
       <Typography variant="h4" gutterBottom>
         Erkennungen
       </Typography>

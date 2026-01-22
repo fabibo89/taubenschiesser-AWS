@@ -87,7 +87,15 @@ const Devices = () => {
     previewLoading,
     previewError,
     handlePreviewCoordinate,
-    clearPreview
+    clearPreview,
+    stitchingInProgress,
+    stitchingError,
+    panoramaImage,
+    panoramaStatistics,
+    panoramaTransformationMatrices,
+    panoramaImageSizes,
+    handleStitchPanorama,
+    handleSavePanorama
   } = useRouteManagement(routeDeviceId);
 
   useEffect(() => {
@@ -1040,6 +1048,21 @@ const Devices = () => {
         onPreviewCoordinate={handlePreviewCoordinateRequest}
         onReorderCoordinates={handleReorderCoordinates}
         maxZoom={3}
+        stitchingInProgress={stitchingInProgress}
+        stitchingError={stitchingError}
+        panoramaImage={panoramaImage}
+        panoramaStatistics={panoramaStatistics}
+        panoramaTransformationMatrices={panoramaTransformationMatrices}
+        panoramaImageSizes={panoramaImageSizes}
+        onStitchPanorama={(showBorders) => handleStitchPanorama(routeDeviceId, showBorders)}
+        onSavePanorama={async () => {
+          const result = await handleSavePanorama(routeDeviceId);
+          if (result.success) {
+            toast.success(result.message || 'Panorama erfolgreich gespeichert');
+          } else {
+            toast.error(result.message || 'Fehler beim Speichern des Panoramas');
+          }
+        }}
       />
     </Box>
   );

@@ -26,6 +26,12 @@ export const useRouteManagement = (deviceId) => {
   const [previewImage, setPreviewImage] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState(null);
+  const [stitchingInProgress, setStitchingInProgress] = useState(false);
+  const [stitchingError, setStitchingError] = useState(null);
+  const [panoramaImage, setPanoramaImage] = useState(null);
+  const [panoramaStatistics, setPanoramaStatistics] = useState(null);
+  const [panoramaTransformationMatrices, setPanoramaTransformationMatrices] = useState(null);
+  const [panoramaImageSizes, setPanoramaImageSizes] = useState(null);
 
   const resetNewCoordinate = () => {
     setNewCoordinate(getDefaultCoordinate());
@@ -283,6 +289,160 @@ export const useRouteManagement = (deviceId) => {
     }
   };
 
+  const handleStitchPanorama = async (targetDeviceId, showBorders = false) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
+    setStitchingInProgress(true);
+    setStitchingError(null);
+    setPanoramaImage(null);
+    setPanoramaStatistics(null);
+    setPanoramaTransformationMatrices(null);
+    setPanoramaImageSizes(null);
+
+    try {
+      const coordinates = actionsConfig.route.coordinates || [];
+      const imagesWithUrls = coordinates.filter(coord => coord.image);
+      
+      if (imagesWithUrls.length < 2) {
+        const errorMsg = 'Mindestens 2 Koordinaten mit Bildern werden benötigt';
+        setStitchingError(errorMsg);
+        return { success: false, message: errorMsg };
+      }
+
+      const url = `${API_URL}/api/devices/${currentDeviceId}/stitch-panorama`;
+      const response = await axios.post(
+        url,
+        { show_borders: showBorders },
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+          },
+          timeout: 120000 // 2 Minuten
+        }
+      );
+
+      if (response.data.success) {
+        setPanoramaImage(response.data.panorama_url);
+        if (response.data.statistics) {
+          setPanoramaStatistics(response.data.statistics);
+        }
+        if (response.data.transformation_matrices) {
+          setPanoramaTransformationMatrices(response.data.transformation_matrices);
+        }
+        if (response.data.image_sizes) {
+          setPanoramaImageSizes(response.data.image_sizes);
+        }
+        if (response.data.warnings) {
+          return { 
+            success: true, 
+            message: 'Panorama erstellt, aber einige Bilder konnten nicht geladen werden',
+            warnings: response.data.warnings,
+            statistics: response.data.statistics
+          };
+        } else {
+          return { 
+            success: true, 
+            message: 'Panorama erfolgreich erstellt!',
+            statistics: response.data.statistics
+          };
+        }
+      } else {
+        const errorMsg = response.data.error || 'Fehler beim Erstellen des Panoramas';
+        setStitchingError(errorMsg);
+        return { success: false, message: errorMsg };
+      }
+    } catch (error) {
+      let errorMessage = 'Fehler beim Erstellen des Panoramas';
+      
+      if (error.response?.data) {
+        const errorData = error.response.data;
+        errorMessage = errorData.error || errorMessage;
+        
+        // Spezifische Fehlermeldungen
+        switch (errorData.error_code) {
+          case 'INSUFFICIENT_COORDINATES':
+            errorMessage = 'Mindestens 2 Koordinaten mit Bildern werden benötigt';
+            break;
+          case 'MISSING_IMAGES':
+            errorMessage = `${errorData.missing_count} Koordinaten haben keine Bilder. Bitte aktualisiere die Bilder zuerst.`;
+            break;
+          case 'STITCH_STATUS_1':
+            errorMessage = 'Bilder überlappen nicht genug für ein Panorama';
+            break;
+          case 'STITCH_STATUS_2':
+            errorMessage = 'Kamera-Parameter konnten nicht angepasst werden';
+            break;
+          case 'CV_SERVICE_UNAVAILABLE':
+            errorMessage = 'Computer Vision Service ist nicht verfügbar';
+            break;
+          case 'STITCHING_TIMEOUT':
+            errorMessage = 'Stitching-Prozess hat zu lange gedauert. Versuche es mit weniger Bildern.';
+            break;
+        }
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = 'Zeitüberschreitung beim Erstellen des Panoramas';
+      }
+      
+      setStitchingError(errorMessage);
+      return { success: false, message: errorMessage };
+    } finally {
+      setStitchingInProgress(false);
+    }
+  };
+
+  const handleSavePanorama = async (targetDeviceId) => {
+    const currentDeviceId = resolveDeviceId(targetDeviceId);
+    if (!currentDeviceId) {
+      return { success: false, message: 'Kein Gerät ausgewählt' };
+    }
+
+    if (!panoramaImage) {
+      return { success: false, message: 'Kein Panorama vorhanden' };
+    }
+
+    try {
+      const url = `${API_URL}/api/devices/${currentDeviceId}/save-panorama`;
+      const response = await axios.post(
+        url,
+        {
+          panorama_url: panoramaImage,
+          transformation_matrices: panoramaTransformationMatrices || [],
+          image_sizes: panoramaImageSizes || [],
+          statistics: panoramaStatistics || null
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+          }
+        }
+      );
+
+      if (response.data.success) {
+        return { 
+          success: true, 
+          message: 'Panorama erfolgreich gespeichert'
+        };
+      } else {
+        return { 
+          success: false, 
+          message: response.data.error || 'Fehler beim Speichern des Panoramas'
+        };
+      }
+    } catch (error) {
+      let errorMessage = 'Fehler beim Speichern des Panoramas';
+      
+      if (error.response?.data) {
+        const errorData = error.response.data;
+        errorMessage = errorData.error || errorMessage;
+      }
+      
+      return { success: false, message: errorMessage };
+    }
+  };
+
   return {
     // State
     actionsConfig,
@@ -294,6 +454,12 @@ export const useRouteManagement = (deviceId) => {
     previewImage,
     previewLoading,
     previewError,
+    stitchingInProgress,
+    stitchingError,
+    panoramaImage,
+    panoramaStatistics,
+    panoramaTransformationMatrices,
+    panoramaImageSizes,
     
     // Handlers
     handleModeChange,
@@ -309,7 +475,9 @@ export const useRouteManagement = (deviceId) => {
     saveActionsConfig,
     resetNewCoordinate,
     clearPreview,
-    setEditingIndex
+    setEditingIndex,
+    handleStitchPanorama,
+    handleSavePanorama
   };
 };
 

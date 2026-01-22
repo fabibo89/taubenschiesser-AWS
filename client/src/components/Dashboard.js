@@ -549,7 +549,7 @@ const Dashboard = () => {
     // Prepare data for ApexCharts
     const categories = data.map(item => {
       const date = new Date(item.date);
-      return `${date.getDate()}.${date.getMonth() + 1}`;
+              return `${date.getDate()}.${date.getMonth() + 1}`;
     });
 
     const chartOptions = {
@@ -1292,12 +1292,12 @@ const Dashboard = () => {
             const { total, unclassified } = getTodayDetections(device);
             return (
               <Grid item xs={12} md={6} lg={4} key={device._id}>
-                <Card>
-                  <CardContent>
+          <Card>
+            <CardContent>
                     <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
                       <Typography variant="h6">
                         {device.name}
-                      </Typography>
+                  </Typography>
                       <Box display="flex" gap={1}>
                         <Chip 
                           label={`${total} heute`}
@@ -1305,23 +1305,23 @@ const Dashboard = () => {
                           variant="outlined"
                         />
                         {unclassified > 0 && (
-                          <Chip 
+                      <Chip
                             label={`${unclassified} unkategorisiert`}
                             color="warning"
-                            variant="outlined"
-                          />
+                        variant="outlined"
+                      />
                         )}
-                      </Box>
+              </Box>
                     </Box>
                     <DetectionChart device={device} detectionStats={detectionStats} />
-                  </CardContent>
-                </Card>
-              </Grid>
+            </CardContent>
+          </Card>
+        </Grid>
             );
           })}
         </Grid>
       )}
-      
+
       <Grid container spacing={3}>
         {/* Taubenschiesser Geräte */}
         <Grid item xs={12}>

@@ -153,7 +153,29 @@ const deviceSchema = new mongoose.Schema({
         image: {
           type: String  // Base64 encoded image
         }
-      }]
+      }],
+      panorama: {
+        image: {
+          type: String  // Base64 encoded panorama image
+        },
+        transformation_matrices: [{
+          type: [[Number]]  // Array of 3x3 matrices
+        }],
+        image_sizes: [{
+          width: Number,
+          height: Number
+        }],
+        statistics: {
+          total_requested: Number,
+          total_loaded: Number,
+          total_failed: Number,
+          total_used: Number
+        },
+        created_at: {
+          type: Date,
+          default: Date.now
+        }
+      }
     }
   },
   owner: {

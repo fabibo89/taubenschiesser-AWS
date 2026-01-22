@@ -1,5 +1,6 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const axios = require('axios');
 const Device = require('../models/Device');
 const Detection = require('../models/Detection');
 const { authenticateToken } = require('../middleware/auth');
@@ -724,6 +725,274 @@ router.post('/:id/update-route-image/:index', authenticateToken, async (req, res
   } catch (error) {
     logger.error('Update route image error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Stitch panorama from route images
+router.post('/:id/stitch-panorama', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      return res.status(404).json({ 
+        error: 'Device not found',
+        error_code: 'DEVICE_NOT_FOUND'
+      });
+    }
+
+    if (device.actions?.mode !== 'route') {
+      return res.status(400).json({ 
+        error: 'Device is not in route mode',
+        error_code: 'NOT_ROUTE_MODE'
+      });
+    }
+
+    const coordinates = device.actions.route?.coordinates || [];
+    
+    if (coordinates.length < 2) {
+      return res.status(400).json({ 
+        error: 'Mindestens 2 Koordinaten mit Bildern werden benötigt',
+        error_code: 'INSUFFICIENT_COORDINATES'
+      });
+    }
+
+    // Prüfe ob alle Bilder vorhanden sind
+    const imagesWithUrls = coordinates.filter(coord => coord.image);
+    const missingImages = coordinates.length - imagesWithUrls.length;
+    
+    if (missingImages > 0) {
+      return res.status(400).json({ 
+        error: `${missingImages} Koordinaten haben keine Bilder. Bitte aktualisiere die Bilder zuerst.`,
+        error_code: 'MISSING_IMAGES',
+        missing_count: missingImages
+      });
+    }
+
+    if (imagesWithUrls.length < 2) {
+      return res.status(400).json({ 
+        error: 'Mindestens 2 Bilder werden für Panorama benötigt',
+        error_code: 'INSUFFICIENT_IMAGES'
+      });
+    }
+
+    // Bilder extrahieren - unterstütze sowohl URLs als auch data URLs
+    const imageUrls = [];
+    const imageBase64List = [];
+    
+    imagesWithUrls.forEach(coord => {
+      if (coord.image.startsWith('data:image')) {
+        // Data URL - extrahiere base64
+        imageBase64List.push(coord.image);
+      } else {
+        // Normale URL
+        imageUrls.push(coord.image);
+      }
+    });
+    
+    logger.info(`Starte Panorama-Stitching für Device ${device.name} mit ${imageUrls.length} URLs und ${imageBase64List.length} base64 Bildern`);
+
+    // CV-Service aufrufen
+    try {
+      const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+      logger.info(`CV-Service URL: ${cvServiceUrl}`);
+      logger.info(`Sende ${imageUrls.length} URLs und ${imageBase64List.length} base64 Bilder zum Stitching`);
+      
+      const requestPayload = {
+        image_urls: imageUrls.length > 0 ? imageUrls : [],
+        image_base64_list: imageBase64List.length > 0 ? imageBase64List : [],
+        show_borders: req.body.show_borders || false
+      };
+      
+      // Entferne leere Arrays, damit sie nicht gesendet werden
+      if (requestPayload.image_urls.length === 0) {
+        delete requestPayload.image_urls;
+      }
+      if (requestPayload.image_base64_list.length === 0) {
+        delete requestPayload.image_base64_list;
+      }
+      
+      const response = await axios.post(`${cvServiceUrl}/stitch-panorama`, requestPayload, {
+        timeout: 120000, // 120 Sekunden Timeout
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      logger.info('CV-Service Response Status:', response.status);
+      logger.info('CV-Service Response Data:', JSON.stringify(response.data, null, 2));
+
+      if (!response.data.success) {
+        logger.error('Stitching fehlgeschlagen:', JSON.stringify(response.data, null, 2));
+        return res.status(500).json({
+          error: response.data.error || response.data.detail?.error || 'Stitching fehlgeschlagen',
+          error_code: response.data.error_code || response.data.detail?.error_code,
+          details: response.data.detail || response.data
+        });
+      }
+
+      // Panorama als data URL zurückgeben
+      const panoramaDataUrl = `data:image/jpeg;base64,${response.data.panorama_base64}`;
+      
+      logger.info(`Panorama erfolgreich erstellt für Device ${device.name}`);
+      
+      res.json({
+        success: true,
+        panorama_url: panoramaDataUrl,
+        message: 'Panorama erfolgreich erstellt',
+        panorama_size: response.data.panorama_size,
+        statistics: response.data.statistics,
+        transformation_matrices: response.data.transformation_matrices || null,  // 3x3 Matrizen für jedes Bild
+        image_sizes: response.data.image_sizes || null,  // {width, height} für jedes Originalbild
+        warnings: response.data.warnings
+      });
+
+    } catch (error) {
+      if (error.code === 'ECONNREFUSED') {
+        logger.error('CV-Service nicht erreichbar');
+        return res.status(503).json({
+          error: 'Computer Vision Service nicht verfügbar',
+          error_code: 'CV_SERVICE_UNAVAILABLE'
+        });
+      }
+      
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+        logger.error('Stitching-Timeout');
+        return res.status(504).json({
+          error: 'Stitching-Prozess hat zu lange gedauert',
+          error_code: 'STITCHING_TIMEOUT'
+        });
+      }
+
+      if (error.response?.data) {
+        const errorData = error.response.data;
+        logger.error('Stitching-Fehler vom CV-Service:', {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: JSON.stringify(errorData, null, 2)
+        });
+        
+        const detail = errorData.detail || errorData;
+        return res.status(error.response.status || 500).json({
+          error: detail.error || errorData.error || 'Stitching fehlgeschlagen',
+          error_code: detail.error_code || errorData.error_code || 'STITCHING_ERROR',
+          details: detail
+        });
+      }
+
+      logger.error('Fehler beim Stitching:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
+      return res.status(500).json({
+        error: 'Fehler beim Erstellen des Panoramas',
+        error_code: 'STITCHING_ERROR',
+        details: error.message
+      });
+    }
+
+  } catch (error) {
+    logger.error('Panorama-Stitching Fehler:', error);
+    res.status(500).json({ 
+      error: 'Server error',
+      error_code: 'SERVER_ERROR',
+      details: error.message
+    });
+  }
+});
+
+// Save panorama to database
+router.post('/:id/save-panorama', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    
+    if (!device) {
+      return res.status(404).json({ 
+        error: 'Device not found',
+        error_code: 'DEVICE_NOT_FOUND'
+      });
+    }
+
+    if (device.actions?.mode !== 'route') {
+      return res.status(400).json({ 
+        error: 'Device is not in route mode',
+        error_code: 'NOT_ROUTE_MODE'
+      });
+    }
+
+    let { panorama_url, transformation_matrices, image_sizes, statistics } = req.body;
+
+    if (!panorama_url) {
+      return res.status(400).json({ 
+        error: 'Panorama image is required',
+        error_code: 'MISSING_PANORAMA'
+      });
+    }
+
+    // Prüfe Größe des Panorama-Bildes (Base64)
+    // MongoDB Limit ist 16MB, wir wollen sicher unter 7MB bleiben für das gesamte Dokument
+    // (mit Puffer für transformation_matrices, image_sizes, statistics und andere Felder)
+    
+    // Extrahiere Base64-String aus Data-URL falls vorhanden
+    let base64String = panorama_url;
+    if (panorama_url.startsWith('data:image')) {
+      // Entferne Data-URL Präfix (z.B. "data:image/jpeg;base64,")
+      const base64Index = panorama_url.indexOf(',');
+      if (base64Index !== -1) {
+        base64String = panorama_url.substring(base64Index + 1);
+      }
+    }
+    
+    const panoramaSize = base64String.length;
+    const maxSize = 7 * 1024 * 1024; // 7MB (sicherer Puffer)
+    
+    logger.info(`Panorama-Größe: ${(panoramaSize / 1024 / 1024).toFixed(2)} MB, Max: ${(maxSize / 1024 / 1024).toFixed(2)} MB`);
+    
+    if (panoramaSize > maxSize) {
+      logger.warn(`Panorama-Bild ist zu groß (${(panoramaSize / 1024 / 1024).toFixed(2)} MB), wird nicht gespeichert`);
+      return res.status(400).json({ 
+        error: `Panorama-Bild ist zu groß (${(panoramaSize / 1024 / 1024).toFixed(2)} MB). Maximale Größe: 7 MB. Das Bild sollte automatisch komprimiert werden. Bitte erstelle das Panorama erneut.`,
+        error_code: 'PANORAMA_TOO_LARGE',
+        size: panoramaSize,
+        max_size: maxSize
+      });
+    }
+
+    // Update device with panorama data
+    if (!device.actions.route) {
+      device.actions.route = {};
+    }
+
+    device.actions.route.panorama = {
+      image: panorama_url,
+      transformation_matrices: transformation_matrices || [],
+      image_sizes: image_sizes || [],
+      statistics: statistics || null,
+      created_at: new Date()
+    };
+
+    await device.save();
+
+    logger.info(`Panorama gespeichert für Device ${device.name}`);
+
+    res.json({
+      success: true,
+      message: 'Panorama erfolgreich gespeichert'
+    });
+
+  } catch (error) {
+    logger.error('Fehler beim Speichern des Panoramas:', error);
+    res.status(500).json({
+      error: 'Server error',
+      error_code: 'SERVER_ERROR',
+      details: error.message
+    });
   }
 });
 

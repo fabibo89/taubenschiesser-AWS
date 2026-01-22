@@ -44,6 +44,7 @@ import {
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { toast } from 'react-toastify';
 import { useSocket } from '../contexts/SocketContext';
 import RouteVisualization from './RouteVisualization';
 import RouteEditDialog from './RouteEditDialog';
@@ -79,7 +80,15 @@ const DeviceDetail = () => {
     previewLoading,
     previewError,
     handlePreviewCoordinate,
-    clearPreview
+    clearPreview,
+    stitchingInProgress,
+    stitchingError,
+    panoramaImage,
+    panoramaStatistics,
+    panoramaTransformationMatrices,
+    panoramaImageSizes,
+    handleStitchPanorama,
+    handleSavePanorama
   } = useRouteManagement(id);
 
   useEffect(() => {
@@ -438,6 +447,21 @@ const DeviceDetail = () => {
         onPreviewCoordinate={handlePreviewCoordinateRequest}
         onReorderCoordinates={handleReorderCoordinates}
         maxZoom={3}
+        stitchingInProgress={stitchingInProgress}
+        stitchingError={stitchingError}
+        panoramaImage={panoramaImage}
+        panoramaStatistics={panoramaStatistics}
+        panoramaTransformationMatrices={panoramaTransformationMatrices}
+        panoramaImageSizes={panoramaImageSizes}
+        onStitchPanorama={(showBorders) => handleStitchPanorama(id, showBorders)}
+        onSavePanorama={async () => {
+          const result = await handleSavePanorama(id);
+          if (result.success) {
+            toast.success(result.message || 'Panorama erfolgreich gespeichert');
+          } else {
+            toast.error(result.message || 'Fehler beim Speichern des Panoramas');
+          }
+        }}
       />
     </Box>
   );
