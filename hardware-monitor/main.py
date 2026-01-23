@@ -1821,6 +1821,32 @@ class HardwareMonitor:
             }
             self.last_image_info = image_info
             
+            # Get current temperature for this device
+            current_temperature = await self.get_temperature_for_device(device)
+            
+            # Log temperature result
+            if current_temperature is not None:
+                logger.info(f"🌡️ Temperatur für Detection abgerufen: {current_temperature}°C (Device: {device.get('_id')})")
+            else:
+                logger.warning(f"⚠️ Keine Temperatur für Detection abgerufen (Device: {device.get('_id')}) - Wetter-API möglicherweise nicht konfiguriert oder Fehler")
+            
+            # Get current camera position (rotation/tilt)
+            camera_position = None
+            if device_ip and device_ip in self.device_positions:
+                position_data = self.device_positions[device_ip]
+                rot = position_data.get('rot')
+                tilt = position_data.get('tilt')
+                if rot is not None and tilt is not None:
+                    camera_position = {
+                        'rotation': rot,
+                        'tilt': tilt
+                    }
+                    logger.info(f"📐 Kamera-Position für Detection: Rot={rot}°, Tilt={tilt}° (Device: {device.get('_id')})")
+                else:
+                    logger.debug(f"⚠️ Keine Kamera-Position verfügbar für Device {device_ip}")
+            else:
+                logger.debug(f"⚠️ Device {device_ip} nicht in device_positions gefunden")
+            
             # Prepare detailed detection data
             detection_data = {
                 "deviceId": device_id,
@@ -1834,6 +1860,8 @@ class HardwareMonitor:
                 "zoom_factor": zoom_factor,
                 "image_info": image_info,
                 "camera_source": camera_source,  # Store which camera detected this
+                "temperature": current_temperature,  # Add temperature
+                "camera_position": camera_position,  # Add camera position (rotation/tilt)
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -1847,18 +1875,118 @@ class HardwareMonitor:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
-                        logger.info(f"Detection saved to database for device {device_ip} ({camera_source}): {result.get('detection_count', 0)} objects, zoom: {zoom_factor}x")
+                        temp_info = f", Temperatur: {current_temperature}°C" if current_temperature is not None else ", Temperatur: N/A"
+                        logger.info(f"✅ Detection saved to database for device {device_ip} ({camera_source}): {result.get('detection_count', 0)} objects, zoom: {zoom_factor}x{temp_info}")
                         
                         # Update device last detection time
                         await self.update_device_last_detection(device_id)
                         
                     else:
-                        logger.error(f"Failed to save detection to database for device {device_ip} ({camera_source}): {response.status}")
+                        error_text = await response.text()
+                        logger.error(f"❌ Failed to save detection to database for device {device_ip} ({camera_source}): {response.status} - {error_text}")
             
             return target_bird
                         
         except Exception as e:
             logger.error(f"Error saving detection to database ({camera_source}): {e}")
+            return None
+    
+    async def get_temperature_for_device(self, device: Dict) -> Optional[float]:
+        """Holt die aktuelle Temperatur für ein Gerät basierend auf User-Settings"""
+        try:
+            # Zuerst versuchen, User-Settings zu holen
+            owner_id = device.get('owner')
+            if not owner_id:
+                logger.warning(f"Device {device.get('_id')} hat keinen Owner, überspringe Temperaturabfrage")
+                return None
+            
+            headers = {'Authorization': f'Bearer {self.service_token}'}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.api_url}/api/users/{owner_id}/settings",
+                    headers=headers
+                ) as user_response:
+                    if user_response.status == 200:
+                        user_data = await user_response.json()
+                        weather_settings = user_data.get('settings', {}).get('weather', {})
+                        
+                        if weather_settings.get('enabled') and weather_settings.get('apiKey'):
+                            logger.info(f"🌡️ Wetter-API konfiguriert für User {owner_id}, rufe Temperatur ab...")
+                            # Verwende User-Settings
+                            provider = weather_settings.get('provider', 'openweathermap')
+                            api_key = weather_settings.get('apiKey')
+                            location = weather_settings.get('location', {})
+                            lat = location.get('lat')
+                            lng = location.get('lng')
+                            
+                            if lat and lng:
+                                logger.info(f"📍 Koordinaten: lat={lat}, lng={lng}, Provider={provider}")
+                                temperature = await self._fetch_temperature_from_api(provider, api_key, lat, lng)
+                                if temperature is not None:
+                                    logger.info(f"✅ Temperatur erfolgreich abgerufen: {temperature}°C")
+                                    return temperature
+                                else:
+                                    logger.warning(f"❌ Temperatur-Abfrage fehlgeschlagen für User {owner_id}")
+                            else:
+                                logger.warning(f"User {owner_id} hat keine Koordinaten in Wetter-Settings (lat: {lat}, lng: {lng})")
+                        else:
+                            enabled = weather_settings.get('enabled', False)
+                            has_key = bool(weather_settings.get('apiKey'))
+                            logger.debug(f"Wetter-API nicht aktiviert (enabled: {enabled}) oder kein API-Key (has_key: {has_key}) für User {owner_id}")
+                    else:
+                        logger.warning(f"Konnte User-Settings nicht abrufen: {user_response.status}")
+                        error_text = await user_response.text()
+                        logger.warning(f"Fehler-Details: {error_text}")
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der Temperatur: {e}")
+            return None
+
+    async def _fetch_temperature_from_api(self, provider: str, api_key: str, lat: float, lng: float) -> Optional[float]:
+        """Holt Temperatur von Wetter-API"""
+        try:
+            if provider == 'openweathermap':
+                url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lng}&appid={api_key}&units=metric"
+            elif provider == 'weatherapi':
+                url = f"http://api.weatherapi.com/v1/current.json?key={api_key}&q={lat},{lng}"
+            else:
+                logger.error(f"Unbekannter Wetter-API Provider: {provider}")
+                return None
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        if provider == 'openweathermap':
+                            temperature = data.get('main', {}).get('temp')
+                        elif provider == 'weatherapi':
+                            temperature = data.get('current', {}).get('temp_c')
+                        
+                        if temperature is not None:
+                            logger.info(f"🌡️ Temperatur abgerufen: {temperature}°C (Provider: {provider})")
+                            return float(temperature)
+                        else:
+                            logger.warning(f"⚠️ Temperatur nicht in API-Antwort gefunden. Response: {json.dumps(data, indent=2)[:500]}")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Wetter-API Fehler: {response.status} - {error_text}")
+                        # Log more details for debugging
+                        try:
+                            error_data = json.loads(error_text)
+                            logger.error(f"❌ API-Fehler-Details: {json.dumps(error_data, indent=2)}")
+                        except:
+                            logger.error(f"❌ API-Fehler-Text: {error_text}")
+            
+            return None
+            
+        except asyncio.TimeoutError:
+            logger.error("Timeout beim Abrufen der Temperatur")
+            return None
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der Temperatur von API: {e}")
             return None
     
     async def update_device_last_detection(self, device_id: str):

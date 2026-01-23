@@ -92,6 +92,35 @@ const userSchema = new mongoose.Schema({
         enum: ['light', 'dark', 'auto'],
         default: 'auto'
       }
+    },
+    weather: {
+      provider: {
+        type: String,
+        enum: ['openweathermap', 'weatherapi'],
+        default: 'openweathermap'
+      },
+      apiKey: {
+        type: String,
+        default: ''
+      },
+      location: {
+        lat: {
+          type: Number,
+          default: null
+        },
+        lng: {
+          type: Number,
+          default: null
+        },
+        name: {
+          type: String,
+          default: ''
+        }
+      },
+      enabled: {
+        type: Boolean,
+        default: false
+      }
     }
   }
 }, {

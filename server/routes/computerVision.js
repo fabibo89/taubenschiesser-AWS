@@ -200,7 +200,7 @@ router.post('/detect', upload.single('image'), async (req, res) => {
 // Get detection history
 router.get('/detections', authenticateToken, async (req, res) => {
   try {
-    const { deviceId, page = 1, limit = 20, classificationStatus } = req.query;
+    const { deviceId, page = 1, limit = 20, classificationStatus, rotation, tilt } = req.query;
     const skip = (page - 1) * limit;
 
     // Get all devices owned by user for filtering
@@ -234,6 +234,17 @@ router.get('/detections', authenticateToken, async (req, res) => {
       }
     }
 
+    // Filter by camera position (exact match for rotation and tilt pair)
+    if (rotation && tilt) {
+      const rotationNum = parseInt(rotation);
+      const tiltNum = parseInt(tilt);
+      if (!isNaN(rotationNum) && !isNaN(tiltNum)) {
+        // Exact match for the position pair
+        query['camera_position.rotation'] = rotationNum;
+        query['camera_position.tilt'] = tiltNum;
+      }
+    }
+
     const detections = await Detection.find(query)
       .sort({ processedAt: -1 })
       .skip(skip)
@@ -253,6 +264,51 @@ router.get('/detections', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     logger.error('Get detections error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get available camera positions from detections
+router.get('/detections/positions', authenticateToken, async (req, res) => {
+  try {
+    // Get all devices owned by user
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id);
+
+    // Get all unique camera positions
+    const positions = await Detection.aggregate([
+      {
+        $match: {
+          device: { $in: deviceIds },
+          'camera_position.rotation': { $exists: true, $ne: null },
+          'camera_position.tilt': { $exists: true, $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            rotation: '$camera_position.rotation',
+            tilt: '$camera_position.tilt'
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          rotation: '$_id.rotation',
+          tilt: '$_id.tilt'
+        }
+      },
+      {
+        $sort: { rotation: 1, tilt: 1 }
+      }
+    ]);
+
+    res.json({
+      positions: positions
+    });
+  } catch (error) {
+    logger.error('Get positions error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

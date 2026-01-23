@@ -19,6 +19,8 @@ router.post('/detection', async (req, res) => {
       zoom_factor,
       image_info,
       camera_source,
+      temperature,
+      camera_position,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -39,6 +41,13 @@ router.post('/detection', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
     
+    // Log temperature if provided
+    if (temperature !== null && temperature !== undefined) {
+      logger.info(`🌡️ Temperatur in Detection-Request erhalten: ${temperature}°C (Device: ${deviceId})`);
+    } else {
+      logger.debug(`⚠️ Keine Temperatur in Detection-Request (Device: ${deviceId})`);
+    }
+
     // Create detection record - support both single and dual camera modes
     const detectionData = {
       device: device._id,
@@ -50,7 +59,12 @@ router.post('/detection', async (req, res) => {
         name: 'YOLOv8-Hardware',
         version: '1.0.0'
       },
-      camera_source: camera_source || 'unknown'
+      camera_source: camera_source || 'unknown',
+      temperature: temperature !== null && temperature !== undefined ? temperature : undefined,
+      camera_position: camera_position && camera_position.rotation !== undefined && camera_position.tilt !== undefined ? {
+        rotation: camera_position.rotation,
+        tilt: camera_position.tilt
+      } : undefined
     };
     
     // Add images based on mode (single or dual camera)
@@ -116,6 +130,19 @@ router.post('/detection', async (req, res) => {
     const detection = new Detection(detectionData);
     
     await detection.save();
+    
+    // Log saved temperature and position
+    if (detection.temperature !== null && detection.temperature !== undefined) {
+      logger.info(`✅ Detection gespeichert mit Temperatur: ${detection.temperature}°C (Detection ID: ${detection._id})`);
+    } else {
+      logger.debug(`⚠️ Detection gespeichert ohne Temperatur (Detection ID: ${detection._id})`);
+    }
+    
+    if (detection.camera_position && detection.camera_position.rotation !== undefined && detection.camera_position.tilt !== undefined) {
+      logger.info(`📐 Detection gespeichert mit Kamera-Position: Rot=${detection.camera_position.rotation}°, Tilt=${detection.camera_position.tilt}° (Detection ID: ${detection._id})`);
+    } else {
+      logger.debug(`⚠️ Detection gespeichert ohne Kamera-Position (Detection ID: ${detection._id})`);
+    }
     
     // Update device last detection
     device.camera.lastDetection = new Date();

@@ -50,7 +50,8 @@ router.get('/settings', authenticateToken, async (req, res) => {
     res.json({
       mqtt: user.settings?.mqtt || {},
       notifications: user.settings?.notifications || {},
-      system: user.settings?.system || {}
+      system: user.settings?.system || {},
+      weather: user.settings?.weather || {}
     });
   } catch (error) {
     logger.error('Get settings error:', error);
@@ -69,7 +70,13 @@ router.put('/settings', authenticateToken, [
   body('notifications.push').optional().isBoolean(),
   body('notifications.detectionAlerts').optional().isBoolean(),
   body('system.autoRefresh').optional().isInt({ min: 5, max: 60 }),
-  body('system.theme').optional().isIn(['light', 'dark', 'auto'])
+  body('system.theme').optional().isIn(['light', 'dark', 'auto']),
+  body('weather.provider').optional().isIn(['openweathermap', 'weatherapi']),
+  body('weather.apiKey').optional().isString().trim(),
+  body('weather.location.lat').optional().isFloat({ min: -90, max: 90 }),
+  body('weather.location.lng').optional().isFloat({ min: -180, max: 180 }),
+  body('weather.location.name').optional().isString().trim(),
+  body('weather.enabled').optional().isBoolean()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -95,6 +102,9 @@ router.put('/settings', authenticateToken, [
     if (req.body.system) {
       user.settings.system = { ...user.settings.system, ...req.body.system };
     }
+    if (req.body.weather) {
+      user.settings.weather = { ...user.settings.weather, ...req.body.weather };
+    }
 
     await user.save();
 
@@ -105,7 +115,8 @@ router.put('/settings', authenticateToken, [
       settings: {
         mqtt: user.settings.mqtt,
         notifications: user.settings.notifications,
-        system: user.settings.system
+        system: user.settings.system,
+        weather: user.settings.weather
       }
     });
 
@@ -185,6 +196,90 @@ router.post('/settings/mqtt/test', authenticateToken, async (req, res) => {
   } catch (error) {
     logger.error('MQTT test error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Test Weather API connection and get temperature
+router.post('/settings/weather/test', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const weatherSettings = user.settings?.weather || {};
+    const { provider, apiKey, location } = weatherSettings;
+
+    // Validate required fields
+    if (!provider || !apiKey) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Provider und API Key sind erforderlich' 
+      });
+    }
+
+    if (!location || !location.lat || !location.lng) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Koordinaten (Lat/Lng) sind erforderlich' 
+      });
+    }
+
+    let url;
+    let temperature;
+
+    // Build API URL based on provider
+    if (provider === 'openweathermap') {
+      url = `https://api.openweathermap.org/data/2.5/weather?lat=${location.lat}&lon=${location.lng}&appid=${apiKey}&units=metric`;
+    } else if (provider === 'weatherapi') {
+      url = `http://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${location.lat},${location.lng}`;
+    } else {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Unbekannter Provider' 
+      });
+    }
+
+    // Make API request
+    const axios = require('axios');
+    const response = await axios.get(url, { timeout: 5000 });
+
+    if (response.status === 200) {
+      if (provider === 'openweathermap') {
+        temperature = response.data.main?.temp;
+      } else if (provider === 'weatherapi') {
+        temperature = response.data.current?.temp_c;
+      }
+
+      if (temperature !== undefined) {
+        logger.info(`Weather API test successful: ${temperature}°C`);
+        res.json({
+          success: true,
+          message: `Temperatur erfolgreich abgerufen: ${temperature}°C`,
+          temperature: temperature,
+          location: location.name || `${location.lat}, ${location.lng}`,
+          provider: provider
+        });
+      } else {
+        res.json({
+          success: false,
+          error: 'Temperatur nicht in API-Antwort gefunden',
+          response: response.data
+        });
+      }
+    } else {
+      res.json({
+        success: false,
+        error: `API-Fehler: ${response.status}`
+      });
+    }
+  } catch (error) {
+    logger.error('Weather API test error:', error);
+    const errorMessage = error.response?.data?.message || error.message || 'Unbekannter Fehler';
+    res.json({
+      success: false,
+      error: `Fehler beim Abrufen der Temperatur: ${errorMessage}`
+    });
   }
 });
 

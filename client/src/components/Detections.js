@@ -33,7 +33,8 @@ import {
   Favorite as FavoriteIcon,
   Cancel as CancelIcon,
   ArrowBack as ArrowBackIcon,
-  ArrowForward as ArrowForwardIcon
+  ArrowForward as ArrowForwardIcon,
+  Thermostat as ThermostatIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
@@ -46,8 +47,10 @@ const Detections = () => {
     deviceId: '',
     dateFrom: '',
     dateTo: '',
-    classificationStatus: ''
+    classificationStatus: '',
+    cameraPosition: '' // Format: "rotation,tilt" z.B. "90,45"
   });
+  const [availablePositions, setAvailablePositions] = useState([]);
   const [classificationDialogOpen, setClassificationDialogOpen] = useState(false);
   const [detectionToClassify, setDetectionToClassify] = useState(null);
   const [pagination, setPagination] = useState({
@@ -60,7 +63,18 @@ const Detections = () => {
 
   useEffect(() => {
     fetchDetections();
+    fetchAvailablePositions();
   }, [filters, pagination.page, pagination.pageSize]);
+
+  const fetchAvailablePositions = async () => {
+    try {
+      const response = await axios.get('/api/cv/detections/positions');
+      const positions = response.data.positions || [];
+      setAvailablePositions(positions);
+    } catch (error) {
+      console.error('Error fetching available positions:', error);
+    }
+  };
 
   const fetchDetections = async () => {
     try {
@@ -74,6 +88,11 @@ const Detections = () => {
       if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
       if (filters.dateTo) params.append('dateTo', filters.dateTo);
       if (filters.classificationStatus) params.append('classificationStatus', filters.classificationStatus);
+      if (filters.cameraPosition) {
+        const [rotation, tilt] = filters.cameraPosition.split(',');
+        if (rotation) params.append('rotation', rotation);
+        if (tilt) params.append('tilt', tilt);
+      }
 
       const response = await axios.get(`/api/cv/detections?${params}`);
       setDetections(response.data.detections);
@@ -301,6 +320,63 @@ const Detections = () => {
       renderCell: (params) => (
         <Typography variant="body2">
           {new Date(params.value).toLocaleString()}
+        </Typography>
+      )
+    },
+    {
+      field: 'temperature',
+      headerName: 'Temperatur',
+      width: 120,
+      renderCell: (params) => (
+        <Box display="flex" alignItems="center" gap={0.5}>
+          {params.value !== null && params.value !== undefined ? (
+            <>
+              <ThermostatIcon fontSize="small" color="action" />
+              <Typography variant="body2">
+                {params.value.toFixed(1)}°C
+              </Typography>
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              N/A
+            </Typography>
+          )}
+        </Box>
+      )
+    },
+    {
+      field: 'camera_position',
+      headerName: 'Kamera-Position',
+      width: 200,
+      renderHeader: () => (
+        <Box display="flex" alignItems="center" gap={1} width="100%">
+          <Typography variant="subtitle2" sx={{ flex: 1 }}>
+            Kamera-Position
+          </Typography>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <Select
+              value={filters.cameraPosition || ''}
+              onChange={(e) => handleFilterChange('cameraPosition', e.target.value)}
+              displayEmpty
+              sx={{ height: '32px', fontSize: '0.75rem' }}
+            >
+              <MenuItem value="">Alle</MenuItem>
+              {availablePositions.map((pos, index) => (
+                <MenuItem key={index} value={`${pos.rotation},${pos.tilt}`}>
+                  R: {pos.rotation}° / T: {pos.tilt}°
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Box>
+      ),
+      renderCell: (params) => (
+        <Typography variant="body2">
+          {params.value && params.value.rotation !== undefined && params.value.tilt !== undefined ? (
+            `R: ${params.value.rotation}° / T: ${params.value.tilt}°`
+          ) : (
+            <span style={{ color: 'rgba(0, 0, 0, 0.6)' }}>N/A</span>
+          )}
         </Typography>
       )
     },
@@ -771,6 +847,20 @@ const Detections = () => {
                           Modell: <strong>{selectedDetection.model?.name || 'N/A'}</strong>
                         </Typography>
                       </Grid>
+                      {selectedDetection.temperature !== null && selectedDetection.temperature !== undefined && (
+                        <Grid item xs={12} sm={6}>
+                          <Typography variant="body2" color="text.secondary">
+                            Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
+                          </Typography>
+                        </Grid>
+                      )}
+                      {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
+                        <Grid item xs={12} sm={6}>
+                          <Typography variant="body2" color="text.secondary">
+                            Kamera-Position: <strong>Rot: {selectedDetection.camera_position.rotation}° / Tilt: {selectedDetection.camera_position.tilt}°</strong>
+                          </Typography>
+                        </Grid>
+                      )}
                       <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary" gutterBottom>
                           Erkannte Objekte:

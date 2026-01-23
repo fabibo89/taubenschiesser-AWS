@@ -111,6 +111,17 @@ const detectionSchema = new mongoose.Schema({
   },
   classifiedAt: {
     type: Date
+  },
+  temperature: {
+    type: Number  // Temperatur in °C zum Zeitpunkt der Detection
+  },
+  camera_position: {
+    rotation: {
+      type: Number  // Rotation (0-360 Grad)
+    },
+    tilt: {
+      type: Number  // Tilt (-180 bis 180 Grad)
+    }
   }
 }, {
   timestamps: true
