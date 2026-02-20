@@ -51,8 +51,8 @@ git status --short
 echo ""
 echo -e "${YELLOW}🔄 Hole Updates von GitHub...${NC}"
 
-# Check for local changes (ignoriere .env Dateien - die sind in .gitignore)
-CHANGES=$(git status --porcelain | grep -v "\.env" | grep -v "\.log" | grep -v "\.pid")
+# Check for local changes (ignoriere .env Dateien, Logs, PIDs und macOS System-Dateien)
+CHANGES=$(git status --porcelain | grep -v "\.env" | grep -v "\.log" | grep -v "\.pid" | grep -v "\.DS_Store" | grep -v "_\.DS_Store")
 
 if [ ! -z "$CHANGES" ]; then
     echo -e "${YELLOW}⚠️  Du hast lokale Änderungen an Code-Dateien!${NC}"
