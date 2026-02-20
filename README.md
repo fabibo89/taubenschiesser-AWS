@@ -70,7 +70,7 @@ Das Taubenschiesser System ist eine End-to-End-Lösung bestehend aus:
 
 ```bash
 # Repository klonen
-git clone https://github.com/yourusername/taubenschiesser_AWS.git
+git clone https://github.com/fabibo89/taubenschiesser_AWS.git
 cd taubenschiesser_AWS
 
 # Alle Services starten (automatisch)
@@ -290,8 +290,8 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) Da
 
 ## 🔗 Verwandte Repositories
 
-- [taubenschiesser-hardware](https://github.com/fabianbosch/taubenschiesser-hardware) - ESP32 Firmware
-- [taubenschiesser-server](https://github.com/fabianbosch/taubenschiesser-server) - Legacy Symfony Backend
+- [taubenschiesser-hardware](https://github.com/fabibo89/taubenschiesser-hardware) - ESP32 Firmware
+- [taubenschiesser-server](https://github.com/fabibo89/taubenschiesser-server) - Legacy Symfony Backend
 
 ## 📸 Screenshots
 
@@ -299,7 +299,7 @@ Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe [LICENSE](LICENSE) Da
 
 ## 🐛 Bekannte Issues
 
-Siehe [GitHub Issues](https://github.com/yourusername/taubenschiesser_AWS/issues)
+Siehe [GitHub Issues](https://github.com/fabibo89/taubenschiesser_AWS/issues)
 
 ## 📞 Support
 

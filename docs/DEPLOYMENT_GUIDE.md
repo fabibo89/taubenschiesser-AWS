@@ -603,7 +603,7 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/yourusername/taubenschiesser_AWS
+WorkingDirectory=/home/fabibo89/taubenschiesser_AWS
 ExecStart=/usr/local/bin/docker-compose -f docker-compose.prod.yml --env-file .env.prod up -d
 ExecStop=/usr/local/bin/docker-compose -f docker-compose.prod.yml down
 TimeoutStartSec=0
