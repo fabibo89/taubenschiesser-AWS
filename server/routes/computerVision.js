@@ -385,7 +385,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
     query.processedAt = { $gte: startDate };
     
     const detections = await Detection.find(query)
-      .select('device processedAt classification_status')
+      .select('device processedAt classification_status temperature')
       .populate('device', 'name _id');
     
     // Group by device, date, and classification
@@ -430,7 +430,9 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
             date,
             unclassified: 0,
             confirmed_pigeon: 0,
-            no_pigeon: 0
+            no_pigeon: 0,
+            sum_temp_pigeon: 0,
+            count_temp_pigeon: 0
           };
         }
         
@@ -438,6 +440,11 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
           stats[devId].data[date].unclassified++;
         } else if (classification === 'confirmed_pigeon') {
           stats[devId].data[date].confirmed_pigeon++;
+          const temp = detection.temperature;
+          if (temp != null && typeof temp === 'number' && !Number.isNaN(temp)) {
+            stats[devId].data[date].sum_temp_pigeon += temp;
+            stats[devId].data[date].count_temp_pigeon += 1;
+          }
         } else if (classification === 'no_pigeon') {
           stats[devId].data[date].no_pigeon++;
         }
@@ -447,13 +454,21 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       }
     });
     
-    // Convert to array format for frontend
+    // Convert to array format for frontend (add avg_temp_pigeon per day)
     const result = Object.values(stats).map(stat => ({
       deviceId: stat.deviceId,
       deviceName: stat.deviceName,
-      data: Object.values(stat.data).sort((a, b) => 
-        new Date(a.date) - new Date(b.date)
-      )
+      data: Object.values(stat.data)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+        .map(day => {
+          const { sum_temp_pigeon, count_temp_pigeon, ...rest } = day;
+          return {
+            ...rest,
+            avg_temp_pigeon: count_temp_pigeon > 0
+              ? Math.round((sum_temp_pigeon / count_temp_pigeon) * 10) / 10
+              : null
+          };
+        })
     }));
     
     logger.info(`[DetectionStats] Returning statistics for ${result.length} devices, total detections: ${detections.length}`);

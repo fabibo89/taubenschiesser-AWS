@@ -546,16 +546,13 @@ const Dashboard = () => {
       );
     }
 
-    // Prepare data for ApexCharts
-    const categories = data.map(item => {
-      const date = new Date(item.date);
-              return `${date.getDate()}.${date.getMonth() + 1}`;
-    });
-
+    // Prepare data for ApexCharts (datetime x-axis: [timestamp, value] per point)
+    // Mit Temperatur-Linie: gruppierte Balken (stacked geht mit Line in ApexCharts nicht stabil)
+    const hasTempData = data.some(item => item.avg_temp_pigeon != null);
     const chartOptions = {
       chart: {
-        type: 'bar',
-        stacked: true,
+        type: 'line',
+        stacked: !hasTempData,
         toolbar: {
           show: false
         },
@@ -567,31 +564,77 @@ const Dashboard = () => {
         bar: {
           horizontal: false,
           columnWidth: '55%',
-        },
+          borderRadius: 0
+        }
+      },
+      stroke: {
+        show: true,
+        width: [1, 1, 1, hasTempData ? 3 : 0],
+        colors: ['#fff', '#fff', '#fff', '#ff9800']
       },
       dataLabels: {
         enabled: false
       },
-      stroke: {
-        show: true,
-        width: 1,
-        colors: ['#fff']
-      },
       xaxis: {
-        categories: categories,
+        type: 'datetime',
         labels: {
           rotate: -45,
           rotateAlways: true,
           style: {
             fontSize: '12px'
+          },
+          datetimeFormatter: {
+            year: 'yyyy',
+            month: 'dd.MM',
+            day: 'dd.MM',
+            hour: 'dd.MM'
           }
         }
       },
-      yaxis: {
-        title: {
-          show: false
-        }
-      },
+      yaxis: hasTempData
+        ? [
+            {
+              seriesName: 'Unkategorisiert',
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: { style: { fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            },
+            {
+              seriesName: 'Taube',
+              show: false,
+              min: 0,
+              forceNiceScale: true
+            },
+            {
+              seriesName: 'Keine Taube',
+              show: false,
+              min: 0,
+              forceNiceScale: true
+            },
+            {
+              seriesName: 'Ø Temp. Taube',
+              opposite: true,
+              title: { text: '°C', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true, color: '#ff9800' },
+              labels: { style: { colors: '#ff9800', fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            }
+          ]
+        : [
+            {
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: { style: { fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            }
+          ],
       fill: {
         opacity: 1
       },
@@ -599,36 +642,57 @@ const Dashboard = () => {
         position: 'bottom',
         horizontalAlign: 'center',
       },
-      colors: ['#9e9e9e', '#4caf50', '#f44336'],
+      colors: ['#9e9e9e', '#4caf50', '#f44336', '#ff9800'],
       tooltip: {
-        y: {
-          formatter: function (val) {
-            return val + " Erkennungen";
-          }
-        }
+        shared: true,
+        y: hasTempData
+          ? [
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' °C' : '') }
+            ]
+          : [
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') }
+            ]
       }
     };
 
     const series = [
       {
         name: 'Unkategorisiert',
-        data: data.map(item => item.unclassified || 0)
+        type: 'column',
+        data: data.map(item => [new Date(item.date).getTime(), item.unclassified || 0])
       },
       {
         name: 'Taube',
-        data: data.map(item => item.confirmed_pigeon || 0)
+        type: 'column',
+        data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0])
       },
       {
         name: 'Keine Taube',
-        data: data.map(item => item.no_pigeon || 0)
-      }
+        type: 'column',
+        data: data.map(item => [new Date(item.date).getTime(), item.no_pigeon || 0])
+      },
+      ...(hasTempData
+        ? [{
+            name: 'Ø Temp. Taube',
+            type: 'line',
+            data: data.map(item => [
+              new Date(item.date).getTime(),
+              item.avg_temp_pigeon != null ? item.avg_temp_pigeon : null
+            ])
+          }]
+        : [])
     ];
 
     return (
       <Chart
         options={chartOptions}
         series={series}
-        type="bar"
+        type="line"
         height={300}
       />
     );
