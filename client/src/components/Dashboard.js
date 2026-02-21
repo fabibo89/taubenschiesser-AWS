@@ -585,7 +585,10 @@ const Dashboard = () => {
         title: { show: false },
         axisTicks: { show: true },
         axisBorder: { show: true },
-        labels: { style: { fontSize: '11px' } },
+        labels: {
+          style: { fontSize: '11px' },
+          formatter: (val) => Math.round(val)
+        },
         min: 0,
         forceNiceScale: true
       },
@@ -689,30 +692,39 @@ const Dashboard = () => {
         ? [
             {
               seriesName: 'Taube',
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              title: { show: false },
               axisTicks: { show: true },
               axisBorder: { show: true },
-              labels: { style: { fontSize: '11px' } },
+              labels: {
+                style: { fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             },
             {
               seriesName: 'Ø Temp',
               opposite: true,
-              title: { text: '°C', style: { fontSize: '12px' } },
+              title: { show: false },
               axisTicks: { show: true },
               axisBorder: { show: true, color: '#f44336' },
-              labels: { style: { colors: '#f44336', fontSize: '11px' } },
+              labels: {
+                style: { colors: '#f44336', fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             }
           ]
         : [
             {
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              title: { show: false },
               axisTicks: { show: true },
               axisBorder: { show: true },
-              labels: { style: { fontSize: '11px' } },
+              labels: {
+                style: { fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             }
@@ -741,7 +753,7 @@ const Dashboard = () => {
       },
       ...(hasTempData
         ? [{
-            name: 'Ø Avg. Temp',
+            name: 'Ø Temp',
             type: 'line',
             data: data.map(item => [
               new Date(item.date).getTime(),
@@ -1365,6 +1377,13 @@ const Dashboard = () => {
     );
   };
 
+  // Helper: Gesamtzahl unkategorisierter Erkennungen (alle Tage)
+  const getTotalUnclassified = (device) => {
+    const deviceIdStr = String(device._id);
+    const data = detectionStats[deviceIdStr] || [];
+    return data.reduce((sum, item) => sum + (item.unclassified || 0), 0);
+  };
+
   // Helper function to get today's detection count for a device
   const getTodayDetections = (device) => {
     const deviceIdStr = String(device._id);
@@ -1411,7 +1430,8 @@ const Dashboard = () => {
       {devices.length > 0 && (
         <Grid container spacing={3} sx={{ mb: 4 }}>
           {devices.map((device) => {
-            const { total, unclassified } = getTodayDetections(device);
+            const { total } = getTodayDetections(device);
+            const totalUnclassified = getTotalUnclassified(device);
             return (
               <Grid item xs={12} md={6} lg={4} key={device._id}>
           <Card>
@@ -1426,9 +1446,9 @@ const Dashboard = () => {
                           color="primary"
                           variant="outlined"
                         />
-                        {unclassified > 0 && (
+                        {totalUnclassified > 0 && (
                       <Chip
-                            label={`${unclassified} unkategorisiert`}
+                            label={`${totalUnclassified} unkategorisiert`}
                             color="warning"
                         variant="outlined"
                       />

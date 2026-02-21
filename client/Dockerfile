@@ -18,6 +18,11 @@ COPY . .
 
 # Build the application
 # REACT_APP_* Variablen werden beim Build in den Code eingebaut
+# NODE_OPTIONS: mehr Heap für Webpack-Build (verhindert Hänger bei "Creating an optimized production build")
+# GENERATE_SOURCEMAP=false: reduziert Speicher und Buildzeit
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV GENERATE_SOURCEMAP=false
+ENV CI=true
 RUN npm run build
 
 # Production stage
