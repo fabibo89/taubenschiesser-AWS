@@ -546,19 +546,13 @@ const Dashboard = () => {
       );
     }
 
-    // Prepare data for ApexCharts (datetime x-axis: [timestamp, value] per point)
-    // Mit Temperatur-Linie: gruppierte Balken (stacked geht mit Line in ApexCharts nicht stabil)
-    const hasTempData = data.some(item => item.avg_temp_pigeon != null);
+    // Gestapelte Balken: Unkategorisiert, Taube, Keine Taube
     const chartOptions = {
       chart: {
-        type: 'line',
-        stacked: !hasTempData,
-        toolbar: {
-          show: false
-        },
-        animations: {
-          enabled: false // Disable animations to prevent blinking
-        }
+        type: 'bar',
+        stacked: true,
+        toolbar: { show: false },
+        animations: { enabled: false }
       },
       plotOptions: {
         bar: {
@@ -567,22 +561,18 @@ const Dashboard = () => {
           borderRadius: 0
         }
       },
+      dataLabels: { enabled: false },
       stroke: {
         show: true,
-        width: [1, 1, 1, hasTempData ? 3 : 0],
-        colors: ['#fff', '#fff', '#fff', '#ff9800']
-      },
-      dataLabels: {
-        enabled: false
+        width: 1,
+        colors: ['#fff']
       },
       xaxis: {
         type: 'datetime',
         labels: {
           rotate: -45,
           rotateAlways: true,
-          style: {
-            fontSize: '12px'
-          },
+          style: { fontSize: '12px' },
           datetimeFormatter: {
             year: 'yyyy',
             month: 'dd.MM',
@@ -591,108 +581,42 @@ const Dashboard = () => {
           }
         }
       },
-      yaxis: hasTempData
-        ? [
-            {
-              seriesName: 'Unkategorisiert',
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
-              axisTicks: { show: true },
-              axisBorder: { show: true },
-              labels: { style: { fontSize: '11px' } },
-              min: 0,
-              forceNiceScale: true
-            },
-            {
-              seriesName: 'Taube',
-              show: false,
-              min: 0,
-              forceNiceScale: true
-            },
-            {
-              seriesName: 'Keine Taube',
-              show: false,
-              min: 0,
-              forceNiceScale: true
-            },
-            {
-              seriesName: 'Ø Temp. Taube',
-              opposite: true,
-              title: { text: '°C', style: { fontSize: '12px' } },
-              axisTicks: { show: true },
-              axisBorder: { show: true, color: '#ff9800' },
-              labels: { style: { colors: '#ff9800', fontSize: '11px' } },
-              min: 0,
-              forceNiceScale: true
-            }
-          ]
-        : [
-            {
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
-              axisTicks: { show: true },
-              axisBorder: { show: true },
-              labels: { style: { fontSize: '11px' } },
-              min: 0,
-              forceNiceScale: true
-            }
-          ],
-      fill: {
-        opacity: 1
+      yaxis: {
+        title: { show: false },
+        axisTicks: { show: true },
+        axisBorder: { show: true },
+        labels: { style: { fontSize: '11px' } },
+        min: 0,
+        forceNiceScale: true
       },
+      fill: { opacity: 1 },
       legend: {
         position: 'bottom',
         horizontalAlign: 'center',
       },
-      colors: ['#9e9e9e', '#4caf50', '#f44336', '#ff9800'],
+      colors: ['#9e9e9e', '#4caf50', '#f44336'],
       tooltip: {
         shared: true,
-        y: hasTempData
-          ? [
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
-              { formatter: (val) => (val != null ? val + ' °C' : '') }
-            ]
-          : [
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
-              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') }
-            ]
+        intersect: false,
+        y: [
+          { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+          { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+          { formatter: (val) => (val != null ? val + ' Erkennungen' : '') }
+        ]
       }
     };
 
     const series = [
-      {
-        name: 'Unkategorisiert',
-        type: 'column',
-        data: data.map(item => [new Date(item.date).getTime(), item.unclassified || 0])
-      },
-      {
-        name: 'Taube',
-        type: 'column',
-        data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0])
-      },
-      {
-        name: 'Keine Taube',
-        type: 'column',
-        data: data.map(item => [new Date(item.date).getTime(), item.no_pigeon || 0])
-      },
-      ...(hasTempData
-        ? [{
-            name: 'Ø Temp. Taube',
-            type: 'line',
-            data: data.map(item => [
-              new Date(item.date).getTime(),
-              item.avg_temp_pigeon != null ? item.avg_temp_pigeon : null
-            ])
-          }]
-        : [])
+      { name: 'Unkategorisiert', data: data.map(item => [new Date(item.date).getTime(), item.unclassified || 0]) },
+      { name: 'Taube', data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0]) },
+      { name: 'Keine Taube', data: data.map(item => [new Date(item.date).getTime(), item.no_pigeon || 0]) }
     ];
 
     return (
       <Chart
         options={chartOptions}
         series={series}
-        type="line"
+        type="bar"
         height={300}
       />
     );
@@ -717,6 +641,140 @@ const Dashboard = () => {
     }
     
     return true; // Props are equal, skip re-render
+  });
+
+  // Taube + Temperatur Chart: Balken (Anzahl Taube) + Kurve (Ø Temperatur)
+  const TaubeTempChart = React.memo(({ device, detectionStats }) => {
+    const deviceIdStr = String(device._id);
+    const data = detectionStats[deviceIdStr] || [];
+    const hasTempData = data.some(item => item.avg_temp_pigeon != null);
+
+    if (data.length === 0) return null;
+
+    const chartOptions = {
+      chart: {
+        type: 'line',
+        stacked: false,
+        toolbar: { show: false },
+        animations: { enabled: false }
+      },
+      plotOptions: {
+        bar: {
+          horizontal: false,
+          columnWidth: '55%',
+          borderRadius: 0
+        }
+      },
+      stroke: {
+        show: true,
+        width: [1, hasTempData ? 1.5 : 0],
+        colors: ['#fff', '#f44336']
+      },
+      dataLabels: { enabled: false },
+      xaxis: {
+        type: 'datetime',
+        labels: {
+          rotate: -45,
+          rotateAlways: true,
+          style: { fontSize: '12px' },
+          datetimeFormatter: {
+            year: 'yyyy',
+            month: 'dd.MM',
+            day: 'dd.MM',
+            hour: 'dd.MM'
+          }
+        }
+      },
+      yaxis: hasTempData
+        ? [
+            {
+              seriesName: 'Taube',
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: { style: { fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            },
+            {
+              seriesName: 'Ø Temp',
+              opposite: true,
+              title: { text: '°C', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true, color: '#f44336' },
+              labels: { style: { colors: '#f44336', fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            }
+          ]
+        : [
+            {
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: { style: { fontSize: '11px' } },
+              min: 0,
+              forceNiceScale: true
+            }
+          ],
+      fill: { opacity: 1 },
+      legend: { position: 'bottom', horizontalAlign: 'center' },
+      colors: ['#4caf50', '#f44336'],
+      tooltip: {
+        shared: true,
+        intersect: false,
+        y: hasTempData
+          ? [
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+              { formatter: (val) => (val != null ? val + ' °C' : '') }
+            ]
+          : [{ formatter: (val) => (val != null ? val + ' Erkennungen' : '') }]
+      }
+    };
+
+    const series = [
+      {
+        name: 'Taube',
+        type: 'column',
+        showInLegend: false,
+        data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0])
+      },
+      ...(hasTempData
+        ? [{
+            name: 'Ø Avg. Temp',
+            type: 'line',
+            data: data.map(item => [
+              new Date(item.date).getTime(),
+              item.avg_temp_pigeon != null ? item.avg_temp_pigeon : null
+            ])
+          }]
+        : [])
+    ];
+
+    return (
+      <Box sx={{ mt: 2 }}>
+        <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+          Tauben-Erkennungen & Temperatur
+        </Typography>
+        <Chart
+          options={chartOptions}
+          series={series}
+          type="line"
+          height={220}
+        />
+      </Box>
+    );
+  }, (prevProps, nextProps) => {
+    const prevDeviceId = String(prevProps.device._id);
+    const nextDeviceId = String(nextProps.device._id);
+    const prevData = prevProps.detectionStats[prevDeviceId] || [];
+    const nextData = nextProps.detectionStats[nextDeviceId] || [];
+    if (prevDeviceId !== nextDeviceId) return false;
+    if (prevData.length !== nextData.length) return false;
+    if (prevData.length > 0 && nextData.length > 0) {
+      if (JSON.stringify(prevData) !== JSON.stringify(nextData)) return false;
+    }
+    return true;
   });
 
   // Geräte-Komponente
@@ -1378,6 +1436,7 @@ const Dashboard = () => {
               </Box>
                     </Box>
                     <DetectionChart device={device} detectionStats={detectionStats} />
+                    <TaubeTempChart device={device} detectionStats={detectionStats} />
             </CardContent>
           </Card>
         </Grid>
