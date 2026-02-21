@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  Taubenschiesser - Production Update            ║${NC}"
+echo -e "${GREEN}║  Taubenschiesser - Production Update             ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -52,7 +52,7 @@ echo ""
 echo -e "${YELLOW}🔄 Hole Updates von GitHub...${NC}"
 
 # Check for local changes (ignoriere .env Dateien, Logs, PIDs und macOS System-Dateien)
-CHANGES=$(git status --porcelain | grep -v "\.env" | grep -v "\.log" | grep -v "\.pid" | grep -v "\.DS_Store" | grep -v "_\.DS_Store")
+CHANGES=$(git status --porcelain | grep -Ev "\.env|\.log|\.pid|\.DS_Store|_\.DS_Store" || true)
 
 if [ ! -z "$CHANGES" ]; then
     echo -e "${YELLOW}⚠️  Du hast lokale Änderungen an Code-Dateien!${NC}"
