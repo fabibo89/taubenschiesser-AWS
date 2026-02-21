@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
-  Card,
   CardContent,
   CircularProgress,
   Chip,

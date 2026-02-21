@@ -113,7 +113,6 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
                 
                 if (container) {
                   const containerRect = container.getBoundingClientRect();
-                  const imgRect = img.getBoundingClientRect();
                   
                   // Container-Größe (verfügbarer Platz)
                   const containerWidth = containerRect.width;

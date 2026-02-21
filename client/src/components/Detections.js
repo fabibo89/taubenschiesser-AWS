@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -7,10 +7,7 @@ import {
   Grid,
   Chip,
   Button,
-  Alert,
-  CircularProgress,
   FormControl,
-  InputLabel,
   Select,
   MenuItem,
   TextField,
@@ -20,7 +17,6 @@ import {
   DialogContent,
   DialogActions,
   IconButton,
-  CardMedia,
   LinearProgress
 } from '@mui/material';
 import {
@@ -28,7 +24,6 @@ import {
   FilterList as FilterIcon,
   Visibility as DetectionIcon,
   Close as CloseIcon,
-  Image as ImageIcon,
   Delete as DeleteIcon,
   Favorite as FavoriteIcon,
   Cancel as CancelIcon,
@@ -61,11 +56,6 @@ const Detections = () => {
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [selectedDetection, setSelectedDetection] = useState(null);
 
-  useEffect(() => {
-    fetchDetections();
-    fetchAvailablePositions();
-  }, [filters, pagination.page, pagination.pageSize]);
-
   const fetchAvailablePositions = async () => {
     try {
       const response = await axios.get('/api/cv/detections/positions');
@@ -76,7 +66,7 @@ const Detections = () => {
     }
   };
 
-  const fetchDetections = async () => {
+  const fetchDetections = useCallback(async () => {
     try {
       setLoading(true);
       const params = new URLSearchParams({
@@ -105,7 +95,12 @@ const Detections = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters, pagination.page, pagination.pageSize]);
+
+  useEffect(() => {
+    fetchDetections();
+    fetchAvailablePositions();
+  }, [fetchDetections]);
 
   const handleFilterChange = (field, value) => {
     setFilters(prev => ({

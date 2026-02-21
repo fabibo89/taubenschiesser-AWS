@@ -18,13 +18,7 @@ import {
 } from '@mui/material';
 import {
   Devices as DevicesIcon,
-  Visibility as VisibilityIcon,
-  CheckCircle as OnlineIcon,
-  Error as OfflineIcon,
-  Warning as WarningIcon,
   PlayArrow as PlayIcon,
-  Pause as PauseIcon,
-  Stop as StopIcon,
   RotateLeft as RotateLeftIcon,
   RotateRight as RotateRightIcon,
   ArrowUpward as ArrowUpIcon,
@@ -363,7 +357,7 @@ const Dashboard = () => {
         socket.off('device-status-change');
       };
     }
-  }, [socket, connected]);
+  }, [socket, connected, devices]);
 
   // Helper function to calculate overall status
   const calculateOverallStatus = (taubenschiesserStatus, cameraStatus) => {
@@ -478,19 +472,6 @@ const Dashboard = () => {
   //   // Nicht mehr nötig - RTSP-Streams sind direkt verfügbar
   //   return { active: streamingDevices[deviceId] };
   // };
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'online':
-        return <OnlineIcon color="success" />;
-      case 'offline':
-        return <OfflineIcon color="error" />;
-      case 'maintenance':
-        return <WarningIcon color="warning" />;
-      default:
-        return <OfflineIcon color="disabled" />;
-    }
-  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -802,7 +783,12 @@ const Dashboard = () => {
     const raspberryPiLoadTimeoutRef = React.useRef(null);
     const raspberryPiImageRef = React.useRef(null); // Ref to track the img element
     const isStreaming = streamingDevices[device._id];
-    const position = devicePositions[device._id] || { rot: 0, tilt: 0 };
+    const position = useMemo(
+      () => devicePositions[device._id] || { rot: 0, tilt: 0 },
+      // devicePositions from parent state - updates when positions change
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [devicePositions, device._id]
+    );
     const deviceStatus = deviceStatuses[device._id];
     
     // Check if device has both cameras
@@ -860,6 +846,7 @@ const Dashboard = () => {
   }, [isStreaming, device, hasTapo, isLoading]);
   
   // Raspberry Pi Camera Stream
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (isStreaming && device && hasRaspberryPi) {
       const pi = device.camera.raspberryPi;
@@ -884,16 +871,15 @@ const Dashboard = () => {
       setRaspberryPiIsLoading(false);
       
       return () => {
-        // Stop the stream by removing the src attribute from the img element
-        if (raspberryPiImageRef.current) {
-          raspberryPiImageRef.current.src = '';
-          raspberryPiImageRef.current.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent pixel
+        const imgEl = raspberryPiImageRef.current;
+        const timeoutId = raspberryPiLoadTimeoutRef.current;
+        if (imgEl) {
+          imgEl.src = '';
+          imgEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
         }
         setRaspberryPiStreamUrl(null);
         setRaspberryPiCurrentImage(null);
-        if (raspberryPiLoadTimeoutRef.current) {
-          clearTimeout(raspberryPiLoadTimeoutRef.current);
-        }
+        if (timeoutId) clearTimeout(timeoutId);
       };
     } else {
       // Stop the stream when not streaming
@@ -905,6 +891,7 @@ const Dashboard = () => {
       setRaspberryPiCurrentImage(null);
     }
   }, [isStreaming, device, hasRaspberryPi]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
     return (
       <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>

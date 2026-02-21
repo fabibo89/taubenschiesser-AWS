@@ -5,7 +5,6 @@ import {
   Button,
   Card,
   CardContent,
-  Grid,
   Chip,
   IconButton,
   Dialog,
@@ -19,9 +18,6 @@ import {
   Select,
   MenuItem,
   Alert,
-  Paper,
-  Slider,
-  CircularProgress,
   Checkbox,
   Switch
 } from '@mui/material';
@@ -33,9 +29,7 @@ import {
   CheckCircle as OnlineIcon,
   Error as OfflineIcon,
   Warning as WarningIcon,
-  Route as RouteIcon,
-  PhotoCamera as PhotoCameraIcon,
-  Refresh as RefreshIcon
+  Route as RouteIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import { useNavigate } from 'react-router-dom';
@@ -199,15 +193,6 @@ const Devices = () => {
     if (!result?.success && result?.message) {
       toast.error(result.message);
     }
-  };
-
-  const handleCoordinateSubmit = () => {
-    if (editingIndex !== null) {
-      handleUpdateCoordinate();
-    } else {
-      handleAddCoordinate();
-    }
-    clearPreview();
   };
 
   const handlePreviewCoordinateRequest = async () => {

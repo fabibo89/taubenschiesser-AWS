@@ -110,6 +110,7 @@ const Profile = () => {
   // Load settings on component mount
   useEffect(() => {
     fetchSettings();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchSettings = async () => {
@@ -318,6 +319,9 @@ const Profile = () => {
               break;
             case error.TIMEOUT:
               errorMessage = 'Zeitüberschreitung beim Abrufen des Standorts.';
+              break;
+            default:
+              errorMessage = 'Unbekannter Fehler beim Abrufen des Standorts.';
               break;
           }
           toast.error(errorMessage);

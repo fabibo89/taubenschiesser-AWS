@@ -19,7 +19,6 @@ import {
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
-  Image as ImageIcon,
   CheckCircle as SuccessIcon
 } from '@mui/icons-material';
 import { useDropzone } from 'react-dropzone';
@@ -81,12 +80,7 @@ const ImageUpload = () => {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    
-    // Get the actual image element to check its natural dimensions
-    const img = event.currentTarget;
-    const naturalWidth = img.naturalWidth;
-    const naturalHeight = img.naturalHeight;
-    
+
     // Check if we have image info and valid dimensions
     if (result?.image_info?.original_size?.width && result?.image_info?.original_size?.height && rect.width > 0 && rect.height > 0) {
       // Calculate scaling factors based on actual image dimensions

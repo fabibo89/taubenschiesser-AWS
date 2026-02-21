@@ -381,6 +381,8 @@ export const useRouteManagement = (deviceId) => {
           case 'STITCHING_TIMEOUT':
             errorMessage = 'Stitching-Prozess hat zu lange gedauert. Versuche es mit weniger Bildern.';
             break;
+          default:
+            break;
         }
       } else if (error.code === 'ECONNABORTED') {
         errorMessage = 'Zeitüberschreitung beim Erstellen des Panoramas';

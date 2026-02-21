@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -15,7 +15,6 @@ import {
   CircularProgress,
   Button,
   TextField,
-  IconButton,
   Table,
   TableBody,
   TableCell,
@@ -28,9 +27,7 @@ import {
   ArrowDownward as ArrowDownIcon,
   ArrowBack as ArrowLeftIcon,
   ArrowForward as ArrowRightIcon,
-  PhotoCamera as CameraIcon,
-  ZoomIn as ZoomIcon,
-  Psychology as BrainIcon
+  PhotoCamera as CameraIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -9,38 +9,17 @@ import {
   Button,
   Alert,
   CircularProgress,
-  Tabs,
-  Tab,
   List,
   ListItem,
   ListItemText,
-  ListItemIcon,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  IconButton,
-  Paper,
-  Divider,
-  Slider
+  ListItemIcon
 } from '@mui/material';
 import {
   CheckCircle as OnlineIcon,
   Error as OfflineIcon,
   Warning as WarningIcon,
-  Camera as CameraIcon,
   Visibility as DetectionIcon,
-  Route as RouteIcon,
-  Add as AddIcon,
-  Delete as DeleteIcon,
-  Edit as EditIcon,
-  PhotoCamera as PhotoCameraIcon,
-  Refresh as RefreshIcon
+  Route as RouteIcon
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -56,7 +35,6 @@ const DeviceDetail = () => {
   const { socket, joinDeviceRoom, leaveDeviceRoom } = useSocket();
   const [device, setDevice] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [tabValue, setTabValue] = useState(0);
   const [detections, setDetections] = useState([]);
   const [routeDialogOpen, setRouteDialogOpen] = useState(false);
   const {
@@ -91,6 +69,18 @@ const DeviceDetail = () => {
     handleSavePanorama
   } = useRouteManagement(id);
 
+  const fetchDevice = useCallback(async () => {
+    try {
+      const response = await axios.get(`/api/devices/${id}`);
+      setDevice(response.data);
+      await fetchActionsConfig(id);
+    } catch (error) {
+      console.error('Error fetching device:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [id, fetchActionsConfig]);
+
   useEffect(() => {
     fetchDevice();
     return () => {
@@ -98,7 +88,7 @@ const DeviceDetail = () => {
         leaveDeviceRoom(id);
       }
     };
-  }, [id]);
+  }, [id, socket, leaveDeviceRoom, fetchDevice]);
 
   useEffect(() => {
     if (socket && device) {
@@ -116,30 +106,7 @@ const DeviceDetail = () => {
         }
       });
     }
-  }, [socket, device]);
-
-
-  const fetchDevice = async () => {
-    try {
-      const response = await axios.get(`/api/devices/${id}`);
-      setDevice(response.data);
-      // Lade auch die Route-Konfiguration
-      await fetchActionsConfig(id);
-    } catch (error) {
-      console.error('Error fetching device:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchDetections = async () => {
-    try {
-      const response = await axios.get(`/api/devices/${id}/detections?limit=10`);
-      setDetections(response.data.detections);
-    } catch (error) {
-      console.error('Error fetching detections:', error);
-    }
-  };
+  }, [socket, device, joinDeviceRoom]);
 
   const handleRouteDialogOpen = async () => {
     const result = await fetchActionsConfig(id);
@@ -177,15 +144,6 @@ const DeviceDetail = () => {
     if (!result?.success && result?.message) {
       alert(result.message);
     }
-  };
-
-  const handleCoordinateSubmit = () => {
-    if (editingIndex !== null) {
-      handleUpdateCoordinate();
-    } else {
-      handleAddCoordinate();
-    }
-    clearPreview();
   };
 
   const handlePreviewCoordinateRequest = async () => {
