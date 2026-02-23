@@ -260,7 +260,9 @@ router.get('/detections', authenticateToken, async (req, res) => {
       }
     }
 
+    // Lean list: no image/zoomed_image (avoids 64MB base64). Thumbnails are loaded per row via GET /detections/:id in the frontend.
     const detections = await Detection.find(query)
+      .select('_id device processedAt classification_status processingTime detections temperature camera_position model')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))

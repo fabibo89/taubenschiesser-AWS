@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -17,7 +17,8 @@ import {
   DialogContent,
   DialogActions,
   IconButton,
-  LinearProgress
+  LinearProgress,
+  CircularProgress
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -34,6 +35,39 @@ import {
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+
+// Renders thumbnail for a detection row; triggers load via onLoadRequest when imageUrl not yet loaded
+function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
+  useEffect(() => {
+    if (detectionId && imageUrl === undefined) onLoadRequest(detectionId);
+  }, [detectionId, imageUrl, onLoadRequest]);
+
+  if (typeof imageUrl === 'string' && imageUrl) {
+    return (
+      <Box
+        component="img"
+        src={imageUrl}
+        alt="Detection Thumbnail"
+        sx={{
+          width: 80,
+          height: 60,
+          objectFit: 'cover',
+          borderRadius: 1,
+          border: '1px solid #e0e0e0',
+          cursor: 'pointer'
+        }}
+        onClick={onOpenDialog}
+      />
+    );
+  }
+  if (imageUrl === 'loading') {
+    return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
+  }
+  if (imageUrl === null) {
+    return <Typography variant="caption" color="text.secondary">Kein Bild</Typography>;
+  }
+  return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
+}
 
 const Detections = () => {
   const [detections, setDetections] = useState([]);
@@ -55,6 +89,27 @@ const Detections = () => {
   });
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [selectedDetection, setSelectedDetection] = useState(null);
+  const [selectedDetectionLoading, setSelectedDetectionLoading] = useState(false);
+  // Thumbnails loaded per row (id -> url string, or 'loading', or null for no image)
+  const [imageByDetectionId, setImageByDetectionId] = useState({});
+  const imageByDetectionIdRef = useRef({});
+  imageByDetectionIdRef.current = imageByDetectionId;
+
+  const loadImageForDetection = useCallback(async (id) => {
+    const idStr = typeof id === 'string' ? id : id?.toString?.();
+    if (!idStr || imageByDetectionIdRef.current[idStr] !== undefined) return;
+    setImageByDetectionId(prev => {
+      if (prev[idStr] !== undefined) return prev;
+      return { ...prev, [idStr]: 'loading' };
+    });
+    try {
+      const response = await axios.get(`/api/cv/detections/${idStr}`);
+      const url = response.data.zoomed_image?.url || response.data.image?.url || null;
+      setImageByDetectionId(prev => ({ ...prev, [idStr]: url }));
+    } catch {
+      setImageByDetectionId(prev => ({ ...prev, [idStr]: null }));
+    }
+  }, []);
 
   const fetchAvailablePositions = async () => {
     try {
@@ -90,6 +145,7 @@ const Detections = () => {
         ...prev,
         total: response.data.pagination.total
       }));
+      setImageByDetectionId({});
     } catch (error) {
       console.error('Error fetching detections:', error);
     } finally {
@@ -113,31 +169,57 @@ const Detections = () => {
     }));
   };
 
-  const handleOpenImageDialog = (detection) => {
-    setSelectedDetection(detection);
+  const handleOpenImageDialog = async (detection) => {
     setImageDialogOpen(true);
+    setSelectedDetectionLoading(true);
+    setSelectedDetection(null);
+    try {
+      const response = await axios.get(`/api/cv/detections/${detection._id}`);
+      setSelectedDetection(response.data);
+    } catch (error) {
+      console.error('Error fetching detection detail:', error);
+      toast.error('Fehler beim Laden der Erkennung');
+      setImageDialogOpen(false);
+    } finally {
+      setSelectedDetectionLoading(false);
+    }
   };
 
   const handleCloseImageDialog = () => {
     setImageDialogOpen(false);
     setSelectedDetection(null);
+    setSelectedDetectionLoading(false);
+  };
+
+  const loadDetectionByIndex = async (index) => {
+    if (index < 0 || index >= detections.length) return;
+    const lean = detections[index];
+    setSelectedDetectionLoading(true);
+    setSelectedDetection(null);
+    try {
+      const response = await axios.get(`/api/cv/detections/${lean._id}`);
+      setSelectedDetection(response.data);
+    } catch (error) {
+      console.error('Error fetching detection detail:', error);
+      toast.error('Fehler beim Laden der Erkennung');
+    } finally {
+      setSelectedDetectionLoading(false);
+    }
   };
 
   const handlePreviousDetection = () => {
     if (!selectedDetection || detections.length === 0) return;
-    
     const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
     if (currentIndex > 0) {
-      setSelectedDetection(detections[currentIndex - 1]);
+      loadDetectionByIndex(currentIndex - 1);
     }
   };
 
   const handleNextDetection = () => {
     if (!selectedDetection || detections.length === 0) return;
-    
     const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
     if (currentIndex < detections.length - 1) {
-      setSelectedDetection(detections[currentIndex + 1]);
+      loadDetectionByIndex(currentIndex + 1);
     }
   };
 
@@ -219,45 +301,19 @@ const Detections = () => {
       headerName: 'Bild',
       width: 120,
       sortable: false,
-      renderCell: (params) => (
-        <Box>
-          {params.row.zoomed_image?.url ? (
-            <Box
-              component="img"
-              src={params.row.zoomed_image.url}
-              alt="Detection Thumbnail"
-              sx={{
-                width: 80,
-                height: 60,
-                objectFit: 'cover',
-                borderRadius: 1,
-                border: '1px solid #e0e0e0',
-                cursor: 'pointer'
-              }}
-              onClick={() => handleOpenImageDialog(params.row)}
+      renderCell: (params) => {
+        const idKey = params.row._id == null ? '' : (typeof params.row._id === 'string' ? params.row._id : params.row._id.toString?.() ?? String(params.row._id));
+        return (
+          <Box>
+            <ThumbnailCell
+              detectionId={idKey}
+              imageUrl={imageByDetectionId[idKey]}
+              onLoadRequest={loadImageForDetection}
+              onOpenDialog={() => handleOpenImageDialog(params.row)}
             />
-          ) : params.row.image?.url ? (
-            <Box
-              component="img"
-              src={params.row.image.url}
-              alt="Detection Thumbnail"
-              sx={{
-                width: 80,
-                height: 60,
-                objectFit: 'cover',
-                borderRadius: 1,
-                border: '1px solid #e0e0e0',
-                cursor: 'pointer'
-              }}
-              onClick={() => handleOpenImageDialog(params.row)}
-            />
-          ) : (
-            <Typography variant="caption" color="text.secondary">
-              Kein Bild
-            </Typography>
-          )}
-        </Box>
-      )
+          </Box>
+        );
+      }
     },
     {
       field: 'device',
@@ -633,7 +689,11 @@ const Detections = () => {
           </Box>
         </DialogTitle>
         <DialogContent>
-          {selectedDetection && (
+          {selectedDetectionLoading ? (
+            <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
+              <CircularProgress />
+            </Box>
+          ) : selectedDetection && (
             <Grid container spacing={2}>
               {/* Original Image mit Bounding-Boxen */}
               {selectedDetection.image?.url && (
