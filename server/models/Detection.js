@@ -130,5 +130,7 @@ const detectionSchema = new mongoose.Schema({
 // Index for efficient queries
 detectionSchema.index({ device: 1, processedAt: -1 });
 detectionSchema.index({ processedAt: -1 });
+// For unclassified list (Tauben-Tinder): find by device + classification_status + sort by date
+detectionSchema.index({ device: 1, classification_status: 1, processedAt: -1 });
 
 module.exports = mongoose.model('Detection', detectionSchema);

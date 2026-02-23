@@ -9,6 +9,21 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// In-memory cache for detection statistics (short TTL to reduce repeated aggregation)
+const STATS_CACHE_TTL_MS = 90 * 1000; // 90 seconds
+const statsCache = new Map(); // key -> { data, expiresAt }
+
+// In-memory cache for unclassified detections (Tauben-Tinder)
+const UNCLASSIFIED_CACHE_TTL_MS = 60 * 1000; // 60 seconds
+const unclassifiedCache = new Map(); // key -> { data, expiresAt }
+
+function invalidateUnclassifiedCacheForUser(userId) {
+  const prefix = `${userId}:unclassified:`;
+  for (const key of unclassifiedCache.keys()) {
+    if (key.startsWith(prefix)) unclassifiedCache.delete(key);
+  }
+}
+
 // Configure multer for image uploads
 const storage = multer.memoryStorage();
 const upload = multer({ 
@@ -317,16 +332,25 @@ router.get('/detections/positions', authenticateToken, async (req, res) => {
 router.get('/detections/unclassified', authenticateToken, async (req, res) => {
   try {
     const { limit = 50 } = req.query;
-    
+    const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
+    const cacheKey = `${req.user.userId}:unclassified:${limitNum}`;
+
+    const cached = unclassifiedCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.info('[Unclassified] Cache hit', { cacheKey });
+      return res.json(cached.data);
+    }
+
     // Get all devices owned by user
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
     const deviceIds = devices.map(d => d._id);
-    
+
     // If user has no devices, return empty array
     if (deviceIds.length === 0) {
       return res.json({ detections: [] });
     }
-    
+
+    // Lean select: only fields needed by Tauben-Tinder (images, detections, image_info, etc.)
     const detections = await Detection.find({
       device: { $in: deviceIds },
       $or: [
@@ -334,149 +358,175 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
         { classification_status: { $exists: false } }
       ]
     })
+      .select('_id device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info detections target_bird processedAt processingTime')
       .sort({ processedAt: -1 })
-      .limit(parseInt(limit))
+      .limit(limitNum)
       .populate('device', 'name deviceId type');
 
-    res.json({ detections });
+    const response = { detections };
+    unclassifiedCache.set(cacheKey, { data: response, expiresAt: Date.now() + UNCLASSIFIED_CACHE_TTL_MS });
+
+    res.json(response);
   } catch (error) {
     logger.error('Get unclassified detections error:', error);
     logger.error('Get unclassified detections error details:', {
       message: error.message,
       stack: error.stack
     });
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Server error',
-      details: error.message 
+      details: error.message
     });
   }
 });
 
 // Get detection statistics grouped by day and classification (must be before /detections/:id)
+// Uses MongoDB aggregation for performance (no loading all detections into Node)
 router.get('/detections/statistics', authenticateToken, async (req, res) => {
   try {
     const { deviceId, days = 30 } = req.query;
-    
-    // Get all devices owned by user
-    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const daysNum = parseInt(days, 10) || 30;
+    const cacheKey = `${req.user.userId}:${deviceId || 'all'}:${daysNum}`;
+
+    const cached = statsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.info('[DetectionStats] Cache hit', { cacheKey });
+      return res.json(cached.data);
+    }
+
+    // Get all devices owned by user (with name for result mapping, avoid $lookup)
+    const devices = await Device.find({ owner: req.user.userId }).select('_id name');
     const deviceIds = devices.map(d => d._id);
-    
+    const deviceNameById = new Map(devices.map(d => [d._id.toString(), d.name || 'Unknown']));
+
     if (deviceIds.length === 0) {
       return res.json({ statistics: [] });
     }
-    
-    let query = {
-      device: { $in: deviceIds }
-    };
-    
+
+    let matchDevice = { $in: deviceIds };
+
     if (deviceId) {
-      // Validate that device belongs to user
       const device = await Device.findOne({ _id: deviceId, owner: req.user.userId });
       if (!device) {
         return res.status(404).json({ error: 'Device not found' });
       }
-      query.device = device._id;
+      matchDevice = device._id;
     }
-    
-    // Calculate date range
+
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - parseInt(days));
+    startDate.setDate(startDate.getDate() - daysNum);
     startDate.setHours(0, 0, 0, 0);
-    query.processedAt = { $gte: startDate };
-    
-    const detections = await Detection.find(query)
-      .select('device processedAt classification_status temperature')
-      .populate('device', 'name _id');
-    
-    // Group by device, date, and classification
-    const stats = {};
-    
-    detections.forEach(detection => {
-      // Skip if device not populated
-      if (!detection.device || !detection.device._id) {
-        logger.warn(`[DetectionStats] Skipping detection with missing device: ${detection._id}`);
-        return;
-      }
-      
-      // Skip if processedAt is missing or invalid
-      if (!detection.processedAt) {
-        logger.warn(`[DetectionStats] Skipping detection with missing processedAt: ${detection._id}`);
-        return;
-      }
-      
-      try {
-        const devId = detection.device._id.toString();
-        const dateObj = new Date(detection.processedAt);
-        
-        // Validate date
-        if (isNaN(dateObj.getTime())) {
-          logger.warn(`[DetectionStats] Invalid date for detection ${detection._id}: ${detection.processedAt}`);
-          return;
+
+    const result = await Detection.aggregate([
+      {
+        $match: {
+          device: matchDevice,
+          processedAt: { $gte: startDate }
         }
-        
-        const date = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD
-        const classification = detection.classification_status || 'unclassified';
-        
-        if (!stats[devId]) {
-          stats[devId] = {
-            deviceId: devId,
-            deviceName: detection.device.name || 'Unknown',
-            data: {}
-          };
+      },
+      {
+        $project: {
+          device: 1,
+          processedAt: 1,
+          classification_status: 1,
+          temperature: 1
         }
-        
-        if (!stats[devId].data[date]) {
-          stats[devId].data[date] = {
-            date,
-            unclassified: 0,
-            confirmed_pigeon: 0,
-            no_pigeon: 0,
-            sum_temp_pigeon: 0,
-            count_temp_pigeon: 0
-          };
+      },
+      {
+        $addFields: {
+          date: { $dateToString: { format: '%Y-%m-%d', date: '$processedAt' } },
+          classification: { $ifNull: ['$classification_status', 'unclassified'] }
         }
-        
-        if (classification === 'unclassified' || !classification) {
-          stats[devId].data[date].unclassified++;
-        } else if (classification === 'confirmed_pigeon') {
-          stats[devId].data[date].confirmed_pigeon++;
-          const temp = detection.temperature;
-          if (temp != null && typeof temp === 'number' && !Number.isNaN(temp)) {
-            stats[devId].data[date].sum_temp_pigeon += temp;
-            stats[devId].data[date].count_temp_pigeon += 1;
+      },
+      {
+        $group: {
+          _id: { device: '$device', date: '$date' },
+          unclassified: {
+            $sum: { $cond: [{ $eq: ['$classification', 'unclassified'] }, 1, 0] }
+          },
+          confirmed_pigeon: {
+            $sum: { $cond: [{ $eq: ['$classification', 'confirmed_pigeon'] }, 1, 0] }
+          },
+          no_pigeon: {
+            $sum: { $cond: [{ $eq: ['$classification', 'no_pigeon'] }, 1, 0] }
+          },
+          sum_temp_pigeon: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$classification', 'confirmed_pigeon'] },
+                    { $ne: ['$temperature', null] },
+                    { $in: [{ $type: '$temperature' }, ['double', 'int', 'long']] }
+                  ]
+                },
+                '$temperature',
+                0
+              ]
+            }
+          },
+          count_temp_pigeon: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$classification', 'confirmed_pigeon'] },
+                    { $ne: ['$temperature', null] },
+                    { $in: [{ $type: '$temperature' }, ['double', 'int', 'long']] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
           }
-        } else if (classification === 'no_pigeon') {
-          stats[devId].data[date].no_pigeon++;
         }
-      } catch (err) {
-        logger.warn(`[DetectionStats] Error processing detection ${detection._id}:`, err.message);
-        // Continue with next detection instead of crashing
+      },
+      { $sort: { '_id.device': 1, '_id.date': 1 } },
+      {
+        $group: {
+          _id: '$_id.device',
+          data: {
+            $push: {
+              date: '$_id.date',
+              unclassified: '$unclassified',
+              confirmed_pigeon: '$confirmed_pigeon',
+              no_pigeon: '$no_pigeon',
+              avg_temp_pigeon: {
+                $cond: [
+                  { $gt: ['$count_temp_pigeon', 0] },
+                  { $round: [{ $divide: ['$sum_temp_pigeon', '$count_temp_pigeon'] }, 1] },
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          deviceId: { $toString: '$_id' },
+          data: 1
+        }
       }
-    });
-    
-    // Convert to array format for frontend (add avg_temp_pigeon per day)
-    const result = Object.values(stats).map(stat => ({
-      deviceId: stat.deviceId,
-      deviceName: stat.deviceName,
-      data: Object.values(stat.data)
-        .sort((a, b) => new Date(a.date) - new Date(b.date))
-        .map(day => {
-          const { sum_temp_pigeon, count_temp_pigeon, ...rest } = day;
-          return {
-            ...rest,
-            avg_temp_pigeon: count_temp_pigeon > 0
-              ? Math.round((sum_temp_pigeon / count_temp_pigeon) * 10) / 10
-              : null
-          };
-        })
+    ]);
+
+    // Attach device names from initial query (avoids $lookup in aggregation)
+    const statistics = result.map(stat => ({
+      ...stat,
+      deviceName: deviceNameById.get(stat.deviceId) || 'Unknown'
     }));
-    
-    logger.info(`[DetectionStats] Returning statistics for ${result.length} devices, total detections: ${detections.length}`);
-    result.forEach(stat => {
+
+    const totalDetections = statistics.reduce((sum, s) => sum + s.data.reduce((n, d) => n + d.unclassified + d.confirmed_pigeon + d.no_pigeon, 0), 0);
+    logger.info(`[DetectionStats] Returning statistics for ${statistics.length} devices (aggregation), total detections in result: ${totalDetections}`);
+    statistics.forEach(stat => {
       logger.info(`[DetectionStats] Device ${stat.deviceId} (${stat.deviceName}): ${stat.data.length} days with data`);
     });
-    
-    res.json({ statistics: result });
+
+    const response = { statistics };
+    statsCache.set(cacheKey, { data: response, expiresAt: Date.now() + STATS_CACHE_TTL_MS });
+
+    res.json(response);
   } catch (error) {
     logger.error('Get detection statistics error:', error);
     logger.error('Error details:', {
@@ -484,7 +534,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       stack: error.stack,
       userId: req.user?.userId
     });
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Server error',
       message: process.env.NODE_ENV === 'development' ? error.message : 'Server error'
     });
@@ -529,6 +579,7 @@ router.delete('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     await Detection.deleteOne({ _id: detection._id });
+    invalidateUnclassifiedCacheForUser(req.user.userId);
 
     res.json({ message: 'Detection deleted successfully' });
   } catch (error) {
@@ -555,11 +606,11 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     }
     
     if (action === 'delete') {
-      // Delete detection
       await Detection.deleteOne({ _id: detection._id });
+      invalidateUnclassifiedCacheForUser(req.user.userId);
       return res.json({ message: 'Detection deleted successfully' });
     }
-    
+
     // Update classification status
     const statusMap = {
       'confirm_pigeon': 'confirmed_pigeon',
@@ -575,10 +626,11 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
       detection.classifiedAt = new Date();
     }
     await detection.save();
-    
-    res.json({ 
+    invalidateUnclassifiedCacheForUser(req.user.userId);
+
+    res.json({
       message: 'Detection classified successfully',
-      detection 
+      detection
     });
   } catch (error) {
     logger.error('Classify detection error:', error);
