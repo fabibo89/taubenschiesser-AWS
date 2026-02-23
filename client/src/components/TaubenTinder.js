@@ -25,12 +25,16 @@ const TaubenTinder = () => {
   const [swipeDirection, setSwipeDirection] = useState(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [renderedImageSize, setRenderedImageSize] = useState({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
-  
+  const [flyAwayDirection, setFlyAwayDirection] = useState(null);
+  const [loadingNext, setLoadingNext] = useState(false);
+
   const cardRef = useRef(null);
   const touchStartRef = useRef(null);
   const mouseStartRef = useRef(null);
   const imageRef = useRef(null);
   const containerRef = useRef(null);
+  const actionPromiseRef = useRef(null);
+  const FLY_AWAY_DURATION_MS = 350;
 
   useEffect(() => {
     fetchUnclassifiedDetections();
@@ -99,46 +103,85 @@ const TaubenTinder = () => {
     }
   };
 
-  const handleSwipeAction = async (action) => {
+  /** Only performs API call + toast. Does not advance index. Returns promise. */
+  const performSwipeAction = async (action) => {
     if (detections.length === 0 || currentIndex >= detections.length) return;
 
     const detection = detections[currentIndex];
-    
+
+    if (action === 'delete') {
+      await axios.delete(`/api/cv/detections/${detection._id}`);
+      toast.success('Erkennung gelöscht');
+    } else {
+      const actionMap = {
+        'confirm_pigeon': 'confirm_pigeon',
+        'no_pigeon': 'no_pigeon'
+      };
+      await axios.patch(`/api/cv/detections/${detection._id}/classify`, {
+        action: actionMap[action]
+      });
+      toast.success(
+        action === 'confirm_pigeon'
+          ? 'Als Taube bestätigt'
+          : 'Keine Taube'
+      );
+    }
+  };
+
+  const advanceToNext = async () => {
+    const nextIndex = currentIndex + 1;
+    if (nextIndex >= detections.length) {
+      await fetchUnclassifiedDetections();
+    } else {
+      setCurrentIndex(nextIndex);
+    }
+  };
+
+  const handleSwipeAction = async (action) => {
+    if (detections.length === 0 || currentIndex >= detections.length) return;
     try {
-      if (action === 'delete') {
-        await axios.delete(`/api/cv/detections/${detection._id}`);
-        toast.success('Erkennung gelöscht');
-      } else {
-        const actionMap = {
-          'confirm_pigeon': 'confirm_pigeon',
-          'no_pigeon': 'no_pigeon'
-        };
-        await axios.patch(`/api/cv/detections/${detection._id}/classify`, {
-          action: actionMap[action]
-        });
-        toast.success(
-          action === 'confirm_pigeon' 
-            ? 'Als Taube bestätigt' 
-            : 'Keine Taube'
-        );
-      }
-      
-      // Move to next detection
-      const nextIndex = currentIndex + 1;
-      if (nextIndex >= detections.length) {
-        // Fetch more detections
-        await fetchUnclassifiedDetections();
-      } else {
-        setCurrentIndex(nextIndex);
-      }
+      await performSwipeAction(action);
+      await advanceToNext();
     } catch (error) {
       console.error('Error processing swipe action:', error);
       toast.error('Fehler beim Verarbeiten der Aktion');
     }
   };
 
+  const getFlyAwayTarget = (direction) => {
+    const el = cardRef.current;
+    const w = el?.clientWidth ?? 600;
+    const h = el?.clientHeight ?? 600;
+    const margin = 80;
+    if (direction === 'right') return { x: w + margin, y: 0 };
+    if (direction === 'left') return { x: -(w + margin), y: 0 };
+    if (direction === 'up') return { x: 0, y: -(h + margin) };
+    return { x: 0, y: 0 };
+  };
+
+  const handleFlyAwayComplete = () => {
+    setLoadingNext(true);
+    setOffset({ x: 0, y: 0 });
+    setFlyAwayDirection(null);
+    setSwipeDirection(null);
+    const promise = actionPromiseRef.current;
+    if (promise) {
+      promise
+        .then(() => advanceToNext())
+        .catch((err) => {
+          console.error('Error processing swipe action:', err);
+          toast.error('Fehler beim Verarbeiten der Aktion');
+        })
+        .finally(() => setLoadingNext(false));
+      actionPromiseRef.current = null;
+    } else {
+      setLoadingNext(false);
+    }
+  };
+
   // Touch handlers for mobile swipe
   const handleTouchStart = (e) => {
+    if (flyAwayDirection || loadingNext) return;
     const touch = e.touches[0];
     touchStartRef.current = {
       x: touch.clientX,
@@ -148,8 +191,8 @@ const TaubenTinder = () => {
   };
 
   const handleTouchMove = (e) => {
-    if (!touchStartRef.current) return;
-    
+    if (!touchStartRef.current || flyAwayDirection || loadingNext) return;
+
     const touch = e.touches[0];
     const deltaX = touch.clientX - touchStartRef.current.x;
     const deltaY = touch.clientY - touchStartRef.current.y;
@@ -168,39 +211,43 @@ const TaubenTinder = () => {
   };
 
   const handleTouchEnd = (e) => {
-    if (!touchStartRef.current) return;
-    
+    if (!touchStartRef.current || flyAwayDirection || loadingNext) return;
+
     const touch = e.changedTouches[0];
     const deltaX = touch.clientX - touchStartRef.current.x;
     const deltaY = touch.clientY - touchStartRef.current.y;
     const deltaTime = Date.now() - touchStartRef.current.time;
-    
+
     const threshold = 100;
     const velocityThreshold = 0.3;
     const velocity = Math.sqrt(deltaX ** 2 + deltaY ** 2) / deltaTime;
-    
+
     setSwiping(false);
-    
-    if (velocity > velocityThreshold || Math.abs(deltaX) > threshold || deltaY < -threshold) {
-      if (deltaY < -threshold) {
-        // Swipe up - delete
-        handleSwipeAction('delete');
-      } else if (deltaX > threshold) {
-        // Swipe right - confirm pigeon
-        handleSwipeAction('confirm_pigeon');
-      } else if (deltaX < -threshold) {
-        // Swipe left - no pigeon
-        handleSwipeAction('no_pigeon');
-      }
+
+    const committed = velocity > velocityThreshold || Math.abs(deltaX) > threshold || deltaY < -threshold;
+    let action = null;
+    if (committed) {
+      if (deltaY < -threshold) action = 'delete';
+      else if (deltaX > threshold) action = 'confirm_pigeon';
+      else if (deltaX < -threshold) action = 'no_pigeon';
     }
-    
-    setOffset({ x: 0, y: 0 });
-    setSwipeDirection(null);
+
+    if (committed && action) {
+      const direction = action === 'delete' ? 'up' : action === 'confirm_pigeon' ? 'right' : 'left';
+      setFlyAwayDirection(direction);
+      setSwipeDirection(direction);
+      setOffset(getFlyAwayTarget(direction));
+      actionPromiseRef.current = performSwipeAction(action);
+    } else {
+      setOffset({ x: 0, y: 0 });
+      setSwipeDirection(null);
+    }
     touchStartRef.current = null;
   };
 
   // Mouse handlers for desktop (optional)
   const handleMouseDown = (e) => {
+    if (flyAwayDirection || loadingNext) return;
     mouseStartRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -211,15 +258,15 @@ const TaubenTinder = () => {
   };
 
   const handleMouseMove = (e) => {
-    if (!mouseStartRef.current) return;
-    
+    if (!mouseStartRef.current || flyAwayDirection || loadingNext) return;
+
     const deltaX = e.clientX - mouseStartRef.current.x;
     const deltaY = e.clientY - mouseStartRef.current.y;
-    
+
     if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
       setSwiping(true);
       setOffset({ x: deltaX, y: deltaY });
-      
+
       if (Math.abs(deltaX) > Math.abs(deltaY)) {
         setSwipeDirection(deltaX > 0 ? 'right' : 'left');
       } else if (deltaY < -50) {
@@ -231,36 +278,47 @@ const TaubenTinder = () => {
   const handleMouseUp = (e) => {
     document.removeEventListener('mousemove', handleMouseMove);
     document.removeEventListener('mouseup', handleMouseUp);
-    
-    if (!mouseStartRef.current) return;
-    
+
+    if (!mouseStartRef.current || flyAwayDirection || loadingNext) {
+      mouseStartRef.current = null;
+      return;
+    }
+
     const deltaX = e.clientX - mouseStartRef.current.x;
     const deltaY = e.clientY - mouseStartRef.current.y;
     const threshold = 100;
-    
-    if (Math.abs(deltaX) > threshold || deltaY < -threshold) {
-      if (deltaY < -threshold) {
-        handleSwipeAction('delete');
-      } else if (deltaX > threshold) {
-        handleSwipeAction('confirm_pigeon');
-      } else if (deltaX < -threshold) {
-        handleSwipeAction('no_pigeon');
-      }
-    }
-    
-    setOffset({ x: 0, y: 0 });
+
     setSwiping(false);
-    setSwipeDirection(null);
+
+    const committed = Math.abs(deltaX) > threshold || deltaY < -threshold;
+    let action = null;
+    if (committed) {
+      if (deltaY < -threshold) action = 'delete';
+      else if (deltaX > threshold) action = 'confirm_pigeon';
+      else if (deltaX < -threshold) action = 'no_pigeon';
+    }
+
+    if (committed && action) {
+      const direction = action === 'delete' ? 'up' : action === 'confirm_pigeon' ? 'right' : 'left';
+      setFlyAwayDirection(direction);
+      setSwipeDirection(direction);
+      setOffset(getFlyAwayTarget(direction));
+      actionPromiseRef.current = performSwipeAction(action);
+    } else {
+      setOffset({ x: 0, y: 0 });
+      setSwipeDirection(null);
+    }
     mouseStartRef.current = null;
   };
 
   const getRotation = () => {
-    if (!swipeDirection) return 0;
+    if (!swipeDirection && !flyAwayDirection) return 0;
     const rot = offset.x / 10;
     return Math.max(-30, Math.min(30, rot));
   };
 
   const getOpacity = () => {
+    if (flyAwayDirection) return 1;
     if (!swiping) return 1;
     const dist = Math.sqrt(offset.x ** 2 + offset.y ** 2);
     return Math.max(0.3, 1 - dist / 500);
@@ -312,6 +370,22 @@ const TaubenTinder = () => {
           userSelect: 'none'
         }}
       >
+        {loadingNext && (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              borderRadius: 3
+            }}
+          >
+            <CircularProgress sx={{ color: 'white' }} size={56} />
+          </Box>
+        )}
         <Paper
           ref={cardRef}
           elevation={8}
@@ -323,10 +397,11 @@ const TaubenTinder = () => {
             overflow: 'hidden',
             transform: `translate(${offset.x}px, ${offset.y}px) rotate(${getRotation()}deg)`,
             opacity: getOpacity(),
-            transition: swiping ? 'none' : 'transform 0.3s ease-out, opacity 0.3s ease-out',
-            cursor: 'grab',
+            transition: swiping && !flyAwayDirection ? 'none' : `transform ${FLY_AWAY_DURATION_MS}ms ease-out, opacity ${FLY_AWAY_DURATION_MS}ms ease-out`,
+            cursor: flyAwayDirection || loadingNext ? 'default' : 'grab',
+            pointerEvents: loadingNext ? 'none' : 'auto',
             '&:active': {
-              cursor: 'grabbing'
+              cursor: flyAwayDirection || loadingNext ? 'default' : 'grabbing'
             },
             backgroundColor: '#000'
           }}
@@ -334,6 +409,11 @@ const TaubenTinder = () => {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onMouseDown={handleMouseDown}
+          onTransitionEnd={(e) => {
+            if (e.propertyName === 'transform' && flyAwayDirection) {
+              handleFlyAwayComplete();
+            }
+          }}
         >
           {/* Image with bounding boxes */}
           {displayImage && (
@@ -496,8 +576,8 @@ const TaubenTinder = () => {
             )}
           </CardContent>
 
-          {/* Swipe direction indicator */}
-          {swiping && (
+          {/* Swipe direction indicator (while dragging or flying away) */}
+          {(swiping || flyAwayDirection) && (
             <Box
               sx={{
                 position: 'absolute',
@@ -508,13 +588,13 @@ const TaubenTinder = () => {
                 pointerEvents: 'none'
               }}
             >
-              {swipeDirection === 'right' && (
+              {(swipeDirection || flyAwayDirection) === 'right' && (
                 <FavoriteIcon sx={{ fontSize: 80, color: '#4caf50', opacity: 0.8 }} />
               )}
-              {swipeDirection === 'left' && (
+              {(swipeDirection || flyAwayDirection) === 'left' && (
                 <CloseIcon sx={{ fontSize: 80, color: '#ff9800', opacity: 0.8 }} />
               )}
-              {swipeDirection === 'up' && (
+              {(swipeDirection || flyAwayDirection) === 'up' && (
                 <DeleteIcon sx={{ fontSize: 80, color: '#f44336', opacity: 0.8 }} />
               )}
             </Box>
@@ -533,6 +613,7 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="warning"
+            disabled={loadingNext}
             onClick={() => handleSwipeAction('no_pigeon')}
             sx={{ width: 64, height: 64 }}
             title="Keine Taube (Links swipen)"
@@ -542,6 +623,7 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="error"
+            disabled={loadingNext}
             onClick={() => handleSwipeAction('delete')}
             sx={{ width: 64, height: 64 }}
             title="Löschen (Hoch swipen)"
@@ -551,6 +633,7 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="success"
+            disabled={loadingNext}
             onClick={() => handleSwipeAction('confirm_pigeon')}
             sx={{ width: 64, height: 64 }}
             title="Taube bestätigen (Rechts swipen)"
