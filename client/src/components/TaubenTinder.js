@@ -40,9 +40,10 @@ const TaubenTinder = () => {
     fetchUnclassifiedDetections();
   }, []);
 
-  // Reset rendered image size when detection changes
+  // Reset rendered image size and card position when detection changes
   useEffect(() => {
     setRenderedImageSize({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
+    setOffset({ x: 0, y: 0 });
   }, [currentIndex]);
 
   // Recalculate image size on window resize
@@ -161,7 +162,6 @@ const TaubenTinder = () => {
 
   const handleFlyAwayComplete = () => {
     setLoadingNext(true);
-    setOffset({ x: 0, y: 0 });
     setFlyAwayDirection(null);
     setSwipeDirection(null);
     const promise = actionPromiseRef.current;
