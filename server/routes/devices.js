@@ -54,7 +54,10 @@ router.get('/', authenticateToken, async (req, res) => {
       query.owner = req.user.userId;
     }
     
-    const devices = await Device.find(query).sort({ lastSeen: -1 });
+    // Lean list: exclude heavy fields (route images, panorama, tapo password)
+    const devices = await Device.find(query)
+      .select('-actions.route.coordinates.image -actions.route.panorama -camera.tapo.password')
+      .sort({ lastSeen: -1 });
     const deviceIds = devices.map(d => d._id);
     
     // Get today's date range (start of today to end of today)

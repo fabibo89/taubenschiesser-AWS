@@ -210,7 +210,12 @@ start_application() {
     
     # Set environment variables for development
     export NODE_ENV=development
-    export MONGODB_URI=mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin
+    # Use existing MONGODB_URI if set (e.g. to connect to prod DB), otherwise local MongoDB
+    if [ -z "$MONGODB_URI" ]; then
+        export MONGODB_URI=mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin
+    else
+        print_warning "Using existing MONGODB_URI (e.g. prod DB) – ensure MongoDB/DocDB is reachable"
+    fi
     export JWT_SECRET=dev-secret-key
     export CLIENT_URL=http://localhost:3000
     export CV_SERVICE_URL=http://localhost:8000
