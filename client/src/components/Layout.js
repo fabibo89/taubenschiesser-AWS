@@ -65,7 +65,7 @@ const Layout = ({ children }) => {
     { text: 'Tauben-Tinder', icon: <FavoriteIcon />, path: '/tauben-tinder' },
     { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
-    { text: 'Routen-Erkennungen', icon: <RouteIcon />, path: '/route-detections' },
+    { text: 'Tauben auf der Route', icon: <RouteIcon />, path: '/route-detections' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 

@@ -489,7 +489,7 @@ export default function RouteDetections() {
   return (
     <Box>
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
-        <Typography variant="h4">Routen-Erkennungen</Typography>
+        <Typography variant="h4">Tauben auf der Route</Typography>
       </Box>
       <Card sx={{ mb: 3 }}>
         <CardContent>
