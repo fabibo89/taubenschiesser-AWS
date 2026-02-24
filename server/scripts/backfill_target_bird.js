@@ -28,46 +28,52 @@ function pickTargetBird(detections) {
   };
 }
 
+const BATCH_SIZE = 100;
+
 async function backfillTargetBird() {
   try {
     console.log('Connecting to MongoDB...');
     console.log('MongoDB URI:', MONGODB_URI.replace(/\/\/.*@/, '//<credentials>@'));
     await mongoose.connect(MONGODB_URI);
     console.log('Connected to MongoDB');
+    console.log(`Processing in batches of ${BATCH_SIZE} documents (cursor, no full load)...`);
 
-    const withoutTargetBird = await Detection.find({
+    const cursor = Detection.find({
       $or: [
         { target_bird: null },
         { target_bird: { $exists: false } },
         { 'target_bird.bbox': { $exists: false }, 'target_bird.position': { $exists: false } }
       ],
-      $and: [
-        { detections: { $exists: true, $ne: [] } }
-      ]
-    }).lean();
-
-    console.log(`Found ${withoutTargetBird.length} detections without target_bird but with detections[]`);
+      detections: { $exists: true, $ne: [] }
+    }).lean().cursor();
 
     let updated = 0;
     let skipped = 0;
+    let batchCount = 0;
 
-    for (const doc of withoutTargetBird) {
+    for await (const doc of cursor) {
       const chosen = pickTargetBird(doc.detections);
       if (!chosen) {
         skipped++;
-        continue;
+      } else {
+        await Detection.updateOne(
+          { _id: doc._id },
+          { $set: { target_bird: chosen } }
+        );
+        updated++;
       }
-      await Detection.updateOne(
-        { _id: doc._id },
-        { $set: { target_bird: chosen } }
-      );
-      updated++;
-      if (updated <= 10 || updated % 100 === 0) {
-        console.log(`  Updated ${updated}: ${doc._id} (class=${chosen.class}, confidence=${chosen.confidence != null ? (chosen.confidence * 100).toFixed(1) : '-'}%)`);
+      batchCount++;
+      if (batchCount % BATCH_SIZE === 0) {
+        console.log(`  Processed ${batchCount} docs, updated ${updated}, skipped ${skipped}`);
       }
     }
 
+    if (batchCount % BATCH_SIZE !== 0) {
+      console.log(`  Processed ${batchCount} docs (last batch), updated ${updated}, skipped ${skipped}`);
+    }
+
     console.log('\n=== Backfill Summary ===');
+    console.log(`Total processed: ${batchCount}`);
     console.log(`Detections updated: ${updated}`);
     console.log(`Skipped (no valid candidate): ${skipped}`);
     console.log('Backfill completed successfully.');
