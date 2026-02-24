@@ -1,3 +1,9 @@
+/**
+ * Backfill target_bird for detections that have detections[] but no target_bird.
+ * Memory: only _id + detections are loaded; use cursor with batchSize.
+ * If you still get heap out of memory in Docker, run with:
+ *   docker exec -it taubenschiesser-api-prod node --max-old-space-size=4096 scripts/backfill_target_bird.js
+ */
 const mongoose = require('mongoose');
 const path = require('path');
 
@@ -45,7 +51,10 @@ async function backfillTargetBird() {
         { 'target_bird.bbox': { $exists: false }, 'target_bird.position': { $exists: false } }
       ],
       detections: { $exists: true, $ne: [] }
-    }).lean().cursor();
+    })
+      .select('_id detections')
+      .lean()
+      .cursor({ batchSize: 500 });
 
     let updated = 0;
     let skipped = 0;
