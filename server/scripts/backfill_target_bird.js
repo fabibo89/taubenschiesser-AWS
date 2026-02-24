@@ -1,8 +1,6 @@
 /**
  * Backfill target_bird for detections that have detections[] but no target_bird.
- * Memory: only _id + detections are loaded; use cursor with batchSize.
- * If you still get heap out of memory in Docker, run with:
- *   docker exec -it taubenschiesser-api-prod node --max-old-space-size=4096 scripts/backfill_target_bird.js
+ * Memory-safe: loads only small batches (BATCH_SIZE) at a time, paginated by _id.
  */
 const mongoose = require('mongoose');
 const path = require('path');
@@ -12,6 +10,17 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const Detection = require('../models/Detection');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
+
+const BATCH_SIZE = 200;
+
+const FILTER = {
+  $or: [
+    { target_bird: null },
+    { target_bird: { $exists: false } },
+    { 'target_bird.bbox': { $exists: false }, 'target_bird.position': { $exists: false } }
+  ],
+  detections: { $exists: true, $ne: [] }
+};
 
 function hasBboxOrPosition(d) {
   return (d.bbox && (d.bbox.x != null || d.bbox.width != null)) ||
@@ -34,55 +43,60 @@ function pickTargetBird(detections) {
   };
 }
 
-const BATCH_SIZE = 100;
-
 async function backfillTargetBird() {
   try {
     console.log('Connecting to MongoDB...');
     console.log('MongoDB URI:', MONGODB_URI.replace(/\/\/.*@/, '//<credentials>@'));
     await mongoose.connect(MONGODB_URI);
     console.log('Connected to MongoDB');
-    console.log(`Processing in batches of ${BATCH_SIZE} documents (cursor, no full load)...`);
-
-    const cursor = Detection.find({
-      $or: [
-        { target_bird: null },
-        { target_bird: { $exists: false } },
-        { 'target_bird.bbox': { $exists: false }, 'target_bird.position': { $exists: false } }
-      ],
-      detections: { $exists: true, $ne: [] }
-    })
-      .select('_id detections')
-      .lean()
-      .cursor({ batchSize: 500 });
+    console.log(`Processing in batches of ${BATCH_SIZE} (paginated by _id, low memory)...`);
 
     let updated = 0;
     let skipped = 0;
-    let batchCount = 0;
+    let totalProcessed = 0;
+    let lastId = null;
 
-    for await (const doc of cursor) {
-      const chosen = pickTargetBird(doc.detections);
-      if (!chosen) {
-        skipped++;
-      } else {
-        await Detection.updateOne(
-          { _id: doc._id },
-          { $set: { target_bird: chosen } }
-        );
-        updated++;
-      }
-      batchCount++;
-      if (batchCount % BATCH_SIZE === 0) {
-        console.log(`  Processed ${batchCount} docs, updated ${updated}, skipped ${skipped}`);
-      }
-    }
+    while (true) {
+      const query = { ...FILTER };
+      if (lastId) query._id = { $gt: lastId };
 
-    if (batchCount % BATCH_SIZE !== 0) {
-      console.log(`  Processed ${batchCount} docs (last batch), updated ${updated}, skipped ${skipped}`);
+      const docs = await Detection.find(query)
+        .select('_id detections')
+        .lean()
+        .sort({ _id: 1 })
+        .limit(BATCH_SIZE);
+
+      if (docs.length === 0) break;
+
+      const bulkOps = [];
+      for (const doc of docs) {
+        const chosen = pickTargetBird(doc.detections);
+        if (!chosen) {
+          skipped++;
+        } else {
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: doc._id },
+              update: { $set: { target_bird: chosen } }
+            }
+          });
+        }
+      }
+      if (bulkOps.length > 0) {
+        await Detection.bulkWrite(bulkOps);
+        updated += bulkOps.length;
+      }
+
+      totalProcessed += docs.length;
+      lastId = docs[docs.length - 1]._id;
+
+      console.log(`  Processed ${totalProcessed} docs, updated ${updated}, skipped ${skipped}`);
+
+      if (docs.length < BATCH_SIZE) break;
     }
 
     console.log('\n=== Backfill Summary ===');
-    console.log(`Total processed: ${batchCount}`);
+    console.log(`Total processed: ${totalProcessed}`);
     console.log(`Detections updated: ${updated}`);
     console.log(`Skipped (no valid candidate): ${skipped}`);
     console.log('Backfill completed successfully.');
