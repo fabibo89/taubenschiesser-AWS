@@ -19,8 +19,13 @@ import {
   TableHead,
   TableRow,
   Paper,
-  Popover
+  Popover,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent
 } from '@mui/material';
+import { ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 
@@ -382,6 +387,30 @@ export default function RouteDetections() {
   const [loading, setLoading] = useState(true);
   const [allDetections, setAllDetections] = useState([]);
   const [loadingDetections, setLoadingDetections] = useState(false);
+  const [expandedRows, setExpandedRows] = useState(() => new Set());
+  const [imageDialogDetectionId, setImageDialogDetectionId] = useState(null);
+  const [imageDialogUrl, setImageDialogUrl] = useState(null);
+
+  useEffect(() => {
+    if (!imageDialogDetectionId) {
+      setImageDialogUrl(null);
+      return;
+    }
+    let cancelled = false;
+    setImageDialogUrl('loading');
+    axios
+      .get(`/api/cv/detections/${imageDialogDetectionId}`)
+      .then((res) => {
+        if (!cancelled) {
+          const url = res.data?.zoomed_image?.url || res.data?.image?.url || null;
+          setImageDialogUrl(url || null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setImageDialogUrl(null);
+      });
+    return () => { cancelled = true; };
+  }, [imageDialogDetectionId]);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -443,7 +472,7 @@ export default function RouteDetections() {
     return () => { cancelled = true; };
   }, [selectedDeviceId, timeRange, classificationStatus, dateFrom, dateTo]);
 
-  const tableRows = [];
+  const clusteredDetections = [];
   allDetections.forEach((d) => {
     const rot = d.camera_position?.rotation ?? '-';
     const til = d.camera_position?.tilt ?? '-';
@@ -456,8 +485,8 @@ export default function RouteDetections() {
     const srcH = info.original_size?.height ?? info.zoomed_size?.height ?? '-';
     const mapping = coordIndex >= 0 ? `→ Routenbild ${posLabel}` : '→ Kein passendes Routenbild';
 
-    let birdIndex = 0;
-    function rowFromBird(bird, isTargetBird, subId) {
+    const birds = [];
+    function addBird(bird, isTargetBird) {
       let drawPos = '-';
       if (bird.position) {
         const p = bird.position;
@@ -466,25 +495,36 @@ export default function RouteDetections() {
         const b = bird.bbox;
         drawPos = `bbox (${Math.round(b.x)}, ${Math.round(b.y)}) ${Math.round(b.width)}×${Math.round(b.height)}`;
       }
-      return {
-        id: `${d._id}-${subId}`,
-        routePosition: `${rot}°, ${til}°`,
-        date: d.processedAt,
-        drawPosition: drawPos,
-        sourceImage: `${srcW} × ${srcH}`,
-        mapping,
-        isTargetBird
-      };
+      birds.push({ drawPosition: drawPos, isTargetBird });
     }
-
     if (d.target_bird && (d.target_bird.bbox || d.target_bird.position)) {
-      tableRows.push(rowFromBird(d.target_bird, true, 'target'));
+      addBird(d.target_bird, true);
     }
     (d.detections || []).forEach((det) => {
       if (det.class !== 'bird' || (!det.bbox && !det.position)) return;
-      tableRows.push(rowFromBird(det, false, `bird-${birdIndex++}`));
+      addBird(det, false);
+    });
+
+    const hasTargetBird = !!(d.target_bird && (d.target_bird.bbox || d.target_bird.position));
+    clusteredDetections.push({
+      detectionId: d._id,
+      routePosition: `${rot}°, ${til}°`,
+      date: d.processedAt,
+      sourceImage: `${srcW} × ${srcH}`,
+      mapping,
+      hasTargetBird,
+      birds
     });
   });
+
+  const toggleRow = (id) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <Box>
@@ -557,17 +597,17 @@ export default function RouteDetections() {
 
       {!loading && selectedDeviceId && coordinates.length > 0 && (
         <>
-          <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>Tauben pro Detection (Zielvogel + alle Vögel, Position und Mapping)</Typography>
+          <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>Detections mit Tauben (eine Zeile pro Detection, Subzeilen pro Taube)</Typography>
           <TableContainer component={Paper} sx={{ mb: 3, maxHeight: 360 }}>
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
+                  <TableCell padding="none" sx={{ width: 48 }} />
+                  <TableCell>Datum / Zeit</TableCell>
                   <TableCell>Zielvogel</TableCell>
                   <TableCell>Routenposition</TableCell>
-                  <TableCell>Datum / Zeit</TableCell>
-                  <TableCell>Position (Zeichnung)</TableCell>
+                  <TableCell>Position (Zeichnung) / Anzahl Tauben</TableCell>
                   <TableCell>Quellbild (Breite × Höhe)</TableCell>
-                  <TableCell>Mapping</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -577,23 +617,59 @@ export default function RouteDetections() {
                       <CircularProgress size={24} sx={{ my: 1 }} />
                     </TableCell>
                   </TableRow>
-                ) : tableRows.length === 0 ? (
+                ) : clusteredDetections.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary' }}>
                       Keine Tauben im gewählten Zeitraum.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  tableRows.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell>{row.isTargetBird ? 'Ja' : 'Nein'}</TableCell>
-                      <TableCell>{row.routePosition}</TableCell>
-                      <TableCell>{row.date ? new Date(row.date).toLocaleString('de-DE') : '-'}</TableCell>
-                      <TableCell>{row.drawPosition}</TableCell>
-                      <TableCell>{row.sourceImage}</TableCell>
-                      <TableCell>{row.mapping}</TableCell>
-                    </TableRow>
-                  ))
+                  clusteredDetections.map((cluster) => {
+                    const isExpanded = expandedRows.has(cluster.detectionId);
+                    const hasBirds = cluster.birds.length > 0;
+                    return (
+                      <React.Fragment key={cluster.detectionId}>
+                        <TableRow sx={{ '& > *': { borderBottom: hasBirds && !isExpanded ? 'none' : undefined } }}>
+                          <TableCell padding="none" sx={{ width: 48, verticalAlign: 'middle' }}>
+                            {hasBirds ? (
+                              <IconButton
+                                size="small"
+                                onClick={() => toggleRow(cluster.detectionId)}
+                                aria-expanded={isExpanded}
+                              >
+                                {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                              </IconButton>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>{cluster.date ? new Date(cluster.date).toLocaleString('de-DE') : '-'}</TableCell>
+                          <TableCell>{cluster.hasTargetBird ? 'Ja' : 'Nein'}</TableCell>
+                          <TableCell>{cluster.routePosition} {cluster.mapping}</TableCell>
+                          <TableCell>
+                            {hasBirds ? (
+                              <Box
+                                component="span"
+                                onClick={() => setImageDialogDetectionId(cluster.detectionId)}
+                                sx={{ cursor: 'pointer', textDecoration: 'underline', '&:hover': { color: 'primary.main' } }}
+                              >
+                                {cluster.birds.length} Taube(n)
+                              </Box>
+                            ) : '-'}
+                          </TableCell>
+                          <TableCell>{cluster.sourceImage}</TableCell>
+                        </TableRow>
+                        {hasBirds && isExpanded && cluster.birds.map((bird, idx) => (
+                          <TableRow key={`${cluster.detectionId}-bird-${idx}`} sx={{ bgcolor: 'action.hover' }}>
+                            <TableCell sx={{ width: 48 }} />
+                            <TableCell />
+                            <TableCell>{bird.isTargetBird ? 'Ja' : 'Nein'}</TableCell>
+                            <TableCell sx={{ pl: 3 }} />
+                            <TableCell>{bird.drawPosition}</TableCell>
+                            <TableCell />
+                          </TableRow>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>
@@ -616,6 +692,96 @@ export default function RouteDetections() {
           </Grid>
         </>
       )}
+
+      <Dialog
+        open={Boolean(imageDialogDetectionId)}
+        onClose={() => setImageDialogDetectionId(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Detection-Bild mit Markierungen</DialogTitle>
+        <DialogContent>
+          {imageDialogDetectionId && (() => {
+            const detection = allDetections.find((d) => d._id === imageDialogDetectionId);
+            if (!detection) return <Typography color="text.secondary">Detection nicht gefunden.</Typography>;
+            if (imageDialogUrl === 'loading') {
+              return (
+                <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
+                  <CircularProgress />
+                </Box>
+              );
+            }
+            if (!imageDialogUrl) {
+              return <Typography color="text.secondary">Bild nicht verfügbar.</Typography>;
+            }
+            const info = detection.image_info || {};
+            const imgW = info.original_size?.width || info.zoomed_size?.width || 1;
+            const imgH = info.original_size?.height || info.zoomed_size?.height || 1;
+            const boxes = [];
+            if (detection.target_bird && (detection.target_bird.bbox || detection.target_bird.position)) {
+              const b = detection.target_bird;
+              if (b.position) {
+                boxes.push({
+                  left: ((b.position.center_x - b.position.width / 2) / imgW) * 100,
+                  top: ((b.position.center_y - b.position.height / 2) / imgH) * 100,
+                  w: (b.position.width / imgW) * 100,
+                  h: (b.position.height / imgH) * 100
+                });
+              } else if (b.bbox) {
+                boxes.push({
+                  left: (b.bbox.x / imgW) * 100,
+                  top: (b.bbox.y / imgH) * 100,
+                  w: (b.bbox.width / imgW) * 100,
+                  h: (b.bbox.height / imgH) * 100
+                });
+              }
+            }
+            (detection.detections || []).forEach((det) => {
+              if (det.class !== 'bird') return;
+              if (det.position) {
+                boxes.push({
+                  left: ((det.position.center_x - det.position.width / 2) / imgW) * 100,
+                  top: ((det.position.center_y - det.position.height / 2) / imgH) * 100,
+                  w: (det.position.width / imgW) * 100,
+                  h: (det.position.height / imgH) * 100
+                });
+              } else if (det.bbox) {
+                boxes.push({
+                  left: (det.bbox.x / imgW) * 100,
+                  top: (det.bbox.y / imgH) * 100,
+                  w: (det.bbox.width / imgW) * 100,
+                  h: (det.bbox.height / imgH) * 100
+                });
+              }
+            });
+            return (
+              <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                <img
+                  src={imageDialogUrl}
+                  alt="Detection"
+                  style={{ maxWidth: '100%', display: 'block', verticalAlign: 'top' }}
+                />
+                {boxes.map((box, idx) => (
+                  <Box
+                    key={idx}
+                    sx={{
+                      position: 'absolute',
+                      left: `${box.left}%`,
+                      top: `${box.top}%`,
+                      width: `${box.w}%`,
+                      height: `${box.h}%`,
+                      border: '3px solid #f44336',
+                      boxSizing: 'border-box',
+                      boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                      pointerEvents: 'none'
+                    }}
+                  />
+                ))}
+              </Box>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
     </Box>
   );
 }
