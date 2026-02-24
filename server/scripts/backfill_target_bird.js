@@ -5,9 +5,10 @@
 const mongoose = require('mongoose');
 const path = require('path');
 
+// Prefer MONGODB_URI from environment (e.g. Docker) so .env does not overwrite it
+const envUri = process.env.MONGODB_URI;
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
+const MONGODB_URI = envUri || process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
 
 const BATCH_SIZE = 10;
 
