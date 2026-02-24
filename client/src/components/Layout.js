@@ -26,7 +26,8 @@ import {
   Logout as LogoutIcon,
   Settings as SettingsIcon,
   Monitor as MonitorIcon,
-  Preview as PreviewIcon
+  Preview as PreviewIcon,
+  Route as RouteIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -64,6 +65,7 @@ const Layout = ({ children }) => {
     { text: 'Tauben-Tinder', icon: <FavoriteIcon />, path: '/tauben-tinder' },
     { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
+    { text: 'Routen-Erkennungen', icon: <RouteIcon />, path: '/route-detections' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 

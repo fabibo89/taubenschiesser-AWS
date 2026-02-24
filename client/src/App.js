@@ -14,6 +14,7 @@ import ImageUpload from './components/ImageUpload';
 import Profile from './components/Profile';
 import HardwareMonitor from './components/HardwareMonitor';
 import PositionPreview from './components/PositionPreview';
+import RouteDetections from './components/RouteDetections';
 import Layout from './components/Layout';
 
 function AppContent() {
@@ -54,6 +55,7 @@ function AppContent() {
           <Route path="/upload" element={<ImageUpload />} />
           <Route path="/monitor" element={<HardwareMonitor />} />
           <Route path="/position-preview" element={<PositionPreview />} />
+          <Route path="/route-detections" element={<RouteDetections />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

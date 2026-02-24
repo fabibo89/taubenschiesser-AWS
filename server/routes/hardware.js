@@ -13,6 +13,7 @@ router.post('/detection', async (req, res) => {
       original_image, 
       zoomed_image, 
       detections, 
+      target_bird,
       bird_count, 
       confidence_level, 
       processing_time, 
@@ -66,6 +67,10 @@ router.post('/detection', async (req, res) => {
         tilt: camera_position.tilt
       } : undefined
     };
+
+    if (target_bird && (target_bird.bbox || target_bird.position)) {
+      detectionData.target_bird = target_bird;
+    }
     
     // Add images based on mode (single or dual camera)
     if (tapo_original_image || raspberry_pi_original_image) {

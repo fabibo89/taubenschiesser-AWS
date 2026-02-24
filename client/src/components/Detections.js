@@ -10,6 +10,8 @@ import {
   FormControl,
   Select,
   MenuItem,
+  ListItemIcon,
+  ListItemText,
   TextField,
   InputAdornment,
   Dialog,
@@ -90,6 +92,8 @@ const Detections = () => {
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [selectedDetection, setSelectedDetection] = useState(null);
   const [selectedDetectionLoading, setSelectedDetectionLoading] = useState(false);
+  const [deviceRouteCoordinates, setDeviceRouteCoordinates] = useState([]);
+  const [cameraPositionSaving, setCameraPositionSaving] = useState(false);
   // Thumbnails loaded per row (id -> url string, or 'loading', or null for no image)
   const [imageByDetectionId, setImageByDetectionId] = useState({});
   const imageByDetectionIdRef = useRef({});
@@ -110,6 +114,25 @@ const Detections = () => {
       setImageByDetectionId(prev => ({ ...prev, [idStr]: null }));
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedDetection?.device?._id) {
+      setDeviceRouteCoordinates([]);
+      return;
+    }
+    let cancelled = false;
+    axios.get(`/api/devices/${selectedDetection.device._id}`)
+      .then((res) => {
+        if (!cancelled) {
+          const coords = res.data?.actions?.route?.coordinates || [];
+          setDeviceRouteCoordinates(Array.isArray(coords) ? coords : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDeviceRouteCoordinates([]);
+      });
+    return () => { cancelled = true; };
+  }, [selectedDetection?.device?._id]);
 
   const fetchAvailablePositions = async () => {
     try {
@@ -189,6 +212,30 @@ const Detections = () => {
     setImageDialogOpen(false);
     setSelectedDetection(null);
     setSelectedDetectionLoading(false);
+    setDeviceRouteCoordinates([]);
+  };
+
+  const handleCameraPositionChange = async (e) => {
+    const value = e.target.value;
+    if (value === '' || value === 'current' || !selectedDetection?._id) return;
+    const index = Number(value);
+    const coord = deviceRouteCoordinates[index];
+    if (!coord || (coord.rotation === undefined && coord.tilt === undefined)) return;
+    const rotation = coord.rotation ?? selectedDetection.camera_position?.rotation ?? 0;
+    const tilt = coord.tilt ?? selectedDetection.camera_position?.tilt ?? 0;
+    setCameraPositionSaving(true);
+    try {
+      const response = await axios.patch(`/api/cv/detections/${selectedDetection._id}`, {
+        camera_position: { rotation, tilt }
+      });
+      setSelectedDetection((prev) => prev ? { ...prev, camera_position: response.data.camera_position } : null);
+      setDetections((prev) => prev.map((d) => d._id === selectedDetection._id ? { ...d, camera_position: response.data.camera_position } : d));
+      toast.success('Kamera-Position aktualisiert');
+    } catch (err) {
+      toast.error('Fehler beim Speichern der Kamera-Position');
+    } finally {
+      setCameraPositionSaving(false);
+    }
   };
 
   const loadDetectionByIndex = async (index) => {
@@ -911,9 +958,80 @@ const Detections = () => {
                       )}
                       {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
                         <Grid item xs={12} sm={6}>
-                          <Typography variant="body2" color="text.secondary">
-                            Kamera-Position: <strong>Rot: {selectedDetection.camera_position.rotation}° / Tilt: {selectedDetection.camera_position.tilt}°</strong>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                            Kamera-Position (Routenpunkt)
                           </Typography>
+                          <FormControl size="small" fullWidth disabled={cameraPositionSaving}>
+                            <Select
+                              value={(() => {
+                                const rot = selectedDetection.camera_position.rotation;
+                                const tilt = selectedDetection.camera_position.tilt;
+                                const idx = deviceRouteCoordinates.findIndex(
+                                  (c) => (c.rotation == null ? rot == null : c.rotation === rot) &&
+                                    (c.tilt == null ? tilt == null : c.tilt === tilt)
+                                );
+                                return idx >= 0 ? idx : 'current';
+                              })()}
+                              onChange={handleCameraPositionChange}
+                              displayEmpty
+                              MenuProps={{
+                                PaperProps: { sx: { maxHeight: 400 } }
+                              }}
+                              renderValue={(v) => {
+                                if (v === 'current') {
+                                  const r = selectedDetection.camera_position.rotation;
+                                  const t = selectedDetection.camera_position.tilt;
+                                  return `Aktuell: R: ${r}° / T: ${t}°`;
+                                }
+                                const c = deviceRouteCoordinates[v];
+                                if (!c) return '';
+                                const imgSrc = c.image
+                                  ? (c.image.startsWith('data:') ? c.image : `data:image/jpeg;base64,${c.image}`)
+                                  : null;
+                                return (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    {imgSrc && (
+                                      <Box
+                                        component="img"
+                                        src={imgSrc}
+                                        alt=""
+                                        sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
+                                      />
+                                    )}
+                                    <span>Position {Number(v) + 1}: R: {c.rotation ?? '-'}° / T: {c.tilt ?? '-'}°</span>
+                                  </Box>
+                                );
+                              }}
+                            >
+                              <MenuItem value="current">
+                                Aktuell: R: {selectedDetection.camera_position.rotation}° / T: {selectedDetection.camera_position.tilt}°
+                              </MenuItem>
+                              {deviceRouteCoordinates.map((coord, idx) => {
+                                const imgSrc = coord.image
+                                  ? (coord.image.startsWith('data:') ? coord.image : `data:image/jpeg;base64,${coord.image}`)
+                                  : null;
+                                return (
+                                  <MenuItem key={idx} value={idx}>
+                                    <ListItemIcon sx={{ minWidth: 56 }}>
+                                      {imgSrc ? (
+                                        <Box
+                                          component="img"
+                                          src={imgSrc}
+                                          alt=""
+                                          sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
+                                        />
+                                      ) : (
+                                        <Box sx={{ width: 48, height: 36, bgcolor: 'action.hover', borderRadius: 0.5 }} />
+                                      )}
+                                    </ListItemIcon>
+                                    <ListItemText
+                                      primary={`Position ${idx + 1}: R: ${coord.rotation ?? '-'}° / T: ${coord.tilt ?? '-'}°`}
+                                    />
+                                  </MenuItem>
+                                );
+                              })}
+                            </Select>
+                          </FormControl>
                         </Grid>
                       )}
                       <Grid item xs={12}>

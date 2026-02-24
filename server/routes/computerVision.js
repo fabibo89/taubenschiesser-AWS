@@ -215,8 +215,9 @@ router.post('/detect', upload.single('image'), async (req, res) => {
 // Get detection history
 router.get('/detections', authenticateToken, async (req, res) => {
   try {
-    const { deviceId, page = 1, limit = 20, classificationStatus, rotation, tilt } = req.query;
+    const { deviceId, page = 1, limit = 20, classificationStatus, rotation, tilt, dateFrom, dateTo } = req.query;
     const skip = (page - 1) * limit;
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 1000);
 
     // Get all devices owned by user for filtering
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
@@ -227,14 +228,29 @@ router.get('/detections', authenticateToken, async (req, res) => {
     };
 
     if (deviceId) {
-      const device = await Device.findOne({ 
-        deviceId, 
-        owner: req.user.userId 
-      });
+      const isMongoId = /^[a-fA-F0-9]{24}$/.test(deviceId);
+      const device = await Device.findOne(
+        isMongoId ? { _id: deviceId, owner: req.user.userId } : { deviceId, owner: req.user.userId }
+      );
       if (!device) {
         return res.status(404).json({ error: 'Device not found' });
       }
       query.device = device._id;
+    }
+
+    // Filter by date range
+    if (dateFrom || dateTo) {
+      query.processedAt = {};
+      if (dateFrom) {
+        const from = new Date(dateFrom);
+        from.setHours(0, 0, 0, 0);
+        query.processedAt.$gte = from;
+      }
+      if (dateTo) {
+        const to = new Date(dateTo);
+        to.setHours(23, 59, 59, 999);
+        query.processedAt.$lte = to;
+      }
     }
 
     // Filter by classification status
@@ -250,22 +266,21 @@ router.get('/detections', authenticateToken, async (req, res) => {
     }
 
     // Filter by camera position (exact match for rotation and tilt pair)
-    if (rotation && tilt) {
-      const rotationNum = parseInt(rotation);
-      const tiltNum = parseInt(tilt);
+    if (rotation !== undefined && rotation !== '' && tilt !== undefined && tilt !== '') {
+      const rotationNum = parseInt(rotation, 10);
+      const tiltNum = parseInt(tilt, 10);
       if (!isNaN(rotationNum) && !isNaN(tiltNum)) {
-        // Exact match for the position pair
         query['camera_position.rotation'] = rotationNum;
         query['camera_position.tilt'] = tiltNum;
       }
     }
 
-    // Lean list: no image/zoomed_image (avoids 64MB base64). Thumbnails are loaded per row via GET /detections/:id in the frontend.
+    // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections temperature camera_position model')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info')
       .sort({ processedAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit))
+      .limit(limitNum)
       .populate('device', 'name deviceId type');
 
     const total = await Detection.countDocuments(query);
@@ -273,10 +288,10 @@ router.get('/detections', authenticateToken, async (req, res) => {
     res.json({
       detections,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: parseInt(page, 10) || 1,
+        limit: limitNum,
         total,
-        pages: Math.ceil(total / limit)
+        pages: Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
@@ -561,6 +576,38 @@ router.get('/detections/:id', authenticateToken, async (req, res) => {
     res.json(detection);
   } catch (error) {
     logger.error('Get detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update detection camera_position (e.g. assign to device route point)
+router.patch('/detections/:id', authenticateToken, async (req, res) => {
+  try {
+    const { camera_position: cameraPosition } = req.body;
+    if (!cameraPosition || typeof cameraPosition.rotation !== 'number' || typeof cameraPosition.tilt !== 'number') {
+      return res.status(400).json({ error: 'camera_position.rotation and camera_position.tilt (numbers) required' });
+    }
+
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    detection.camera_position = {
+      rotation: cameraPosition.rotation,
+      tilt: cameraPosition.tilt
+    };
+    await detection.save();
+
+    res.json(detection);
+  } catch (error) {
+    logger.error('Patch detection error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
