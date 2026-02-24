@@ -1,14 +1,23 @@
 /**
  * Backfill target_bird for detections that have detections[] but no target_bird.
  * Uses native MongoDB driver only (no Mongoose model) to minimize heap usage.
+ *
+ * URI-Reihenfolge: 1. CLI-Argument, 2. Umgebung MONGODB_URI, 3. server/.env, 4. Default.
+ *
+ * Wenn der Container die Host-MongoDB nicht erreicht (ECONNREFUSED): Skript auf dem
+ * Host ausführen (wo MongoDB läuft), mit localhost in der URI:
+ *   cd server && MONGODB_URI='mongodb://user:pass@localhost:27017/taubenschiesser?authSource=admin' node scripts/backfill_target_bird.js
+ * Oder URI als erstes Argument übergeben:
+ *   node scripts/backfill_target_bird.js 'mongodb://user:pass@localhost:27017/taubenschiesser?authSource=admin'
  */
 const mongoose = require('mongoose');
 const path = require('path');
 
-// Prefer MONGODB_URI from environment (e.g. Docker) so .env does not overwrite it
+// 1) CLI-Argument, 2) Umgebung (Docker), 3) .env, 4) Default
+const cliUri = process.argv[2];
 const envUri = process.env.MONGODB_URI;
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-const MONGODB_URI = envUri || process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
+const MONGODB_URI = cliUri || envUri || process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
 
 const BATCH_SIZE = 10;
 
@@ -112,6 +121,12 @@ async function backfillTargetBird() {
     console.log('Backfill completed successfully.');
   } catch (error) {
     console.error('Error during backfill:', error);
+    if (error.name === 'MongooseServerSelectionError' && error.message.includes('ECONNREFUSED')) {
+      console.error('\nHinweis: Container erreicht MongoDB auf dem Host oft nicht (Mongo lauscht nur auf 127.0.0.1).');
+      console.error('Option A) Skript auf dem Host ausführen (wo MongoDB läuft):');
+      console.error('  cd ~/docker/taubenschiesser-AWS/server && MONGODB_URI=\'mongodb://USER:PASS@localhost:27017/taubenschiesser?authSource=admin\' node scripts/backfill_target_bird.js');
+      console.error('Option B) MongoDB auf dem Host an 0.0.0.0 binden (in mongod.conf: bindIp: 0.0.0.0), dann Dienst neu starten.');
+    }
     process.exit(1);
   } finally {
     await mongoose.disconnect();
