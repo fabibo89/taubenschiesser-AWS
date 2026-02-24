@@ -1,17 +1,15 @@
 /**
  * Backfill target_bird for detections that have detections[] but no target_bird.
- * Memory-safe: loads only small batches (BATCH_SIZE) at a time, paginated by _id.
+ * Uses native MongoDB driver only (no Mongoose model) to minimize heap usage.
  */
 const mongoose = require('mongoose');
 const path = require('path');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const Detection = require('../models/Detection');
-
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
 
-const BATCH_SIZE = 200;
+const BATCH_SIZE = 100;
 
 const FILTER = {
   $or: [
@@ -49,7 +47,9 @@ async function backfillTargetBird() {
     console.log('MongoDB URI:', MONGODB_URI.replace(/\/\/.*@/, '//<credentials>@'));
     await mongoose.connect(MONGODB_URI);
     console.log('Connected to MongoDB');
-    console.log(`Processing in batches of ${BATCH_SIZE} (paginated by _id, low memory)...`);
+
+    const coll = mongoose.connection.db.collection('detections');
+    console.log(`Processing in batches of ${BATCH_SIZE} (native driver, paginated by _id)...`);
 
     let updated = 0;
     let skipped = 0;
@@ -60,11 +60,12 @@ async function backfillTargetBird() {
       const query = { ...FILTER };
       if (lastId) query._id = { $gt: lastId };
 
-      const docs = await Detection.find(query)
-        .select('_id detections')
-        .lean()
+      const docs = await coll
+        .find(query)
+        .project({ _id: 1, detections: 1 })
         .sort({ _id: 1 })
-        .limit(BATCH_SIZE);
+        .limit(BATCH_SIZE)
+        .toArray();
 
       if (docs.length === 0) break;
 
@@ -83,7 +84,7 @@ async function backfillTargetBird() {
         }
       }
       if (bulkOps.length > 0) {
-        await Detection.bulkWrite(bulkOps);
+        await coll.bulkWrite(bulkOps);
         updated += bulkOps.length;
       }
 
