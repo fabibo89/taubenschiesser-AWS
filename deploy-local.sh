@@ -270,11 +270,11 @@ fi
 
 echo ""
 echo -e "${YELLOW}🔨 Baue Docker Images...${NC}"
-docker-compose -f $COMPOSE_FILE $ENV_FILE build
+docker compose -f $COMPOSE_FILE $ENV_FILE build
 
 echo ""
 echo -e "${YELLOW}🚀 Starte Services...${NC}"
-docker-compose -f $COMPOSE_FILE $ENV_FILE up -d
+docker compose -f $COMPOSE_FILE $ENV_FILE up -d
 
 echo ""
 echo -e "${YELLOW}⏳ Warte auf Services...${NC}"
@@ -284,7 +284,7 @@ echo ""
 echo -e "${GREEN}✅ Deployment abgeschlossen!${NC}"
 echo ""
 echo -e "${YELLOW}📊 Service Status:${NC}"
-docker-compose -f $COMPOSE_FILE ps
+docker compose -f $COMPOSE_FILE ps
 
 echo ""
 echo -e "${YELLOW}🌐 URLs:${NC}"
@@ -304,7 +304,7 @@ if [ "$MODE" = "2" ]; then
     echo "   → Erwartete Ausgabe: {\"status\":\"OK\"}"
     echo ""
     echo "2. Prüfe MongoDB-Verbindung in API-Logs:"
-    echo "   docker-compose -f $COMPOSE_FILE logs api | grep MongoDB"
+    echo "   docker compose -f $COMPOSE_FILE logs api | grep MongoDB"
     echo "   → Erwartete Ausgabe: \"MongoDB Connected: host.docker.internal\""
     echo ""
     echo "3. Erstelle einen User:"
@@ -335,10 +335,10 @@ fi
 
 echo ""
 echo -e "${YELLOW}🔧 Verwaltung:${NC}"
-echo "  Logs ansehen:        docker-compose -f $COMPOSE_FILE logs -f"
-echo "  API Logs:            docker-compose -f $COMPOSE_FILE logs -f api"
-echo "  Services neu starten: docker-compose -f $COMPOSE_FILE restart"
-echo "  Stoppen:             docker-compose -f $COMPOSE_FILE down"
+echo "  Logs ansehen:        docker compose -f $COMPOSE_FILE logs -f"
+echo "  API Logs:            docker compose -f $COMPOSE_FILE logs -f api"
+echo "  Services neu starten: docker compose -f $COMPOSE_FILE restart"
+echo "  Stoppen:             docker compose -f $COMPOSE_FILE down"
 
 if [ "$MODE" = "2" ]; then
     echo ""
