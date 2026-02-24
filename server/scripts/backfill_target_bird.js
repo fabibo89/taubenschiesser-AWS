@@ -9,7 +9,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://admin:password123@localhost:27017/taubenschiesser?authSource=admin';
 
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 10;
 
 const FILTER = {
   $or: [
