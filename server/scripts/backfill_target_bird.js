@@ -49,7 +49,14 @@ async function backfillTargetBird() {
     console.log('Connected to MongoDB');
 
     const coll = mongoose.connection.db.collection('detections');
-    console.log(`Processing in batches of ${BATCH_SIZE} (native driver, paginated by _id)...`);
+    process.stdout.write(`Processing in batches of ${BATCH_SIZE} (native driver, paginated by _id)...\n`);
+
+    process.stdout.write('Creating index for backfill query (target_bird + detections)...\n');
+    await coll.createIndex(
+      { target_bird: 1, detections: 1 },
+      { background: true }
+    );
+    process.stdout.write('Index ready. Starting batches.\n');
 
     let updated = 0;
     let skipped = 0;
@@ -60,6 +67,7 @@ async function backfillTargetBird() {
       const query = { ...FILTER };
       if (lastId) query._id = { $gt: lastId };
 
+      process.stdout.write(`  Fetching next batch (lastId: ${lastId || 'none'})...\n`);
       const docs = await coll
         .find(query)
         .project({ _id: 1, detections: 1 })
