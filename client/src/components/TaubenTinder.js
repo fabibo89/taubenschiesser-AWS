@@ -175,19 +175,13 @@ const TaubenTinder = () => {
     setLoadingNext(false);
   };
 
-  const handleSwipeAction = async (action) => {
-    if (detections.length === 0 || currentIndex >= detections.length) return;
-    if (action === 'delete') {
-      requestDelete();
-      return;
-    }
-    try {
-      await performSwipeAction(action);
-      await advanceToNext();
-    } catch (error) {
-      console.error('Error processing swipe action:', error);
-      toast.error('Fehler beim Verarbeiten der Aktion');
-    }
+  const handleSwipeAction = (action) => {
+    if (detections.length === 0 || currentIndex >= detections.length || flyAwayDirection || loadingNext) return;
+    const direction = action === 'delete' ? 'up' : action === 'confirm_pigeon' ? 'right' : 'left';
+    setFlyAwayDirection(direction);
+    setSwipeDirection(direction);
+    setOffset(getFlyAwayTarget(direction));
+    actionPromiseRef.current = action === 'delete' ? 'pending_delete' : performSwipeAction(action);
   };
 
   const getFlyAwayTarget = (direction) => {
