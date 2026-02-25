@@ -7,7 +7,12 @@ import {
   Chip,
   IconButton,
   Paper,
-  Alert
+  Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button
 } from '@mui/material';
 import {
   Favorite as FavoriteIcon,
@@ -27,6 +32,8 @@ const TaubenTinder = () => {
   const [renderedImageSize, setRenderedImageSize] = useState({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
   const [flyAwayDirection, setFlyAwayDirection] = useState(null);
   const [loadingNext, setLoadingNext] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [pendingDeleteDetection, setPendingDeleteDetection] = useState(null);
 
   const cardRef = useRef(null);
   const touchStartRef = useRef(null);
@@ -138,15 +145,43 @@ const TaubenTinder = () => {
     }
   };
 
-  const handleSwipeAction = async (action) => {
+  const requestDelete = () => {
     if (detections.length === 0 || currentIndex >= detections.length) return;
+    setPendingDeleteDetection(detections[currentIndex]);
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDeleteDetection) return;
+    setDeleteConfirmOpen(false);
     try {
-      await performSwipeAction(action);
+      await axios.delete(`/api/cv/detections/${pendingDeleteDetection._id}`);
+      toast.success('Erkennung gelöscht');
       await advanceToNext();
     } catch (error) {
-      console.error('Error processing swipe action:', error);
-      toast.error('Fehler beim Verarbeiten der Aktion');
+      console.error('Error deleting detection:', error);
+      toast.error('Fehler beim Löschen der Erkennung');
+    } finally {
+      setPendingDeleteDetection(null);
     }
+  };
+
+  const cancelDelete = () => {
+    setDeleteConfirmOpen(false);
+    setPendingDeleteDetection(null);
+    setOffset({ x: 0, y: 0 });
+    setFlyAwayDirection(null);
+    setSwipeDirection(null);
+    setLoadingNext(false);
+  };
+
+  const handleSwipeAction = (action) => {
+    if (detections.length === 0 || currentIndex >= detections.length || flyAwayDirection || loadingNext) return;
+    const direction = action === 'delete' ? 'up' : action === 'confirm_pigeon' ? 'right' : 'left';
+    setFlyAwayDirection(direction);
+    setSwipeDirection(direction);
+    setOffset(getFlyAwayTarget(direction));
+    actionPromiseRef.current = action === 'delete' ? 'pending_delete' : performSwipeAction(action);
   };
 
   const getFlyAwayTarget = (direction) => {
@@ -161,10 +196,17 @@ const TaubenTinder = () => {
   };
 
   const handleFlyAwayComplete = () => {
+    const promise = actionPromiseRef.current;
+    actionPromiseRef.current = null;
+
+    if (promise === 'pending_delete') {
+      requestDelete();
+      return;
+    }
+
     setLoadingNext(true);
     setFlyAwayDirection(null);
     setSwipeDirection(null);
-    const promise = actionPromiseRef.current;
     if (promise) {
       promise
         .then(() => advanceToNext())
@@ -173,7 +215,6 @@ const TaubenTinder = () => {
           toast.error('Fehler beim Verarbeiten der Aktion');
         })
         .finally(() => setLoadingNext(false));
-      actionPromiseRef.current = null;
     } else {
       setLoadingNext(false);
     }
@@ -237,7 +278,7 @@ const TaubenTinder = () => {
       setFlyAwayDirection(direction);
       setSwipeDirection(direction);
       setOffset(getFlyAwayTarget(direction));
-      actionPromiseRef.current = performSwipeAction(action);
+      actionPromiseRef.current = action === 'delete' ? 'pending_delete' : performSwipeAction(action);
     } else {
       setOffset({ x: 0, y: 0 });
       setSwipeDirection(null);
@@ -303,7 +344,7 @@ const TaubenTinder = () => {
       setFlyAwayDirection(direction);
       setSwipeDirection(direction);
       setOffset(getFlyAwayTarget(direction));
-      actionPromiseRef.current = performSwipeAction(action);
+      actionPromiseRef.current = action === 'delete' ? 'pending_delete' : performSwipeAction(action);
     } else {
       setOffset({ x: 0, y: 0 });
       setSwipeDirection(null);
@@ -642,6 +683,35 @@ const TaubenTinder = () => {
           </IconButton>
         </Box>
       </Box>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteConfirmOpen}
+        onClose={cancelDelete}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            confirmDelete();
+          }
+        }}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Erkennung löschen?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Soll diese Erkennung wirklich gelöscht werden? Dies kann nicht rückgängig gemacht werden.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={cancelDelete}>
+            Abbrechen
+          </Button>
+          <Button onClick={confirmDelete} color="error" variant="contained" autoFocus>
+            Löschen
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
