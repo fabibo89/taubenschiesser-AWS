@@ -112,7 +112,7 @@ const TaubenTinder = () => {
 
     if (action === 'delete') {
       await axios.delete(`/api/cv/detections/${detection._id}`);
-      toast.success('Erkennung gelöscht');
+      toast.error('Erkennung gelöscht');
     } else {
       const actionMap = {
         'confirm_pigeon': 'confirm_pigeon',
@@ -121,11 +121,11 @@ const TaubenTinder = () => {
       await axios.patch(`/api/cv/detections/${detection._id}/classify`, {
         action: actionMap[action]
       });
-      toast.success(
-        action === 'confirm_pigeon'
-          ? 'Als Taube bestätigt'
-          : 'Keine Taube'
-      );
+      if (action === 'confirm_pigeon') {
+        toast.success('Als Taube bestätigt');
+      } else {
+        toast.warning('Keine Taube');
+      }
     }
   };
 

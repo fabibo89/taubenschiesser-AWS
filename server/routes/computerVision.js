@@ -9,21 +9,6 @@ const logger = require('../utils/logger');
 
 const router = express.Router();
 
-// In-memory cache for detection statistics (short TTL to reduce repeated aggregation)
-const STATS_CACHE_TTL_MS = 90 * 1000; // 90 seconds
-const statsCache = new Map(); // key -> { data, expiresAt }
-
-// In-memory cache for unclassified detections (Tauben-Tinder)
-const UNCLASSIFIED_CACHE_TTL_MS = 60 * 1000; // 60 seconds
-const unclassifiedCache = new Map(); // key -> { data, expiresAt }
-
-function invalidateUnclassifiedCacheForUser(userId) {
-  const prefix = `${userId}:unclassified:`;
-  for (const key of unclassifiedCache.keys()) {
-    if (key.startsWith(prefix)) unclassifiedCache.delete(key);
-  }
-}
-
 // Configure multer for image uploads
 const storage = multer.memoryStorage();
 const upload = multer({ 
@@ -350,13 +335,6 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
   try {
     const { limit = 50 } = req.query;
     const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
-    const cacheKey = `${req.user.userId}:unclassified:${limitNum}`;
-
-    const cached = unclassifiedCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.info('[Unclassified] Cache hit', { cacheKey });
-      return res.json(cached.data);
-    }
 
     // Get all devices owned by user
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
@@ -380,10 +358,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
       .limit(limitNum)
       .populate('device', 'name deviceId type');
 
-    const response = { detections };
-    unclassifiedCache.set(cacheKey, { data: response, expiresAt: Date.now() + UNCLASSIFIED_CACHE_TTL_MS });
-
-    res.json(response);
+    res.json({ detections });
   } catch (error) {
     logger.error('Get unclassified detections error:', error);
     logger.error('Get unclassified detections error details:', {
@@ -403,13 +378,6 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
   try {
     const { deviceId, days = 30 } = req.query;
     const daysNum = parseInt(days, 10) || 30;
-    const cacheKey = `${req.user.userId}:${deviceId || 'all'}:${daysNum}`;
-
-    const cached = statsCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.info('[DetectionStats] Cache hit', { cacheKey });
-      return res.json(cached.data);
-    }
 
     // Get all devices owned by user (with name for result mapping, avoid $lookup)
     const devices = await Device.find({ owner: req.user.userId }).select('_id name');
@@ -540,10 +508,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       logger.info(`[DetectionStats] Device ${stat.deviceId} (${stat.deviceName}): ${stat.data.length} days with data`);
     });
 
-    const response = { statistics };
-    statsCache.set(cacheKey, { data: response, expiresAt: Date.now() + STATS_CACHE_TTL_MS });
-
-    res.json(response);
+    res.json({ statistics });
   } catch (error) {
     logger.error('Get detection statistics error:', error);
     logger.error('Error details:', {
@@ -628,7 +593,6 @@ router.delete('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     await Detection.deleteOne({ _id: detection._id });
-    invalidateUnclassifiedCacheForUser(req.user.userId);
 
     res.json({ message: 'Detection deleted successfully' });
   } catch (error) {
@@ -656,7 +620,6 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     
     if (action === 'delete') {
       await Detection.deleteOne({ _id: detection._id });
-      invalidateUnclassifiedCacheForUser(req.user.userId);
       return res.json({ message: 'Detection deleted successfully' });
     }
 
@@ -675,7 +638,6 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
       detection.classifiedAt = new Date();
     }
     await detection.save();
-    invalidateUnclassifiedCacheForUser(req.user.userId);
 
     res.json({
       message: 'Detection classified successfully',

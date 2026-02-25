@@ -316,16 +316,16 @@ const Detections = () => {
     try {
       if (action === 'delete') {
         await axios.delete(`/api/cv/detections/${detectionToClassify._id}`);
-        toast.success('Erkennung gelöscht');
+        toast.error('Erkennung gelöscht');
       } else {
         await axios.patch(`/api/cv/detections/${detectionToClassify._id}/classify`, {
           action: action
         });
-        toast.success(
-          action === 'confirm_pigeon' 
-            ? 'Als Taube klassifiziert' 
-            : 'Als "Keine Taube" klassifiziert'
-        );
+        if (action === 'confirm_pigeon') {
+          toast.success('Als Taube klassifiziert');
+        } else {
+          toast.warning('Als "Keine Taube" klassifiziert');
+        }
       }
       
       // Aktualisiere die Liste
