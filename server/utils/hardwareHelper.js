@@ -301,18 +301,26 @@ class HardwareHelper {
           throw new Error('Raspberry Pi camera IP not configured');
         }
 
-        const port = pi.port || 8080;
-        const endpoint = pi.endpoint || '/image.jpg';
-        const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
-        
-        // Build query params (flip)
-        const queryParams = [];
-        if (pi.flip) {
-          queryParams.push('flip=true');
+        // Prefer Device model helper to include flip, angle, square crop & resolution
+        let url = null;
+        if (device.getImageUrl && typeof device.getImageUrl === 'function') {
+          url = device.getImageUrl();
         }
-        const url = queryParams.length > 0 
-          ? `${baseUrl}?${queryParams.join('&')}`
-          : baseUrl;
+
+        // Fallback: basic URL with optional flip parameter
+        if (!url) {
+          const port = pi.port || 8080;
+          const endpoint = pi.endpoint || '/image.jpg';
+          const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
+          
+          const queryParams = [];
+          if (pi.flip) {
+            queryParams.push('flip=true');
+          }
+          url = queryParams.length > 0 
+            ? `${baseUrl}?${queryParams.join('&')}`
+            : baseUrl;
+        }
 
         logger.info(`Capturing frame from Raspberry Pi: ${url}`);
         
@@ -523,7 +531,7 @@ class HardwareHelper {
 
       // 3. Wait for movement to complete (MQTT feedback when available)
       logger.info('Waiting for movement to complete...');
-      await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs: 2000 });
+      await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs: 1000 });
 
       // 4. Capture frame
       // For dual mode, use Tapo camera (same as route preview)

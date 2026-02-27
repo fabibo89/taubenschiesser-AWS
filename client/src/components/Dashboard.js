@@ -854,12 +854,20 @@ const Dashboard = () => {
       const piPort = pi.port || 8080;
       const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
       const piFlip = pi.flip || false;
+      const piAngle = typeof pi.angle === 'number' ? pi.angle : 0;
+      const piSquare = pi.square || false;
+      const piResolution = pi.resolution;
       
-      // Add flip parameter if needed
+      // Add flip/angle parameters if needed
       let streamUrl = `http://${piIp}:${piPort}${streamEndpoint}`;
-      if (piFlip) {
+      const params = [];
+      if (piFlip) params.push('flip=true');
+      if (piAngle && !Number.isNaN(piAngle)) params.push(`angle=${piAngle}`);
+      if (piSquare) params.push('square=true');
+      if (piResolution) params.push(`resolution=${encodeURIComponent(piResolution)}`);
+      if (params.length) {
         const separator = streamEndpoint.includes('?') ? '&' : '?';
-        streamUrl = `${streamUrl}${separator}flip=true`;
+        streamUrl = `${streamUrl}${separator}${params.join('&')}`;
       }
       
       console.log(`Setting Raspberry Pi stream URL for device ${device._id}:`, streamUrl);

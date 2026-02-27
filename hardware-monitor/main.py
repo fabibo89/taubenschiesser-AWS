@@ -992,6 +992,9 @@ class HardwareMonitor:
             pi_port = pi_config.get('port', 8080)
             pi_endpoint = pi_config.get('endpoint', '/image.jpg')
             pi_flip = pi_config.get('flip', False)
+            pi_angle = pi_config.get('angle', 0)
+            pi_square = pi_config.get('square', False)
+            pi_resolution = pi_config.get('resolution')
             
             if not pi_ip:
                 logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
@@ -1064,6 +1067,18 @@ class HardwareMonitor:
             if pi_flip:
                 query_params.append("flip=true")
             
+            # Add angle parameter if configured (e.g. to compensate for rotated mounting)
+            if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
+                query_params.append(f"angle={pi_angle}")
+            
+            # Add square parameter if configured
+            if pi_square:
+                query_params.append("square=true")
+            
+            # Add resolution parameter if configured
+            if pi_resolution:
+                query_params.append(f"resolution={pi_resolution}")
+            
             # Add query parameters to URL
             if query_params:
                 separator = '&' if '?' in image_url else '?'
@@ -1104,8 +1119,18 @@ class HardwareMonitor:
             if total_zoom_factor > 1.0:
                 # Fetch original (non-zoomed) image for display
                 original_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+                original_params = []
                 if pi_flip:
-                    original_url = f"{original_url}?flip=true"
+                    original_params.append("flip=true")
+                if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
+                    original_params.append(f"angle={pi_angle}")
+                if pi_square:
+                    original_params.append("square=true")
+                if pi_resolution:
+                    original_params.append(f"resolution={pi_resolution}")
+                if original_params:
+                    separator = '&' if '?' in original_url else '?'
+                    original_url = f"{original_url}{separator}{'&'.join(original_params)}"
                 
                 logger.info(f"📷 Fetching original (non-zoomed) image from Raspberry Pi for device {device_ip}")
                 original_non_zoomed_frame = await self.capture_frame_from_http(original_url)
@@ -1239,6 +1264,9 @@ class HardwareMonitor:
             pi_port = pi_config.get('port', 8080)
             pi_endpoint = pi_config.get('endpoint', '/image.jpg')
             pi_flip = pi_config.get('flip', False)
+            pi_angle = pi_config.get('angle', 0)
+            pi_square = pi_config.get('square', False)
+            pi_resolution = pi_config.get('resolution')
             
             if not pi_ip:
                 logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
@@ -1258,11 +1286,17 @@ class HardwareMonitor:
                     logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
                     resolved_ip = pi_ip
             
-            # Build URL with query parameters (flip)
+            # Build URL with query parameters (flip, angle)
             base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
             query_params = []
             if pi_flip:
                 query_params.append("flip=true")
+            if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
+                query_params.append(f"angle={pi_angle}")
+            if pi_square:
+                query_params.append("square=true")
+            if pi_resolution:
+                query_params.append(f"resolution={pi_resolution}")
             
             image_url = f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
             logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")

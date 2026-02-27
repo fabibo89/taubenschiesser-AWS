@@ -1039,7 +1039,7 @@ router.post('/:id/position-preview/move', authenticateToken, async (req, res) =>
     // Wait for movement to complete
     await hardwareHelper.waitForMovementComplete(device, movementContext, {
       timeoutMs: 30000,
-      stabilizationMs: 2000
+      stabilizationMs: 1000
     });
 
     res.json({
