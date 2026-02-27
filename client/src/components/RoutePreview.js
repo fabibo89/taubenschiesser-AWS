@@ -208,8 +208,7 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
                   height: 80,
                   borderRadius: '50%',
                   border: '2px solid rgba(255, 0, 0, 0.9)',
-                  boxSizing: 'border-box',
-                  position: 'relative'
+                  boxSizing: 'border-box'
                 }}
               >
                 {/* Diagonale: oben links → unten rechts */}
