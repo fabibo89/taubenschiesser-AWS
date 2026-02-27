@@ -294,6 +294,8 @@ const DeviceCard = ({
 
   useEffect(() => {
     if (isStreaming && device && hasRaspberryPi) {
+      const imgEl = raspberryPiImageRef.current;
+      const timeoutId = raspberryPiLoadTimeoutRef.current;
       const pi = device.camera.raspberryPi;
       const piIp = pi.ip;
       const piPort = pi.port || 8080;
@@ -316,8 +318,6 @@ const DeviceCard = ({
       setRaspberryPiCurrentImage(streamUrl);
       setRaspberryPiIsLoading(false);
       return () => {
-        const imgEl = raspberryPiImageRef.current;
-        const timeoutId = raspberryPiLoadTimeoutRef.current;
         if (imgEl) {
           imgEl.src = '';
           imgEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
