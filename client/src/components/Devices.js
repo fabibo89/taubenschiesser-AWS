@@ -60,7 +60,7 @@ const Devices = () => {
         endpoint: '/image.jpg', 
         streamEndpoint: '/stream.mjpeg', 
         flip: false, 
-        fov: 75,
+        fov: 41,
         angle: 0,
         square: false,
         resolution: ''
@@ -140,7 +140,7 @@ const Devices = () => {
             endpoint: '/image.jpg', 
             streamEndpoint: '/stream.mjpeg', 
             flip: false, 
-            fov: 75,
+            fov: 41,
             angle: 0,
             square: false,
             resolution: ''
@@ -747,22 +747,22 @@ const Devices = () => {
                 />
                 <TextField
                   margin="dense"
-                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  label="FOV nach Flip & Rotation (Grad)"
                   fullWidth
                   variant="outlined"
                   type="number"
-                  value={formData.camera.raspberryPi?.fov || 75}
+                  value={formData.camera.raspberryPi?.fov ?? 41}
                   onChange={(e) => setFormData({
                     ...formData,
                     camera: {
                       ...formData.camera,
                       raspberryPi: { 
                         ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 75
+                        fov: parseFloat(e.target.value) || 41
                       }
                     }
                   })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3)"
+                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
                   inputProps={{ min: 1, max: 180, step: 0.1 }}
                 />
                 <TextField
@@ -1032,22 +1032,22 @@ const Devices = () => {
                 />
                 <TextField
                   margin="dense"
-                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  label="FOV nach Flip & Rotation (Grad)"
                   fullWidth
                   variant="outlined"
                   type="number"
-                  value={formData.camera.raspberryPi?.fov || 75}
+                  value={formData.camera.raspberryPi?.fov ?? 41}
                   onChange={(e) => setFormData({
                     ...formData,
                     camera: {
                       ...formData.camera,
                       raspberryPi: { 
                         ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 75
+                        fov: parseFloat(e.target.value) || 41
                       }
                     }
                   })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3, wird automatisch an Tapo-FOV angepasst)"
+                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
                   inputProps={{ min: 1, max: 180, step: 0.1 }}
                 />
                 <FormControlLabel

@@ -17,6 +17,9 @@ import requests
 from io import BytesIO
 from PIL import Image
 import logging
+import copy
+
+from angle_helper import enrich_detections_esp_angles as cv_enrich_detections_esp_angles
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1487,6 +1490,44 @@ async def stitch_panorama(request: StitchPanoramaRequest):
                 "error_code": "UNEXPECTED_ERROR"
             }
         )
+
+
+@app.post("/compute-esp-angles")
+async def compute_esp_angles(request: Dict[str, Any]):
+    """
+    Enrich detections and target_bird with esp_rot, esp_tilt, is_target_bird.
+    Same formula as hardware-monitor (shoot). Called by Node when returning detections for the UI.
+    Body: { detections, target_bird, camera_position, image_info, zoom_factor, camera_config, camera_source }
+    Returns the same object with detections/target_bird mutated (esp_rot, esp_tilt, is_target_bird added).
+    """
+    try:
+        detections = request.get("detections") or []
+        target_bird = request.get("target_bird")
+        camera_position = request.get("camera_position") or {}
+        image_info = request.get("image_info") or {}
+        zoom_factor = float(request.get("zoom_factor") or 1.0)
+        camera_config = request.get("camera_config") or {}
+        camera_source = request.get("camera_source")
+        raspberry_pi_image_info = (image_info.get("raspberry_pi") if isinstance(image_info.get("raspberry_pi"), dict) else None)
+        if not camera_position or camera_position.get("rotation") is None or camera_position.get("tilt") is None or not image_info:
+            return request
+        detections = copy.deepcopy(detections)
+        target_bird = copy.deepcopy(target_bird) if target_bird else None
+        cv_enrich_detections_esp_angles(
+            detections,
+            target_bird,
+            camera_position,
+            image_info,
+            zoom_factor,
+            camera_config,
+            camera_source,
+            raspberry_pi_image_info,
+        )
+        return {"detections": detections, "target_bird": target_bird}
+    except Exception as e:
+        logging.exception("compute_esp_angles error")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

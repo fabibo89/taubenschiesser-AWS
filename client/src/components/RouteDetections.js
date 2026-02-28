@@ -87,6 +87,7 @@ function RoutePointCard({ coord, index, detections }) {
 
   const rotation = coord.rotation ?? 0;
   const tilt = coord.tilt ?? 0;
+  const zoom = coord.zoom ?? 1;
 
   const hoveredDetection = hoveredDetectionId
     ? detections.find((d) => d._id === hoveredDetectionId)
@@ -111,12 +112,12 @@ function RoutePointCard({ coord, index, detections }) {
     const imgH = info.original_size?.height || info.zoomed_size?.height || 1;
     const meta = { _imgW: imgW, _imgH: imgH, _imageInfo: info, _detectionId: d._id };
     if (d.target_bird && (d.target_bird.bbox || d.target_bird.position)) {
-      allBoxes.push({ ...d.target_bird, ...meta });
+      allBoxes.push({ ...d.target_bird, ...meta, isTargetBird: true });
     }
     (d.detections || []).forEach((det) => {
       if (det.class !== 'bird') return;
       if (!det.bbox && !det.position) return;
-      allBoxes.push({ ...det, ...meta });
+      allBoxes.push({ ...det, ...meta, isTargetBird: !!det.is_target_bird });
     });
   });
 
@@ -167,7 +168,7 @@ function RoutePointCard({ coord, index, detections }) {
     <Card variant="outlined" sx={{ height: '100%' }}>
       <CardContent>
         <Typography variant="subtitle2" gutterBottom>
-          Position {index + 1} — Rotation {rotation}°, Tilt {tilt}°
+          Position {index + 1} — Rotation {rotation}°, Tilt {tilt}°, Zoom {zoom}x
         </Typography>
         {!imageUrl && (
           <Typography variant="body2" color="text.secondary">
@@ -250,10 +251,11 @@ function RoutePointCard({ coord, index, detections }) {
                     h = det.bbox.height * sy;
                   } else return null;
                   const detectionId = det._detectionId;
+                  const isTarget = det.isTargetBird || det.is_target_bird;
                   return (
                     <Box
                       key={idx}
-                      onMouseEnter={(e) => handleBoxMouseEnter(e, detectionId, { position: det.position, bbox: det.bbox })}
+                      onMouseEnter={(e) => handleBoxMouseEnter(e, detectionId, { position: det.position, bbox: det.bbox, esp_rot: det.esp_rot, esp_tilt: det.esp_tilt, isTargetBird: isTarget })}
                       onMouseLeave={scheduleClose}
                       sx={{
                         position: 'absolute',
@@ -261,9 +263,9 @@ function RoutePointCard({ coord, index, detections }) {
                         top: y,
                         width: Math.max(w, 4),
                         height: Math.max(h, 4),
-                        border: '3px solid #f44336',
+                        border: `3px solid ${isTarget ? '#4caf50' : '#f44336'}`,
                         boxSizing: 'border-box',
-                        boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                        boxShadow: isTarget ? '0 0 0 2px rgba(76,175,80,0.6)' : '0 0 0 1px rgba(0,0,0,0.5)',
                         pointerEvents: 'auto',
                         cursor: 'pointer'
                       }}
@@ -303,13 +305,23 @@ function RoutePointCard({ coord, index, detections }) {
                         : '…'}
                     </Typography>
                     {hoveredBoxInfo && (hoveredBoxInfo.position || hoveredBoxInfo.bbox) && (
-                      <Typography variant="caption" display="block" color="text.secondary">
-                        Pos: {hoveredBoxInfo.position
-                          ? `(${Number(hoveredBoxInfo.position.center_x).toFixed(0)}, ${Number(hoveredBoxInfo.position.center_y).toFixed(0)}), ${Number(hoveredBoxInfo.position.width).toFixed(0)} × ${Number(hoveredBoxInfo.position.height).toFixed(0)} px`
-                          : hoveredBoxInfo.bbox
-                            ? `(${Number(hoveredBoxInfo.bbox.x).toFixed(0)}, ${Number(hoveredBoxInfo.bbox.y).toFixed(0)}), ${Number(hoveredBoxInfo.bbox.width).toFixed(0)} × ${Number(hoveredBoxInfo.bbox.height).toFixed(0)} px`
-                            : null}
-                      </Typography>
+                      <>
+                        <Typography variant="caption" display="block" color="text.secondary">
+                          Pos: {hoveredBoxInfo.position
+                            ? `(${Number(hoveredBoxInfo.position.center_x).toFixed(0)}, ${Number(hoveredBoxInfo.position.center_y).toFixed(0)}), ${Number(hoveredBoxInfo.position.width).toFixed(0)} × ${Number(hoveredBoxInfo.position.height).toFixed(0)} px`
+                            : hoveredBoxInfo.bbox
+                              ? `(${Number(hoveredBoxInfo.bbox.x).toFixed(0)}, ${Number(hoveredBoxInfo.bbox.y).toFixed(0)}), ${Number(hoveredBoxInfo.bbox.width).toFixed(0)} × ${Number(hoveredBoxInfo.bbox.height).toFixed(0)} px`
+                              : null}
+                        </Typography>
+                        {(hoveredBoxInfo.esp_rot != null || hoveredBoxInfo.esp_tilt != null) && (
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            ESP: Rot {hoveredBoxInfo.esp_rot ?? '–'}°, Tilt {hoveredBoxInfo.esp_tilt ?? '–'}°
+                          </Typography>
+                        )}
+                        {hoveredBoxInfo.isTargetBird && (
+                          <Chip label="Zielvogel" size="small" color="primary" sx={{ mt: 0.5 }} />
+                        )}
+                      </>
                     )}
                   </Box>
                 )}
@@ -479,11 +491,13 @@ export default function RouteDetections() {
     const coordIndex = coordinates.findIndex(
       (c) => (c.rotation ?? null) === (d.camera_position?.rotation ?? null) && (c.tilt ?? null) === (d.camera_position?.tilt ?? null)
     );
+    const zoomVal = d.zoom_factor ?? (coordIndex >= 0 ? coordinates[coordIndex]?.zoom : null) ?? 1;
     const posLabel = coordIndex >= 0 ? `Position ${coordIndex + 1}` : `${rot}°, ${til}°`;
+    const posLabelWithZoom = coordIndex >= 0 ? `${posLabel}, Zoom ${zoomVal}x` : `${rot}°, ${til}° / Zoom ${zoomVal}x`;
     const info = d.image_info || {};
     const srcW = info.original_size?.width ?? info.zoomed_size?.width ?? '-';
     const srcH = info.original_size?.height ?? info.zoomed_size?.height ?? '-';
-    const mapping = coordIndex >= 0 ? `→ Routenbild ${posLabel}` : '→ Kein passendes Routenbild';
+    const mapping = coordIndex >= 0 ? `→ Routenbild ${posLabelWithZoom}` : '→ Kein passendes Routenbild';
 
     const birds = [];
     function addBird(bird, isTargetBird) {
@@ -495,7 +509,13 @@ export default function RouteDetections() {
         const b = bird.bbox;
         drawPos = `bbox (${Math.round(b.x)}, ${Math.round(b.y)}) ${Math.round(b.width)}×${Math.round(b.height)}`;
       }
-      birds.push({ drawPosition: drawPos, isTargetBird });
+      const isTarget = bird.is_target_bird ?? isTargetBird;
+      birds.push({
+        drawPosition: drawPos,
+        isTargetBird: isTarget,
+        esp_rot: bird.esp_rot,
+        esp_tilt: bird.esp_tilt
+      });
     }
     if (d.target_bird && (d.target_bird.bbox || d.target_bird.position)) {
       addBird(d.target_bird, true);
@@ -508,7 +528,7 @@ export default function RouteDetections() {
     const hasTargetBird = !!(d.target_bird && (d.target_bird.bbox || d.target_bird.position));
     clusteredDetections.push({
       detectionId: d._id,
-      routePosition: `${rot}°, ${til}°`,
+      routePosition: `${rot}°, ${til}°${zoomVal !== 1 ? ` / Zoom ${zoomVal}x` : ''}`,
       date: d.processedAt,
       sourceImage: `${srcW} × ${srcH}`,
       mapping,
@@ -607,19 +627,20 @@ export default function RouteDetections() {
                   <TableCell>Zielvogel</TableCell>
                   <TableCell>Routenposition</TableCell>
                   <TableCell>Position (Zeichnung) / Anzahl Tauben</TableCell>
+                  <TableCell>ESP Rot / Tilt</TableCell>
                   <TableCell>Quellbild (Breite × Höhe)</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {loadingDetections ? (
                   <TableRow>
-                    <TableCell colSpan={6} align="center">
+                    <TableCell colSpan={7} align="center">
                       <CircularProgress size={24} sx={{ my: 1 }} />
                     </TableCell>
                   </TableRow>
                 ) : clusteredDetections.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} align="center" sx={{ color: 'text.secondary' }}>
+                    <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary' }}>
                       Keine Tauben im gewählten Zeitraum.
                     </TableCell>
                   </TableRow>
@@ -655,15 +676,21 @@ export default function RouteDetections() {
                               </Box>
                             ) : '-'}
                           </TableCell>
+                          <TableCell>-</TableCell>
                           <TableCell>{cluster.sourceImage}</TableCell>
                         </TableRow>
                         {hasBirds && isExpanded && cluster.birds.map((bird, idx) => (
-                          <TableRow key={`${cluster.detectionId}-bird-${idx}`} sx={{ bgcolor: 'action.hover' }}>
+                          <TableRow key={`${cluster.detectionId}-bird-${idx}`} sx={{ bgcolor: bird.isTargetBird ? 'action.selected' : 'action.hover' }}>
                             <TableCell sx={{ width: 48 }} />
                             <TableCell />
-                            <TableCell>{bird.isTargetBird ? 'Ja' : 'Nein'}</TableCell>
+                            <TableCell>{bird.isTargetBird ? 'Ja (Ziel)' : 'Nein'}</TableCell>
                             <TableCell sx={{ pl: 3 }} />
                             <TableCell>{bird.drawPosition}</TableCell>
+                            <TableCell>
+                              {bird.esp_rot != null || bird.esp_tilt != null
+                                ? `Rot ${bird.esp_rot ?? '–'}°, Tilt ${bird.esp_tilt ?? '–'}°`
+                                : '–'}
+                            </TableCell>
                             <TableCell />
                           </TableRow>
                         ))}

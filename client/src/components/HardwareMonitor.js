@@ -718,6 +718,26 @@ const HardwareMonitor = () => {
                         <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
                           <strong>Verarbeitungszeit:</strong> {tapoCvResults.processing_time?.toFixed(2) || 0}ms
                         </Typography>
+                        {tapoCvResults.detections && tapoCvResults.detections.length > 0 && (
+                          <Box mt={2}>
+                            <Typography variant="subtitle2" gutterBottom>Detektierte Objekte:</Typography>
+                            <List dense disablePadding>
+                              {tapoCvResults.detections.map((detection, index) => (
+                                <ListItem key={index} sx={detection.is_target_bird ? { bgcolor: 'action.selected', borderRadius: 1 } : {}}>
+                                  <ListItemText
+                                    primary={
+                                      <Box component="span" display="flex" alignItems="center" gap={1}>
+                                        {detection.is_target_bird && <Chip label="Ziel" size="small" color="primary" />}
+                                        {`${detection.class} - ${(detection.confidence * 100).toFixed(1)}%`}
+                                      </Box>
+                                    }
+                                    secondary={(detection.esp_rot != null || detection.esp_tilt != null) && `ESP: Rot ${detection.esp_rot ?? '–'}°, Tilt ${detection.esp_tilt ?? '–'}°`}
+                                  />
+                                </ListItem>
+                              ))}
+                            </List>
+                          </Box>
+                        )}
                       </Box>
                     </CardContent>
                   </Card>
@@ -759,6 +779,26 @@ const HardwareMonitor = () => {
                         <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
                           <strong>Verarbeitungszeit:</strong> {raspberryPiCvResults.processing_time?.toFixed(2) || 0}ms
                         </Typography>
+                        {raspberryPiCvResults.detections && raspberryPiCvResults.detections.length > 0 && (
+                          <Box mt={2}>
+                            <Typography variant="subtitle2" gutterBottom>Detektierte Objekte:</Typography>
+                            <List dense disablePadding>
+                              {raspberryPiCvResults.detections.map((detection, index) => (
+                                <ListItem key={index} sx={detection.is_target_bird ? { bgcolor: 'action.selected', borderRadius: 1 } : {}}>
+                                  <ListItemText
+                                    primary={
+                                      <Box component="span" display="flex" alignItems="center" gap={1}>
+                                        {detection.is_target_bird && <Chip label="Ziel" size="small" color="primary" />}
+                                        {`${detection.class} - ${(detection.confidence * 100).toFixed(1)}%`}
+                                      </Box>
+                                    }
+                                    secondary={(detection.esp_rot != null || detection.esp_tilt != null) && `ESP: Rot ${detection.esp_rot ?? '–'}°, Tilt ${detection.esp_tilt ?? '–'}°`}
+                                  />
+                                </ListItem>
+                              ))}
+                            </List>
+                          </Box>
+                        )}
                       </Box>
                     </CardContent>
                   </Card>
@@ -844,10 +884,28 @@ const HardwareMonitor = () => {
                       <List>
                         {cvResults.detections.map((detection, index) => (
                           <React.Fragment key={index}>
-                            <ListItem>
+                            <ListItem
+                              sx={detection.is_target_bird ? { bgcolor: 'action.selected', borderRadius: 1 } : {}}
+                            >
                               <ListItemText
-                                primary={`${detection.class} - ${(detection.confidence * 100).toFixed(1)}%`}
-                                secondary={`Position: (${detection.position?.center_x?.toFixed(0)}, ${detection.position?.center_y?.toFixed(0)})`}
+                                primary={
+                                  <Box component="span" display="flex" alignItems="center" gap={1}>
+                                    {detection.is_target_bird && (
+                                      <Chip label="Ziel" size="small" color="primary" />
+                                    )}
+                                    {`${detection.class} - ${(detection.confidence * 100).toFixed(1)}%`}
+                                  </Box>
+                                }
+                                secondary={
+                                  <>
+                                    {detection.position && `Position: (${detection.position.center_x?.toFixed(0)}, ${detection.position.center_y?.toFixed(0)})`}
+                                    {(detection.esp_rot != null || detection.esp_tilt != null) && (
+                                      <Typography component="span" display="block" variant="body2" color="textSecondary">
+                                        ESP: Rot {detection.esp_rot ?? '–'}°, Tilt {detection.esp_tilt ?? '–'}°
+                                      </Typography>
+                                    )}
+                                  </>
+                                }
                               />
                             </ListItem>
                             {index < cvResults.detections.length - 1 && <Divider />}

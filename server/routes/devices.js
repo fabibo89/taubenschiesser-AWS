@@ -1149,7 +1149,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           
           // Calculate FOV-based zoom adjustment for Raspberry Pi (like hardware monitor does)
           const tapoFov = camera.tapo?.fov || 110;
-          const piFov = camera.raspberryPi?.fov || 75;
+          const piFov = camera.raspberryPi?.fov || 41;
           let totalZoomFactor = 1.0;
           
           if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {
@@ -1359,7 +1359,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
         const baseZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
         
         const tapoFov = camera.tapo?.fov || 110;
-        const piFov = camera.raspberryPi?.fov || 75;
+        const piFov = camera.raspberryPi?.fov || 41;
         let totalZoomFactor = 1.0;
         
         if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {

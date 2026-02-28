@@ -6,6 +6,37 @@ const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+
+/** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
+async function enrichDetectionForResponse(detection, device) {
+  if (!detection || !device) return;
+  const cameraPosition = detection.camera_position;
+  const imageInfo = detection.image_info;
+  if (!cameraPosition || cameraPosition.rotation == null || cameraPosition.tilt == null || !imageInfo) return;
+  const cameraConfig = device.camera;
+  if (!cameraConfig) return;
+
+  try {
+    const toPlain = (x) => (x && typeof x.toObject === 'function' ? x.toObject() : (x && typeof x === 'object' ? { ...x } : x));
+    const payload = {
+      detections: Array.isArray(detection.detections) ? detection.detections.map(d => toPlain(d)) : [],
+      target_bird: detection.target_bird ? toPlain(detection.target_bird) : null,
+      camera_position: cameraPosition,
+      image_info: imageInfo,
+      zoom_factor: detection.zoom_factor ?? 1.0,
+      camera_config: cameraConfig,
+      camera_source: detection.camera_source
+    };
+    const res = await axios.post(`${cvServiceUrl}/compute-esp-angles`, payload, { timeout: 5000 });
+    if (res.data && Array.isArray(res.data.detections)) {
+      detection.detections = res.data.detections;
+      detection.target_bird = res.data.target_bird != null ? res.data.target_bird : detection.target_bird;
+    }
+  } catch (err) {
+    logger.debug('CV service compute-esp-angles unavailable, skipping angle enrichment:', err.message || err.code);
+  }
+}
 
 const router = express.Router();
 
@@ -262,11 +293,15 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)
-      .populate('device', 'name deviceId type');
+      .populate('device', 'name deviceId type camera');
+
+    for (const d of detections) {
+      await enrichDetectionForResponse(d, d.device);
+    }
 
     const total = await Detection.countDocuments(query);
 
@@ -524,7 +559,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
 router.get('/detections/:id', authenticateToken, async (req, res) => {
   try {
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'name deviceId type owner');
+      .populate('device', 'name deviceId type owner camera');
     
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -535,6 +570,7 @@ router.get('/detections/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json(detection);
   } catch (error) {
     logger.error('Get detection error:', error);
@@ -551,7 +587,7 @@ router.patch('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
+      .populate('device', 'owner camera');
 
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -567,6 +603,7 @@ router.patch('/detections/:id', authenticateToken, async (req, res) => {
     };
     await detection.save();
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json(detection);
   } catch (error) {
     logger.error('Patch detection error:', error);
@@ -604,7 +641,7 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     const { action } = req.body; // 'confirm_pigeon', 'no_pigeon', 'delete'
     
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
+      .populate('device', 'owner camera');
     
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -636,6 +673,7 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     }
     await detection.save();
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json({
       message: 'Detection classified successfully',
       detection

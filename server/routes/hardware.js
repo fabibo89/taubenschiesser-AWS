@@ -2,7 +2,6 @@ const express = require('express');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
-
 const router = express.Router();
 
 // Hardware Monitor Detection Endpoint (no auth required)
@@ -71,7 +70,9 @@ router.post('/detection', async (req, res) => {
     if (target_bird && (target_bird.bbox || target_bird.position)) {
       detectionData.target_bird = target_bird;
     }
-    
+
+    // esp_rot / esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
+
     // Add images based on mode (single or dual camera)
     if (tapo_original_image || raspberry_pi_original_image) {
       // Dual camera mode - both cameras

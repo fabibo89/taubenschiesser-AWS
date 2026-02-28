@@ -11,7 +11,6 @@ import logging
 import os
 import time
 import socket
-import math
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import cv2
@@ -20,6 +19,16 @@ from threading import Lock
 import paho.mqtt.client as mqtt
 import threading
 import base64
+import sys
+
+# Import shared angle logic from cv-service (single source of truth)
+_cv_service_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cv-service')
+if _cv_service_dir not in sys.path:
+    sys.path.insert(0, _cv_service_dir)
+from angle_helper import (
+    calculate_angle_adjustment as shared_calculate_angle_adjustment,
+    enrich_detections_esp_angles as shared_enrich_detections_esp_angles,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -844,11 +853,13 @@ class HardwareMonitor:
                     birds = [d for d in tapo_cv_result.get('detections', []) if d.get('class') == 'bird']
                     if birds:
                         target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                        target_bird['camera_source'] = 'tapo'
                 if not target_bird and raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
                     birds = [d for d in raspberry_pi_cv_result.get('detections', []) if d.get('class') == 'bird']
                     if birds:
                         target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                
+                        target_bird['camera_source'] = 'raspberry-pi'
+
                 await self.trigger_shoot(device, target_bird=target_bird)
             else:
                 # No birds found - still send completion event and show images
@@ -1017,7 +1028,7 @@ class HardwareMonitor:
             # Get FOV values for FOV-based zoom adjustment
             tapo_config = camera_config.get('tapo', {})
             tapo_fov = tapo_config.get('fov', 110)  # Default Tapo FOV
-            pi_fov = pi_config.get('fov', 75)  # Default Raspberry Pi FOV
+            pi_fov = pi_config.get('fov', 41)  # Default: effective FOV after flip & rotation
             
             # Get zoom factor from route configuration if in route mode
             route_zoom_factor = 1.0
@@ -1032,14 +1043,14 @@ class HardwareMonitor:
             # Calculate total zoom factor for Raspberry Pi
             # Logic:
             # - Tapo is master with FOV = tapo_fov (e.g., 110°)
-            # - Raspberry Pi has smaller FOV = pi_fov (e.g., 75°)
+            # - Raspberry Pi has effective FOV = pi_fov (e.g., 41° after flip/rotation)
             # - Raspberry Pi already shows a smaller field of view (more zoomed in)
             # - When route zoom is applied (e.g., 2x), it's relative to Tapo's FOV
             # - Raspberry Pi needs less zoom: route_zoom × (pi_fov / tapo_fov)
             #   because it already has a smaller FOV, so it needs proportionally less zoom
             # 
             # Formula: total_zoom = route_zoom × (pi_fov / tapo_fov)
-            # Example: route_zoom=2, pi_fov=75°, tapo_fov=110° → total_zoom = 2 × (75/110) = 1.364
+            # Example: route_zoom=2, pi_fov=41°, tapo_fov=110° → total_zoom = 2 × (41/110) ≈ 0.745
             total_zoom_factor = 1.0
             if tapo_fov > 0 and pi_fov > 0:
                 if route_zoom_factor > 1.0:
@@ -1052,7 +1063,7 @@ class HardwareMonitor:
                     # No route zoom: Raspberry Pi already has smaller FOV, so no additional zoom needed
                     # (The smaller FOV of Raspberry Pi is its natural state, matching Tapo's view)
                     total_zoom_factor = 1.0
-                    logger.info(f"📐 No route zoom: Raspberry Pi FOV={pi_fov}° is naturally smaller than Tapo FOV={tapo_fov}°")
+                    logger.info(f"📐 No route zoom: Raspberry Pi effective FOV={pi_fov}° (after flip/rotation)")
             
             # Build URL with query parameters
             image_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
@@ -1526,11 +1537,45 @@ class HardwareMonitor:
                                 all_objects[obj_class] += 1
                             else:
                                 all_objects[obj_class] = 1
-                        
-                        # Send CV analysis result event
+
+                        # Pick target_bird and enrich detections with esp_rot, esp_tilt, is_target_bird for UI
+                        device_ip_dual = (device.get('taubenschiesser') or {}).get('ip') if isinstance(device.get('taubenschiesser'), dict) else None
+                        target_bird_dual = None
+                        if detections:
+                            birds = [d for d in detections if d.get('class') == 'bird']
+                            if birds:
+                                target_bird_dual = max(birds, key=lambda x: x.get('confidence', 0))
+                                target_bird_dual['camera_source'] = camera_source
+                            image_info_dual = {
+                                'zoomed_size': {'width': zoomed_frame.shape[1], 'height': zoomed_frame.shape[0]},
+                                'original_size': {'width': original_frame.shape[1], 'height': original_frame.shape[0]},
+                            }
+                            current_rot, current_til = 0.0, 0.0
+                            if device_ip_dual and device_ip_dual in self.device_positions:
+                                pos = self.device_positions[device_ip_dual]
+                                current_rot = float(pos.get('rot') or 0)
+                                current_til = float(pos.get('tilt') or 0)
+                            else:
+                                act = device.get('actions', {})
+                                if act.get('mode') == 'route' and device_ip_dual:
+                                    route_coords = act.get('route', {}).get('coordinates', [])
+                                    ri = self.movement_queue.get(device_ip_dual, 0)
+                                    if ri < len(route_coords):
+                                        current_rot, current_til = self.apply_position_inversion(device, int(route_coords[ri].get('rotation') or 0), int(route_coords[ri].get('tilt') or 0))
+                            zf = 1.0
+                            act = device.get('actions', {})
+                            if act.get('mode') == 'route' and device_ip_dual:
+                                route_coords = act.get('route', {}).get('coordinates', [])
+                                ri = self.movement_queue.get(device_ip_dual, 0)
+                                if ri < len(route_coords):
+                                    zf = float(route_coords[ri].get('zoom') or 1.0)
+                            self._enrich_detections_esp_angles(device, detections, target_bird_dual, image_info_dual, zf, current_rot, current_til, camera_source)
+
+                        # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
                         await self.send_monitor_event(device, 'cv_analysis_complete', {
                             'bird_count': bird_count,
                             'detections': detections,
+                            'target_bird': target_bird_dual,
                             'processing_time': processing_time,
                             'birds_found': result.get('birds_found', False),
                             'confidence_level': result.get('confidence_level', 0),
@@ -1619,11 +1664,50 @@ class HardwareMonitor:
                                 all_objects[obj_class] += 1
                             else:
                                 all_objects[obj_class] = 1
-                        
-                        # Send CV analysis result event
+
+                        # Pick target_bird and enrich detections with esp_rot, esp_tilt, is_target_bird for UI
+                        target_bird_for_event = None
+                        if detections:
+                            birds = [d for d in detections if d.get('class') == 'bird']
+                            if birds:
+                                target_bird_for_event = max(birds, key=lambda x: x.get('confidence', 0))
+                                target_bird_for_event['camera_source'] = camera_source
+                            image_info = {
+                                'zoomed_size': {'width': zoomed_frame.shape[1], 'height': zoomed_frame.shape[0]},
+                                'original_size': {'width': original_frame.shape[1], 'height': original_frame.shape[0]},
+                            }
+                            self.last_image_info = image_info
+                            current_rotation, current_tilt = 0.0, 0.0
+                            if device_ip and device_ip in self.device_positions:
+                                pos = self.device_positions[device_ip]
+                                current_rotation = float(pos.get('rot') or 0)
+                                current_tilt = float(pos.get('tilt') or 0)
+                            else:
+                                actions = device.get('actions', {})
+                                if actions.get('mode') == 'route':
+                                    route_coordinates = actions.get('route', {}).get('coordinates', [])
+                                    route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                                    if route_index < len(route_coordinates):
+                                        current_rotation = float(route_coordinates[route_index].get('rotation') or 0)
+                                        current_tilt = float(route_coordinates[route_index].get('tilt') or 0)
+                                        current_rotation, current_tilt = self.apply_position_inversion(device, int(current_rotation), int(current_tilt))
+                            zoom_factor = 1.0
+                            actions = device.get('actions', {})
+                            if actions.get('mode') == 'route' and device_ip:
+                                route_coordinates = actions.get('route', {}).get('coordinates', [])
+                                route_index = self.movement_queue.get(device_ip, 0)
+                                if route_index < len(route_coordinates):
+                                    zoom_factor = float(route_coordinates[route_index].get('zoom') or 1.0)
+                            self._enrich_detections_esp_angles(
+                                device, detections, target_bird_for_event,
+                                image_info, zoom_factor, current_rotation, current_tilt, camera_source,
+                            )
+
+                        # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
                         await self.send_monitor_event(device, 'cv_analysis_complete', {
                             'bird_count': bird_count,
                             'detections': detections,
+                            'target_bird': target_bird_for_event,
                             'processing_time': processing_time,
                             'birds_found': result.get('birds_found', False),
                             'confidence_level': result.get('confidence_level', 0),
@@ -1705,15 +1789,16 @@ class HardwareMonitor:
                     target_bird = max(birds, key=lambda x: x.get('confidence', 0))
                     logger.info(f"🎯 Target bird selected: confidence={target_bird.get('confidence', 0):.2f}, camera={target_bird.get('camera_source', 'unknown')}")
             
-            # Get zoom factor
+            # Get zoom factor and route position
             zoom_factor = 1.0
             actions = device.get('actions', {})
-            if actions.get('mode') == 'route':
-                route_coordinates = actions.get('route', {}).get('coordinates', [])
-                route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
-                if route_index < len(route_coordinates):
-                    zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
-            
+            route_coordinates = actions.get('route', {}).get('coordinates', []) if actions.get('mode') == 'route' else []
+            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            if actions.get('mode') == 'route' and route_index < len(route_coordinates):
+                zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
+
+            # esp_rot/esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
+
             # Prepare image data
             detection_data = {
                 "deviceId": device_id,
@@ -1840,8 +1925,9 @@ class HardwareMonitor:
                 if birds:
                     # Sort by confidence and take the highest
                     target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                    target_bird['camera_source'] = camera_source  # for FOV selection in trigger_shoot
                     logger.info(f"🎯 Target bird selected ({camera_source}): confidence={target_bird.get('confidence', 0):.2f}, bbox={target_bird.get('bbox')}")
-            
+
             # Store image info for angle calculations
             image_info = {
                 "original_size": {
@@ -1880,14 +1966,16 @@ class HardwareMonitor:
                     logger.debug(f"⚠️ Keine Kamera-Position verfügbar für Device {device_ip}")
             else:
                 logger.debug(f"⚠️ Device {device_ip} nicht in device_positions gefunden")
-            
+
+            # esp_rot/esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
+
             # Prepare detailed detection data
             detection_data = {
                 "deviceId": device_id,
                 "original_image": f"data:image/jpeg;base64,{original_image_base64}",
                 "zoomed_image": f"data:image/jpeg;base64,{zoomed_image_base64}",
                 "detections": cv_result.get('detections', []),
-                "target_bird": target_bird,  # Which bird was targeted for shooting
+                "target_bird": target_bird,  # Which bird was targeted for shooting (with esp_rot, esp_tilt)
                 "bird_count": cv_result.get('bird_count', 0),
                 "confidence_level": cv_result.get('confidence_level', 0),
                 "processing_time": cv_result.get('processing_time', 0),
@@ -2041,41 +2129,32 @@ class HardwareMonitor:
         except Exception as e:
             logger.error(f"Error updating device last detection: {e}")
     
-    def calculate_angle_adjustment(self, bbox: Dict, image_width: int, image_height: int, zoom_factor: float = 1.0) -> tuple:
-        """Calculate rotation and tilt adjustment needed to center the target"""
-        try:
-            # Get bbox center in pixels
-            bbox_center_x = bbox.get('x', 0) + bbox.get('width', 0) / 2
-            bbox_center_y = bbox.get('y', 0) + bbox.get('height', 0) / 2
-            
-            # Image center
-            image_center_x = image_width / 2
-            image_center_y = image_height / 2
-            
-            # Calculate pixel offset from center
-            offset_x = bbox_center_x - image_center_x
-            offset_y = bbox_center_y - image_center_y
-            
-            # Convert pixel offset to degrees
-            # Assuming: 1280x720 image ≈ 60° horizontal FOV, 34° vertical FOV (typical for Tapo)
-            # Adjust for zoom - higher zoom = narrower FOV
-            horizontal_fov = 60.0 / zoom_factor
-            vertical_fov = 34.0 / zoom_factor
-            
-            degrees_per_pixel_x = horizontal_fov / image_width
-            degrees_per_pixel_y = vertical_fov / image_height
-            
-            rotation_adjustment = offset_x * degrees_per_pixel_x
-            tilt_adjustment = -offset_y * degrees_per_pixel_y  # Negative because y increases downward
-            
-            logger.info(f"📐 Angle calculation: offset=({offset_x:.1f}, {offset_y:.1f})px, adjustment=({rotation_adjustment:.2f}°, {tilt_adjustment:.2f}°)")
-            
-            return rotation_adjustment, tilt_adjustment
-            
-        except Exception as e:
-            logger.error(f"Error calculating angle adjustment: {e}")
-            return 0, 0
-    
+    def _enrich_detections_esp_angles(
+        self,
+        device: Dict,
+        detections: List[Dict],
+        target_bird: Optional[Dict],
+        image_info: Dict,
+        zoom_factor: float,
+        current_rotation: float,
+        current_tilt: float,
+        camera_source: Optional[str] = None,
+    ) -> None:
+        """Add esp_rot, esp_tilt and is_target_bird (uses shared cv-service angle_helper)."""
+        camera_position = {'rotation': current_rotation, 'tilt': current_tilt}
+        camera_config = device.get('camera', {}) or {}
+        raspberry_pi_image_info = image_info.get('raspberry_pi') if isinstance(image_info.get('raspberry_pi'), dict) else None
+        shared_enrich_detections_esp_angles(
+            detections,
+            target_bird,
+            camera_position,
+            image_info,
+            zoom_factor,
+            camera_config,
+            camera_source,
+            raspberry_pi_image_info,
+        )
+
     async def trigger_shoot(self, device: Dict, target_bird: Dict = None):
         """Trigger shoot on device, optionally aiming at target bird first"""
         try:
@@ -2121,21 +2200,27 @@ class HardwareMonitor:
                         zoomed_size = image_info.get('zoomed_size', {})
                         img_width = zoomed_size.get('width', 426)
                         img_height = zoomed_size.get('height', 240)
-                        
-                        rot_adjust, tilt_adjust = self.calculate_angle_adjustment(
-                            target_bird['bbox'], 
-                            img_width, 
+
+                        # Use FOV from device settings for the camera that produced target_bird
+                        cam_source = target_bird.get('camera_source') if isinstance(target_bird, dict) else None
+
+                        camera_config = device.get('camera', {}) or {}
+                        rot_adjust, tilt_adjust = shared_calculate_angle_adjustment(
+                            target_bird['bbox'],
+                            img_width,
                             img_height,
-                            zoom_factor
+                            zoom_factor,
+                            camera_config,
+                            cam_source,
                         )
                         
-                        # Calculate new position
+                        # Calculate new position (absolute degrees; ESP "move" expects absolute, not relative)
                         target_rotation = current_rotation + rot_adjust
                         target_tilt = current_tilt + tilt_adjust
-                        
+
                         logger.info(f"🎯 Moving from ({current_rotation}°, {current_tilt}°) to ({target_rotation:.1f}°, {target_tilt:.1f}°)")
-                        
-                        # Move to target
+
+                        # Move to target (ESP interprets "move" as absolute rot/tilt)
                         aim_command = {
                             "type": "move",
                             "position": {

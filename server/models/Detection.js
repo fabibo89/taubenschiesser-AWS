@@ -58,7 +58,10 @@ const detectionSchema = new mongoose.Schema({
       type: String,
       enum: ['tapo', 'raspberry-pi', 'both', 'unknown'],
       default: 'unknown'
-    }
+    },
+    esp_rot: Number,
+    esp_tilt: Number,
+    is_target_bird: Boolean
   }],
   target_bird: {
     class: String,
@@ -74,7 +77,10 @@ const detectionSchema = new mongoose.Schema({
       center_y: Number,
       width: Number,
       height: Number
-    }
+    },
+    esp_rot: Number,
+    esp_tilt: Number,
+    is_target_bird: Boolean
   },
   processedAt: {
     type: Date,
