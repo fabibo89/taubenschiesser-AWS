@@ -132,5 +132,7 @@ detectionSchema.index({ device: 1, processedAt: -1 });
 detectionSchema.index({ processedAt: -1 });
 // For unclassified list (Tauben-Tinder): find by device + classification_status + sort by date
 detectionSchema.index({ device: 1, classification_status: 1, processedAt: -1 });
+// Covering index for GET /detections/statistics (30-day dashboard) – avoids reading full ~3MB docs
+detectionSchema.index({ device: 1, processedAt: -1, classification_status: 1, temperature: 1 });
 
 module.exports = mongoose.model('Detection', detectionSchema);

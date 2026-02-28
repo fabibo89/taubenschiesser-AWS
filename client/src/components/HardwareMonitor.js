@@ -339,7 +339,9 @@ const HardwareMonitor = () => {
       case 'analysis_started':
         return 'Analyse gestartet';
       case 'image_source':
-        return `Bildquelle: ${event.data.source === 'local' ? 'Lokal' : 'Tapo Kamera'}`;
+        const src = event.data.source;
+        const sourceLabel = src === 'local' ? 'Lokal' : src === 'tapo' ? 'Tapo Kamera' : src === 'raspberry-pi' ? 'Raspberry Pi Kamera' : (src || 'Kamera');
+        return `Bildquelle: ${sourceLabel}`;
       case 'capturing_image':
         return 'Bild wird aufgenommen...';
       case 'image_captured':

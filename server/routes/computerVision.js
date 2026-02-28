@@ -402,7 +402,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
     startDate.setDate(startDate.getDate() - daysNum);
     startDate.setHours(0, 0, 0, 0);
 
-    const result = await Detection.aggregate([
+    const statsPipeline = [
       {
         $match: {
           device: matchDevice,
@@ -411,6 +411,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       },
       {
         $project: {
+          _id: 0,
           device: 1,
           processedAt: 1,
           classification_status: 1,
@@ -494,19 +495,15 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
           data: 1
         }
       }
-    ]);
+    ];
+    // Force covering index so we don't read full ~3MB docs (only index fields)
+    const result = await Detection.aggregate(statsPipeline).hint('device_1_processedAt_-1_classification_status_1_temperature_1');
 
     // Attach device names from initial query (avoids $lookup in aggregation)
     const statistics = result.map(stat => ({
       ...stat,
       deviceName: deviceNameById.get(stat.deviceId) || 'Unknown'
     }));
-
-    const totalDetections = statistics.reduce((sum, s) => sum + s.data.reduce((n, d) => n + d.unclassified + d.confirmed_pigeon + d.no_pigeon, 0), 0);
-    logger.info(`[DetectionStats] Returning statistics for ${statistics.length} devices (aggregation), total detections in result: ${totalDetections}`);
-    statistics.forEach(stat => {
-      logger.info(`[DetectionStats] Device ${stat.deviceId} (${stat.deviceName}): ${stat.data.length} days with data`);
-    });
 
     res.json({ statistics });
   } catch (error) {
