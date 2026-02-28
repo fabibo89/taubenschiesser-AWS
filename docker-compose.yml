@@ -75,8 +75,8 @@ services:
   # Hardware Monitor Service
   hardware-monitor:
     build:
-      context: ./hardware-monitor
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: hardware-monitor/Dockerfile
     container_name: taubenschiesser-hardware-monitor
     restart: unless-stopped
     environment:
