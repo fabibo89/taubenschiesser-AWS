@@ -1635,7 +1635,8 @@ class HardwareMonitor:
             # Use zoomed frame for better detection
             _, buffer = cv2.imencode('.jpg', zoomed_frame)
             
-            logger.info(f"🔍 Sending frame to CV service for analysis (device: {device_ip}, camera: {camera_source})")
+            cv_request_url = f"{self.cv_service_url}/detect_birds_optimized"
+            logger.info(f"🔍 Sending frame to CV service (device: {device_ip}, camera: {camera_source}) URL: {cv_request_url}")
             
             # Send to CV service with timeout
             async with aiohttp.ClientSession() as session:
@@ -1644,7 +1645,7 @@ class HardwareMonitor:
                 
                 timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout for CV analysis
                 async with session.post(
-                    f"{self.cv_service_url}/detect_birds_optimized",
+                    cv_request_url,
                     data=data,
                     timeout=timeout
                 ) as response:
@@ -1655,6 +1656,9 @@ class HardwareMonitor:
                         bird_count = result.get('bird_count', 0)
                         detections = result.get('detections', [])
                         processing_time = result.get('processing_time', 0)
+                        detection_classes = [d.get('class', 'unknown') for d in detections]
+                        birds_found = result.get('birds_found', False)
+                        logger.info(f"📥 CV response ({camera_source}): birds_found={birds_found}, bird_count={bird_count}, len(detections)={len(detections)}, classes={detection_classes}, service={result.get('service', 'N/A')}")
                         
                         # Count all objects (not just birds)
                         all_objects = {}
@@ -1664,6 +1668,11 @@ class HardwareMonitor:
                                 all_objects[obj_class] += 1
                             else:
                                 all_objects[obj_class] = 1
+
+                        # Consistency check: birds_found True but no detection with class 'bird'
+                        has_bird_class = any(d.get('class') == 'bird' for d in detections)
+                        if birds_found and not has_bird_class:
+                            logger.warning(f"⚠️ CV response inconsistent: birds_found=True but no detection with class='bird'. classes={detection_classes}, bird_count={bird_count}, service={result.get('service', 'N/A')}")
 
                         # Pick target_bird and enrich detections with esp_rot, esp_tilt, is_target_bird for UI
                         target_bird_for_event = None
@@ -1728,8 +1737,7 @@ class HardwareMonitor:
                         
                         if result.get('birds_found', False):
                             confidence = result.get('confidence_level', 0)
-                            
-                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {bird_count} birds, max confidence: {confidence:.2f}")
+                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): triggering save+shoot because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
                             
                             # Send bird detection event
                             await self.send_monitor_event(device, 'birds_detected', {
@@ -1997,8 +2005,10 @@ class HardwareMonitor:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        saved_detections = cv_result.get('detections', [])
+                        saved_classes = [d.get('class', 'unknown') for d in saved_detections]
                         temp_info = f", Temperatur: {current_temperature}°C" if current_temperature is not None else ", Temperatur: N/A"
-                        logger.info(f"✅ Detection saved to database for device {device_ip} ({camera_source}): {result.get('detection_count', 0)} objects, zoom: {zoom_factor}x{temp_info}")
+                        logger.info(f"✅ Detection saved to database for device {device_ip} ({camera_source}): {result.get('detection_count', 0)} objects, classes={saved_classes}, zoom: {zoom_factor}x{temp_info}")
                         
                         # Update device last detection time
                         await self.update_device_last_detection(device_id)

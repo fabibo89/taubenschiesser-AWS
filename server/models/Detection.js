@@ -56,7 +56,7 @@ const detectionSchema = new mongoose.Schema({
     detection_quality: String,
     camera_source: {
       type: String,
-      enum: ['tapo', 'raspberry-pi', 'both', 'unknown'],
+      enum: ['tapo', 'raspberry-pi','local', 'both', 'unknown'],
       default: 'unknown'
     },
     esp_rot: Number,

@@ -520,7 +520,9 @@ async def detect_birds_optimized(file: UploadFile = File(...)):
         
         # Detect objects
         boxes, scores, class_ids = yolov8_detector(image)
-        
+        raw_classes = [utils.class_names[cid] if cid < len(utils.class_names) else f"class_{cid}" for cid in class_ids]
+        print(f"[detect_birds_optimized] raw YOLO detections: count={len(class_ids)}, classes={raw_classes}")
+
         # Filter and optimize for birds
         bird_detections = []
         for box, score, class_id in zip(boxes, scores, class_ids):
@@ -558,6 +560,9 @@ async def detect_birds_optimized(file: UploadFile = File(...)):
                     "detection_quality": "high" if score > 0.7 else "medium" if score > 0.5 else "low"
                 }
                 bird_detections.append(detection)
+
+        bird_classes = [d["class"] for d in bird_detections]
+        print(f"[detect_birds_optimized] after bird filter: count={len(bird_detections)}, classes={bird_classes}")
         
         processing_time = time.time() - start_time
         
