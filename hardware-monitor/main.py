@@ -2271,15 +2271,27 @@ class HardwareMonitor:
                         
                         await self.wait_for_movement_complete(device_ip, timeout=10)
                         return
-            
-            # Fallback: Simple shoot without aiming
-            command = {
-                "type": "shoot",
-                "duration": 1000  # 1 second
-            }
-            mqtt_client.publish(topic, json.dumps(command))
-            logger.info(f"💥 Triggered shoot on device {device_ip} (no aiming, user: {owner_id})")
-            
+
+            # No shoot: we only shoot when we can aim at a target bird
+            device_id = device.get('_id') or device.get('deviceId')
+            device_name = device.get('name', 'unknown')
+            actions = device.get('actions', {})
+            mode = actions.get('mode', 'unknown')
+            route_coords = actions.get('route', {}).get('coordinates', [])
+            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            has_target = bool(target_bird)
+            has_bbox = bool(target_bird and target_bird.get('bbox')) if target_bird else False
+            image_info = getattr(self, 'last_image_info', None)
+            logger.error(
+                "Shoot skipped: no valid target/aim. Only shooting when we can aim at a target bird. "
+                "device_ip=%s device_id=%s device_name=%s owner_id=%s "
+                "target_bird_present=%s target_bird_has_bbox=%s mode=%s "
+                "route_len=%s route_index=%s last_image_info=%s",
+                device_ip, device_id, device_name, owner_id,
+                has_target, has_bbox, mode,
+                len(route_coords), route_index, "yes" if image_info else "no"
+            )
+
         except Exception as e:
             logger.error(f"Error triggering shoot: {e}")
     
