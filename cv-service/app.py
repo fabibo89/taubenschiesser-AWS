@@ -65,7 +65,7 @@ def load_yolov8_model():
     global yolov8_detector
     
     # Use local models directory - resolve relative path from this file's directory
-    model_path = os.getenv('MODEL_PATH', '../models/yolov8l.onnx')
+    model_path = os.getenv('MODEL_PATH', '../models/yolo26m.onnx')
     
     # Convert to absolute path if it's relative
     if not os.path.isabs(model_path):
@@ -84,6 +84,12 @@ def load_yolov8_model():
     except Exception as e:
         print(f"Error loading YOLOv8 model: {e}")
         raise e
+
+def get_yolo_model_display_name():
+    """Return display name for the loaded YOLO model (e.g. YOLO26, YOLOv8)."""
+    if yolov8_detector is None:
+        return "YOLO"
+    return "YOLO26" if getattr(yolov8_detector, "is_yolo26_format", False) else "YOLOv8"
 
 def load_rekognition_client():
     """Initialize AWS Rekognition client"""
@@ -347,7 +353,7 @@ async def detect_objects_yolov8(file: UploadFile):
             "detections": detections,
             "processing_time": processing_time,
             "model": {
-                "name": "YOLOv8",
+                "name": get_yolo_model_display_name(),
                 "version": "1.0.0"
             },
             "image_url": f"data:image/jpeg;base64,{image_base64}",
@@ -465,7 +471,7 @@ async def detect_birds_only_yolov8(file: UploadFile):
             "bird_count": len(bird_detections),
             "detections": bird_detections,
             "timestamp": time.time(),
-            "service": "YOLOv8"
+            "service": get_yolo_model_display_name()
         }
         
     except Exception as e:
@@ -568,7 +574,7 @@ async def detect_birds_optimized(file: UploadFile = File(...)):
             "detections": bird_detections,
             "processing_time": processing_time,
             "timestamp": time.time(),
-            "service": "YOLOv8-Optimized",
+            "service": get_yolo_model_display_name() + "-Optimized",
             "model_info": {
                 "confidence_threshold": YOLO_CONFIDENCE_THRESHOLD,
                 "iou_threshold": YOLO_IOU_THRESHOLD
