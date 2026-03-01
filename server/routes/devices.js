@@ -1124,7 +1124,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
               detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
               detections: cvResponse.data.detections || [],
               processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-              model: cvResponse.data.model || { name: 'YOLOv8' },
+              model: cvResponse.data.model || { name: 'YOLO' },
               image_url: cvResponse.data.image_url,
               image_info: cvResponse.data.image_info
             }
@@ -1193,7 +1193,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
               detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
               detections: cvResponse.data.detections || [],
               processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-              model: cvResponse.data.model || { name: 'YOLOv8' },
+              model: cvResponse.data.model || { name: 'YOLO' },
               image_url: cvResponse.data.image_url,
               image_info: cvResponse.data.image_info
             }
@@ -1248,7 +1248,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
           detections: cvResponse.data.detections || [],
           processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info
         };
@@ -1338,7 +1338,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
             detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
             detections: cvResponse.data.detections || [],
             processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-            model: cvResponse.data.model || { name: 'YOLOv8' },
+            model: cvResponse.data.model || { name: 'YOLO' },
             image_url: cvResponse.data.image_url,
             image_info: cvResponse.data.image_info
           }
@@ -1402,7 +1402,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
             detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
             detections: cvResponse.data.detections || [],
             processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-            model: cvResponse.data.model || { name: 'YOLOv8' },
+            model: cvResponse.data.model || { name: 'YOLO' },
             image_url: cvResponse.data.image_url,
             image_info: cvResponse.data.image_info
           }
@@ -1454,7 +1454,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
           detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
           detections: cvResponse.data.detections || [],
           processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info
         };

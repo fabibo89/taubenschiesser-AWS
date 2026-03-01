@@ -1,8 +1,23 @@
 const express = require('express');
+const axios = require('axios');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
 const router = express.Router();
+
+const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+
+/** Resolve current CV model display name (e.g. YOLO26, YOLOv8) from CV service for hardware detections. */
+async function getCvModelName() {
+  try {
+    const res = await axios.get(`${cvServiceUrl}/config`, { timeout: 2000 });
+    const name = res.data?.model_name;
+    return typeof name === 'string' && name ? name : 'YOLO';
+  } catch (err) {
+    logger.debug('CV service config unavailable for model name, using fallback:', err.message);
+    return 'YOLO';
+  }
+}
 
 // Hardware Monitor Detection Endpoint (no auth required)
 router.post('/detection', async (req, res) => {
@@ -50,6 +65,8 @@ router.post('/detection', async (req, res) => {
       logger.debug(`⚠️ Keine Temperatur in Detection-Request (Device: ${deviceId})`);
     }
 
+    const modelDisplayName = await getCvModelName();
+
     // Create detection record - support both single and dual camera modes
     const detectionData = {
       device: device._id,
@@ -58,7 +75,7 @@ router.post('/detection', async (req, res) => {
       processingTime: processing_time || 0,
       zoom_factor: zoom_factor || 1.0,
       model: {
-        name: 'YOLOv8-Hardware',
+        name: `${modelDisplayName}-Hardware`,
         version: '1.0.0'
       },
       camera_source: camera_source || 'unknown',

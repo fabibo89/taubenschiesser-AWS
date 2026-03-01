@@ -2259,8 +2259,11 @@ class HardwareMonitor:
                             "type": "shoot",
                             "duration": 400
                         }
-                        mqtt_client.publish(topic, json.dumps(shoot_command))
-                        logger.info(f"💥 Shot fired at target bird!")
+                        duration_ms = shoot_command["duration"]
+                        mqtt_payload = json.dumps(shoot_command)
+                        mqtt_client.publish(topic, mqtt_payload)
+                        logger.info(f"💥 Shot fired at target bird! (duration: {duration_ms} ms)")
+                        logger.info(f"📤 MQTT shoot: topic={topic} payload={mqtt_payload}")
                         
                         await asyncio.sleep(1.5)  # Wait for shoot to complete
                         

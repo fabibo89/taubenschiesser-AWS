@@ -407,7 +407,7 @@ const Detections = () => {
       width: 150,
       renderCell: (params) => (
         <Typography variant="body2">
-          {params.value ? `${params.value.toFixed(0)}ms` : 'N/A'}
+          {params.value != null && params.value !== '' ? `${(Number(params.value) / 1000).toFixed(2)} s` : 'N/A'}
         </Typography>
       )
     },
@@ -941,7 +941,7 @@ const Detections = () => {
                       </Grid>
                       <Grid item xs={12} sm={6}>
                         <Typography variant="body2" color="text.secondary">
-                          Verarbeitungszeit: <strong>{selectedDetection.processingTime?.toFixed(0)}ms</strong>
+                          Verarbeitungszeit: <strong>{selectedDetection.processingTime != null && selectedDetection.processingTime !== '' ? `${(Number(selectedDetection.processingTime) / 1000).toFixed(2)} s` : 'N/A'}</strong>
                         </Typography>
                       </Grid>
                       <Grid item xs={12} sm={6}>

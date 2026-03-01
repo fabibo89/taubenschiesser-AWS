@@ -24,7 +24,7 @@ Taubenschiesser Cloud Platform is a full-stack IoT application for managing ESP3
 
 ### Key gotchas
 
-- The YOLOv8 ONNX model file (`models/yolov8l.onnx` or any variant) is **gitignored** and must be obtained separately. Use `ultralytics` to export: `cd models && python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx')"`. Then set `MODEL_PATH` in `cv-service/.env` to point to the exported file (e.g. `../models/yolov8n.onnx`).
+- The YOLO ONNX model file (`models/yolo26m.onnx`, `yolov8l.onnx`, or any variant) is **gitignored** and must be obtained separately. Use `ultralytics` to export: `cd models && python3 -c "from ultralytics import YOLO; YOLO('yolo26n.pt').export(format='onnx', opset=21)"`. Then set `MODEL_PATH` in `cv-service/.env` (e.g. `../models/yolo26m.onnx`). Use `CV_SERVICE=yolo` for local ONNX.
 - `.env` files for `server/`, `client/`, and `cv-service/` must be created from their `.env.example` counterparts before running services.
 - The server `.env` has `PORT=5001` for local dev. The client's `package.json` proxy points to `http://localhost:5001`.
 - Docker is required even for local development because MongoDB runs in a container.

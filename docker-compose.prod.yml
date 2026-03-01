@@ -50,7 +50,8 @@ services:
     container_name: taubenschiesser-cv-prod
     restart: always
     environment:
-      MODEL_PATH: /app/models/yolov8l.onnx
+      CV_SERVICE: yolo
+      MODEL_PATH: /app/models/yolo26m.onnx
       CLASSES_PATH: /app/models/yolov8l.json
     ports:
       - "8000:8000"

@@ -90,7 +90,7 @@ router.post('/detect', upload.single('image'), async (req, res) => {
           detections: cvResponse.data.detections || [],
           detection_count: cvResponse.data.detection_count || 0,
           processing_time: cvResponse.data.processing_time || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info,
           demo_mode: false
@@ -105,7 +105,7 @@ router.post('/detect', upload.single('image'), async (req, res) => {
           ],
           detection_count: 2,
           processing_time: 150,
-          model: { name: 'YOLOv8 Demo' },
+          model: { name: 'YOLO Demo' },
           demo_mode: true
         });
       }

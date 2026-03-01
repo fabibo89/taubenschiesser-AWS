@@ -716,7 +716,7 @@ const HardwareMonitor = () => {
                           </Box>
                         )}
                         <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-                          <strong>Verarbeitungszeit:</strong> {tapoCvResults.processing_time?.toFixed(2) || 0}ms
+                          <strong>Verarbeitungszeit:</strong> {(tapoCvResults.processing_time != null && tapoCvResults.processing_time !== '') ? `${(Number(tapoCvResults.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
                         </Typography>
                         {tapoCvResults.detections && tapoCvResults.detections.length > 0 && (
                           <Box mt={2}>
@@ -777,7 +777,7 @@ const HardwareMonitor = () => {
                           </Box>
                         )}
                         <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-                          <strong>Verarbeitungszeit:</strong> {raspberryPiCvResults.processing_time?.toFixed(2) || 0}ms
+                          <strong>Verarbeitungszeit:</strong> {(raspberryPiCvResults.processing_time != null && raspberryPiCvResults.processing_time !== '') ? `${(Number(raspberryPiCvResults.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
                         </Typography>
                         {raspberryPiCvResults.detections && raspberryPiCvResults.detections.length > 0 && (
                           <Box mt={2}>
@@ -847,7 +847,7 @@ const HardwareMonitor = () => {
                     <Grid item xs={12} sm={3}>
                       <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h3">
-                          {cvResults.processing_time?.toFixed(2)}s
+                          {(cvResults.processing_time != null && cvResults.processing_time !== '') ? `${(Number(cvResults.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
                         </Typography>
                         <Typography color="textSecondary">
                           Verarbeitungszeit

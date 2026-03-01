@@ -328,7 +328,7 @@ const PositionPreview = () => {
                   </TableCell>
                   <TableCell>
                     <Typography variant="body1">
-                      {analysisData.processing_time ? `${analysisData.processing_time.toFixed(0)}ms` : 'N/A'}
+                      {analysisData.processing_time != null && analysisData.processing_time !== '' ? `${(Number(analysisData.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
                     </Typography>
                   </TableCell>
                   <TableCell>

@@ -38,22 +38,40 @@ app.add_middleware(
 # Global variables for model and configuration
 yolov8_detector = None
 rekognition_client = None
+_cv_loaded_model_path = None  # set when YOLO model is loaded, used for display name (size)
+
+def _normalize_cv_service(value):
+    """Normalize CV_SERVICE: 'yolov8' is alias for 'yolo' (local ONNX)."""
+    if value in ("yolo", "yolov8"):
+        return "yolo"
+    return value if value in ("rekognition",) else value
+
 cv_service_config = {
-    "service": os.getenv('CV_SERVICE', 'yolov8'),  # 'yolov8' or 'rekognition'
+    "service": _normalize_cv_service(os.getenv('CV_SERVICE', 'yolo')),  # 'yolo' or 'rekognition'
     "aws_region": os.getenv('AWS_REGION', 'eu-central-1'),
     "aws_access_key": os.getenv('AWS_ACCESS_KEY_ID'),
     "aws_secret_key": os.getenv('AWS_SECRET_ACCESS_KEY')
 }
 
-# Optimize YOLOv8 for bird detection
+# YOLO thresholds for bird detection
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv('YOLO_CONFIDENCE', '0.25'))
 YOLO_IOU_THRESHOLD = float(os.getenv('YOLO_IOU', '0.45'))
+
+def _model_size_from_path(path):
+    """Extract size suffix (n,s,m,l,x) from model filename, e.g. yolo26m.onnx -> 'm'."""
+    if not path:
+        return ""
+    basename = os.path.basename(path)
+    stem = os.path.splitext(basename)[0]
+    if stem and stem[-1] in "nsmlx":
+        return stem[-1]
+    return ""
 
 def load_model():
     """Load the appropriate model based on configuration"""
     global yolov8_detector, rekognition_client
     
-    if cv_service_config["service"] == "yolov8":
+    if cv_service_config["service"] == "yolo":
         load_yolov8_model()
     elif cv_service_config["service"] == "rekognition":
         load_rekognition_client()
@@ -61,8 +79,8 @@ def load_model():
         raise ValueError(f"Unknown CV service: {cv_service_config['service']}")
 
 def load_yolov8_model():
-    """Load the YOLOv8 model using the working repository approach"""
-    global yolov8_detector
+    """Load the YOLO model (ONNX) from MODEL_PATH."""
+    global yolov8_detector, _cv_loaded_model_path
     
     # Use local models directory - resolve relative path from this file's directory
     model_path = os.getenv('MODEL_PATH', '../models/yolo26m.onnx')
@@ -73,23 +91,26 @@ def load_yolov8_model():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.abspath(os.path.join(script_dir, model_path))
     
+    _cv_loaded_model_path = model_path
     try:
-        # Initialize YOLOv8 detector with configurable thresholds
+        # Initialize YOLO detector (supports YOLOv8 and YOLO26 ONNX)
         yolov8_detector = YOLOv8(model_path, conf_thres=YOLO_CONFIDENCE_THRESHOLD, iou_thres=YOLO_IOU_THRESHOLD)
         
-        print(f"YOLOv8 model loaded successfully: {model_path}")
+        print(f"YOLO model loaded successfully: {model_path}")
         print(f"Confidence threshold: {yolov8_detector.conf_threshold}")
         print(f"IoU threshold: {yolov8_detector.iou_threshold}")
         
     except Exception as e:
-        print(f"Error loading YOLOv8 model: {e}")
+        print(f"Error loading YOLO model: {e}")
         raise e
 
 def get_yolo_model_display_name():
-    """Return display name for the loaded YOLO model (e.g. YOLO26, YOLOv8)."""
+    """Return display name for the loaded YOLO model including size (e.g. YOLO26m, YOLOv8l)."""
     if yolov8_detector is None:
         return "YOLO"
-    return "YOLO26" if getattr(yolov8_detector, "is_yolo26_format", False) else "YOLOv8"
+    base = "YOLO26" if getattr(yolov8_detector, "is_yolo26_format", False) else "YOLOv8"
+    size = _model_size_from_path(_cv_loaded_model_path)
+    return f"{base}{size}" if size else base
 
 def load_rekognition_client():
     """Initialize AWS Rekognition client"""
@@ -117,7 +138,7 @@ def load_rekognition_client():
         print(f"Error initializing AWS Rekognition client: {e}")
         raise e
 
-# All the complex preprocessing, postprocessing, and drawing functions are now handled by the YOLOv8 class from the repository
+# Preprocessing, postprocessing and drawing use the YOLOv8 class (supports YOLOv8 and YOLO26 ONNX)
 
 @app.on_event("startup")
 async def startup_event():
@@ -147,9 +168,15 @@ async def health():
 
 @app.get("/config")
 async def get_config():
-    """Get current configuration"""
+    """Get current configuration and display name of loaded model."""
+    model_name = "YOLO"
+    if cv_service_config["service"] == "yolo":
+        model_name = get_yolo_model_display_name()
+    elif cv_service_config["service"] == "rekognition":
+        model_name = "AWS Rekognition"
     return {
         "service": cv_service_config["service"],
+        "model_name": model_name,
         "aws_region": cv_service_config["aws_region"],
         "aws_configured": bool(cv_service_config["aws_access_key"] and cv_service_config["aws_secret_key"])
     }
@@ -160,9 +187,9 @@ async def update_config(config: Dict[str, Any]):
     global cv_service_config
     
     if "service" in config:
-        if config["service"] not in ["yolov8", "rekognition"]:
-            raise HTTPException(status_code=400, detail="Service must be 'yolov8' or 'rekognition'")
-        cv_service_config["service"] = config["service"]
+        if config["service"] not in ["yolo", "yolov8", "rekognition"]:
+            raise HTTPException(status_code=400, detail="Service must be 'yolo' or 'rekognition'")
+        cv_service_config["service"] = _normalize_cv_service(config["service"])
     
     if "aws_region" in config:
         cv_service_config["aws_region"] = config["aws_region"]
@@ -287,7 +314,7 @@ def detect_birds_with_rekognition(image_bytes):
 @app.post("/detect")
 async def detect_objects(file: UploadFile = File(...)):
     """Detect objects in uploaded image using configured service"""
-    if cv_service_config["service"] == "yolov8":
+    if cv_service_config["service"] == "yolo":
         return await detect_objects_yolov8(file)
     elif cv_service_config["service"] == "rekognition":
         return await detect_objects_rekognition(file)
@@ -295,9 +322,9 @@ async def detect_objects(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="No valid CV service configured")
 
 async def detect_objects_yolov8(file: UploadFile):
-    """Detect objects using YOLOv8"""
+    """Detect objects using YOLO (ONNX)."""
     if yolov8_detector is None:
-        raise HTTPException(status_code=500, detail="YOLOv8 model not loaded")
+        raise HTTPException(status_code=500, detail="YOLO model not loaded")
     
     try:
         # Load image using working repository method
@@ -338,7 +365,7 @@ async def detect_objects_yolov8(file: UploadFile):
         # Draw detections on image using working repository method
         annotated_image, results = yolov8_detector.draw_detections(image)
         
-        processing_time = time.time() - start_time
+        processing_time = round((time.time() - start_time) * 1000)  # ms
         
         # Encode annotated image
         success, buffer = cv2.imencode('.jpg', annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -388,7 +415,7 @@ async def detect_objects_rekognition(file: UploadFile):
         # Detect objects using AWS Rekognition
         detections, response = detect_with_rekognition(image_bytes)
         
-        processing_time = time.time() - start_time
+        processing_time = round((time.time() - start_time) * 1000)  # ms
         
         # For Rekognition, we don't have annotated images, so return original
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
@@ -416,7 +443,7 @@ async def detect_objects_rekognition(file: UploadFile):
 @app.post("/detect_birds_only")
 async def detect_birds_only(file: UploadFile = File(...)):
     """Detect only birds in uploaded image using configured service"""
-    if cv_service_config["service"] == "yolov8":
+    if cv_service_config["service"] == "yolo":
         return await detect_birds_only_yolov8(file)
     elif cv_service_config["service"] == "rekognition":
         return await detect_birds_only_rekognition(file)
@@ -424,9 +451,9 @@ async def detect_birds_only(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="No valid CV service configured")
 
 async def detect_birds_only_yolov8(file: UploadFile):
-    """Detect only birds using YOLOv8"""
+    """Detect only birds using YOLO (ONNX)."""
     if yolov8_detector is None:
-        raise HTTPException(status_code=500, detail="YOLOv8 model not loaded")
+        raise HTTPException(status_code=500, detail="YOLO model not loaded")
     
     try:
         # Load image using working repository method
@@ -505,9 +532,9 @@ async def detect_birds_only_rekognition(file: UploadFile):
 
 @app.post("/detect_birds_optimized")
 async def detect_birds_optimized(file: UploadFile = File(...)):
-    """Optimized bird detection with YOLOv8 - best for Taubenschiesser"""
+    """Optimized bird detection with YOLO - best for Taubenschiesser."""
     if yolov8_detector is None:
-        raise HTTPException(status_code=500, detail="YOLOv8 model not loaded")
+        raise HTTPException(status_code=500, detail="YOLO model not loaded")
     
     try:
         # Load image
@@ -563,16 +590,20 @@ async def detect_birds_optimized(file: UploadFile = File(...)):
 
         bird_classes = [d["class"] for d in bird_detections]
         print(f"[detect_birds_optimized] after bird filter: count={len(bird_detections)}, classes={bird_classes}")
-        
-        processing_time = time.time() - start_time
-        
+
+        processing_time = round((time.time() - start_time) * 1000)  # ms
+
         # Determine if action should be taken
         should_activate = len(bird_detections) > 0
         confidence_level = max([d["confidence"] for d in bird_detections]) if bird_detections else 0.0
-        
+        birds_found = len(bird_detections) > 0
+
+        # Log exact payload we return (to trace bugs: if HW sees birds_found=True + microwave, compare with this)
+        print(f"[detect_birds_optimized] returning: birds_found={birds_found}, bird_count={len(bird_detections)}, detections_classes={bird_classes}, confidence_level={confidence_level}")
+
         return {
             "success": True,
-            "birds_found": len(bird_detections) > 0,
+            "birds_found": birds_found,
             "bird_count": len(bird_detections),
             "should_activate_taubenschiesser": should_activate,
             "confidence_level": confidence_level,

@@ -610,9 +610,9 @@ const TaubenTinder = () => {
               ))}
             </Box>
 
-            {currentDetection.processingTime && (
+            {(currentDetection.processingTime != null && currentDetection.processingTime !== '') && (
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                Verarbeitungszeit: {currentDetection.processingTime.toFixed(0)}ms
+                Verarbeitungszeit: {(Number(currentDetection.processingTime) / 1000).toFixed(2)} s
               </Typography>
             )}
           </CardContent>
