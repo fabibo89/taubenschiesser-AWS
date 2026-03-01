@@ -7,9 +7,6 @@
 			"path": "../taubenschiesser-hardware/Taubeschießer_ESP"
 		},
 		{
-			"path": "../../Docker/homeassistant/custom_components/taubenschiesser_HA"
-		},
-		{
 			"path": "../taubenschiesser-HA"
 		}
 	],

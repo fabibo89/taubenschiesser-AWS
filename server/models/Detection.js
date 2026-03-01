@@ -128,6 +128,11 @@ const detectionSchema = new mongoose.Schema({
     tilt: {
       type: Number  // Tilt (-180 bis 180 Grad)
     }
+  },
+  // Bei Hardware-Monitor: ob bei dieser Detection geschossen wurde (Monitor war scharf)
+  shotFired: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

@@ -21,6 +21,8 @@ router.post('/detection', async (req, res) => {
       camera_source,
       temperature,
       camera_position,
+      shotFired,
+      shot_fired,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -64,7 +66,8 @@ router.post('/detection', async (req, res) => {
       camera_position: camera_position && camera_position.rotation !== undefined && camera_position.tilt !== undefined ? {
         rotation: camera_position.rotation,
         tilt: camera_position.tilt
-      } : undefined
+      } : undefined,
+      shotFired: shotFired === true || shot_fired === true
     };
 
     if (target_bird && (target_bird.bbox || target_bird.position)) {

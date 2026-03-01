@@ -204,6 +204,11 @@ const deviceSchema = new mongoose.Schema({
     enum: ['running', 'paused', 'stopped'],
     default: 'paused'
   },
+  // Monitor scharf: bei Taubenerkennung schießen (true) oder nur Detection speichern (false)
+  monitorArmed: {
+    type: Boolean,
+    default: false
+  },
   lastSeen: {
     type: Date,
     default: Date.now

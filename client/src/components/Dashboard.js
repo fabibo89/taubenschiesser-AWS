@@ -566,6 +566,25 @@ const DeviceCard = ({
           </Box>
         </Box>
 
+        <Box mb={2}>
+          <Typography variant="subtitle2" gutterBottom>Schießen bei Erkennung</Typography>
+          <ButtonGroup variant="outlined" size="small" fullWidth>
+            <Tooltip title="Bei Taubenerkennung schießen und speichern">
+              <Button onClick={() => onDeviceControl('arm')} color={device.monitorArmed ? 'error' : 'primary'} variant={device.monitorArmed ? 'contained' : 'outlined'}>
+                Scharf
+              </Button>
+            </Tooltip>
+            <Tooltip title="Nur speichern, nicht schießen">
+              <Button onClick={() => onDeviceControl('disarm')} color={!device.monitorArmed ? 'success' : 'primary'} variant={!device.monitorArmed ? 'contained' : 'outlined'}>
+                Sicher
+              </Button>
+            </Tooltip>
+          </ButtonGroup>
+          <Box mt={1} textAlign="center">
+            <Chip label={device.monitorArmed ? 'Scharf' : 'Sicher'} color={device.monitorArmed ? 'error' : 'success'} size="small" />
+          </Box>
+        </Box>
+
         <Box>
           <Typography variant="caption" color="textSecondary">IP: {device.taubenschiesser?.ip || 'Nicht gesetzt'}</Typography>
           <br />
@@ -942,7 +961,8 @@ const Dashboard = () => {
       // Ensure monitorStatus is set for all devices
       const devicesWithStatus = devicesData.map(device => ({
         ...device,
-        monitorStatus: device.monitorStatus || 'paused'
+        monitorStatus: device.monitorStatus || 'paused',
+        monitorArmed: device.monitorArmed ?? false
       }));
 
       setDevices(devicesWithStatus);
@@ -1059,6 +1079,20 @@ const Dashboard = () => {
         return;
       }
 
+      if (action === 'arm' || action === 'disarm') {
+        // Monitor scharf (schießen bei Taube) oder sicher (nur Detection speichern)
+        const armed = action === 'arm';
+        const response = await axios.patch(`/api/device-control/${deviceId}/arm`, { armed });
+        console.log(`Monitor ${armed ? 'armed' : 'disarmed'} for ${deviceId}:`, response.data);
+        if (response.data.success) {
+          setDevices(prevDevices =>
+            prevDevices.map(d =>
+              d._id === deviceId ? { ...d, monitorArmed: armed } : d
+            )
+          );
+        }
+        return;
+      }
 
       // MQTT-Befehl senden
       const response = await axios.post(`/api/device-control/${deviceId}/control`, {

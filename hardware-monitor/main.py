@@ -840,27 +840,30 @@ class HardwareMonitor:
             
             # If any detection found, save combined detection with both images
             if tapo_birds_found or pi_birds_found:
-                logger.info(f"🦅 Detection found! Saving combined detection with both camera images")
+                monitor_armed = device.get('monitorArmed', False)
+                action_msg = "Saving combined detection and shooting" if monitor_armed else "Saving combined detection only (monitor not armed)"
+                logger.info(f"🦅 Detection found! {action_msg}")
                 await self.save_combined_detection_to_db(
                     device,
                     tapo_original_frame, tapo_zoomed_frame, tapo_cv_result,
-                    raspberry_pi_original_frame, raspberry_pi_zoomed_frame, raspberry_pi_cv_result
+                    raspberry_pi_original_frame, raspberry_pi_zoomed_frame, raspberry_pi_cv_result,
+                    shot_fired=monitor_armed
                 )
                 
-                # Trigger shoot (use best target bird from either camera)
-                target_bird = None
-                if tapo_cv_result and tapo_cv_result.get('detections'):
-                    birds = [d for d in tapo_cv_result.get('detections', []) if d.get('class') == 'bird']
-                    if birds:
-                        target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                        target_bird['camera_source'] = 'tapo'
-                if not target_bird and raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
-                    birds = [d for d in raspberry_pi_cv_result.get('detections', []) if d.get('class') == 'bird']
-                    if birds:
-                        target_bird = max(birds, key=lambda x: x.get('confidence', 0))
-                        target_bird['camera_source'] = 'raspberry-pi'
-
-                await self.trigger_shoot(device, target_bird=target_bird)
+                # Trigger shoot only when monitor is armed (use best target bird from either camera)
+                if monitor_armed:
+                    target_bird = None
+                    if tapo_cv_result and tapo_cv_result.get('detections'):
+                        birds = [d for d in tapo_cv_result.get('detections', []) if d.get('class') == 'bird']
+                        if birds:
+                            target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                            target_bird['camera_source'] = 'tapo'
+                    if not target_bird and raspberry_pi_cv_result and raspberry_pi_cv_result.get('detections'):
+                        birds = [d for d in raspberry_pi_cv_result.get('detections', []) if d.get('class') == 'bird']
+                        if birds:
+                            target_bird = max(birds, key=lambda x: x.get('confidence', 0))
+                            target_bird['camera_source'] = 'raspberry-pi'
+                    await self.trigger_shoot(device, target_bird=target_bird)
             else:
                 # No birds found - still send completion event and show images
                 logger.info(f"ℹ️ No birds detected in dual camera analysis for device {device_ip}")
@@ -1737,7 +1740,9 @@ class HardwareMonitor:
                         
                         if result.get('birds_found', False):
                             confidence = result.get('confidence_level', 0)
-                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): triggering save+shoot because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
+                            monitor_armed = device.get('monitorArmed', False)
+                            action_msg = "save+shoot" if monitor_armed else "save only (monitor not armed)"
+                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {action_msg} because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
                             
                             # Send bird detection event
                             await self.send_monitor_event(device, 'birds_detected', {
@@ -1747,12 +1752,12 @@ class HardwareMonitor:
                                 'camera': camera_source
                             })
                             
-                            # Save detection to database with both images and detailed info
-                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source)
+                            # Save detection to database (with shotFired=monitor_armed)
+                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed)
                             
-                            # Trigger shoot with targeting (only once, not per camera)
-                            # We'll trigger shoot only if this is the first camera or if birds were detected on this camera
-                            await self.trigger_shoot(device, target_bird=target_bird)
+                            # Trigger shoot only when monitor is armed
+                            if monitor_armed:
+                                await self.trigger_shoot(device, target_bird=target_bird)
                     else:
                         logger.error(f"❌ CV analysis failed for device {device_ip} ({camera_source}): HTTP {response.status}")
                         await self.send_monitor_event(device, 'error', {
@@ -1769,8 +1774,9 @@ class HardwareMonitor:
     
     async def save_combined_detection_to_db(self, device: Dict, 
                                             tapo_original_frame: Optional[np.ndarray], tapo_zoomed_frame: Optional[np.ndarray], tapo_cv_result: Optional[Dict],
-                                            raspberry_pi_original_frame: Optional[np.ndarray], raspberry_pi_zoomed_frame: Optional[np.ndarray], raspberry_pi_cv_result: Optional[Dict]):
-        """Save combined detection with images from both cameras"""
+                                            raspberry_pi_original_frame: Optional[np.ndarray], raspberry_pi_zoomed_frame: Optional[np.ndarray], raspberry_pi_cv_result: Optional[Dict],
+                                            shot_fired: bool = False):
+        """Save combined detection with images from both cameras. shot_fired: whether monitor was armed (shot fired for this detection)."""
         try:
             device_id = device.get('_id') or device.get('deviceId')
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -1823,6 +1829,7 @@ class HardwareMonitor:
                 ),
                 "zoom_factor": zoom_factor,
                 "camera_source": "both",
+                "shotFired": shot_fired,
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -1899,8 +1906,8 @@ class HardwareMonitor:
             logger.error(f"Error saving combined detection: {e}")
             return None
     
-    async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict, camera_source: str = 'unknown'):
-        """Save detection to database via API with both images and detailed detection info"""
+    async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict, camera_source: str = 'unknown', shot_fired: bool = False):
+        """Save detection to database via API with both images and detailed detection info. shot_fired: whether monitor was armed (shot fired for this detection)."""
         try:
             device_id = device.get('_id') or device.get('deviceId')
             # Get IP from taubenschiesser.ip (nested structure)
@@ -1992,6 +1999,7 @@ class HardwareMonitor:
                 "camera_source": camera_source,  # Store which camera detected this
                 "temperature": current_temperature,  # Add temperature
                 "camera_position": camera_position,  # Add camera position (rotation/tilt)
+                "shotFired": shot_fired,  # Whether monitor was armed and shot was fired for this detection
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -2249,7 +2257,7 @@ class HardwareMonitor:
                         # Shoot
                         shoot_command = {
                             "type": "shoot",
-                            "duration": 300
+                            "duration": 400
                         }
                         mqtt_client.publish(topic, json.dumps(shoot_command))
                         logger.info(f"💥 Shot fired at target bird!")
