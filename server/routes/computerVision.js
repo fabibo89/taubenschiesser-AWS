@@ -580,7 +580,7 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
     startDate.setDate(startDate.getDate() - daysNum);
     startDate.setHours(0, 0, 0, 0);
 
-    const result = await Detection.aggregate([
+    const hourlyPipeline = [
       {
         $match: {
           device: matchDevice,
@@ -590,6 +590,7 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
       },
       {
         $project: {
+          _id: 0,
           device: 1,
           processedAt: 1,
           temperature: 1
@@ -659,7 +660,9 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
           data: 1
         }
       }
-    ]);
+    ];
+    const result = await Detection.aggregate(hourlyPipeline)
+      .hint('device_1_processedAt_-1_classification_status_1_temperature_1');
 
     const statistics = result.map(stat => ({
       ...stat,
