@@ -234,6 +234,7 @@ const getDeviceStatusColor = (status) => {
   }
 };
 
+/* eslint-disable no-unused-vars */
 // Ausgelagerte Geräte-Karte (modulweit definiert, verhindert Remount bei Dashboard-Updates)
 export const DeviceCard = ({
   device,
@@ -861,6 +862,7 @@ export const TaubeTempChart = React.memo(({ device, detectionStats }) => {
 
 
 
+/* eslint-enable no-unused-vars */
 const Dashboard = () => {
   const [devices, setDevices] = useState([]);
   const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
