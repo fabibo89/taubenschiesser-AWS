@@ -555,6 +555,124 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
   }
 });
 
+// Get detection statistics grouped by hour of day (0-23) over the last N days
+router.get('/detections/statistics/hourly', authenticateToken, async (req, res) => {
+  try {
+    const { deviceId, days = 30 } = req.query;
+    const daysNum = parseInt(days, 10) || 30;
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id name');
+    const deviceIds = devices.map(d => d._id);
+    const deviceNameById = new Map(devices.map(d => [d._id.toString(), d.name || 'Unknown']));
+
+    if (deviceIds.length === 0) {
+      return res.json({ statistics: [] });
+    }
+
+    let matchDevice = { $in: deviceIds };
+    if (deviceId) {
+      const device = await Device.findOne({ _id: deviceId, owner: req.user.userId });
+      if (!device) return res.status(404).json({ error: 'Device not found' });
+      matchDevice = device._id;
+    }
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - daysNum);
+    startDate.setHours(0, 0, 0, 0);
+
+    const result = await Detection.aggregate([
+      {
+        $match: {
+          device: matchDevice,
+          processedAt: { $gte: startDate },
+          classification_status: 'confirmed_pigeon'
+        }
+      },
+      {
+        $project: {
+          device: 1,
+          processedAt: 1,
+          temperature: 1
+        }
+      },
+      {
+        $addFields: {
+          hour: { $hour: '$processedAt' }
+        }
+      },
+      {
+        $group: {
+          _id: { device: '$device', hour: '$hour' },
+          count: { $sum: 1 },
+          sum_temp: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ['$temperature', null] },
+                    { $in: [{ $type: '$temperature' }, ['double', 'int', 'long']] }
+                  ]
+                },
+                '$temperature',
+                0
+              ]
+            }
+          },
+          count_temp: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: ['$temperature', null] },
+                    { $in: [{ $type: '$temperature' }, ['double', 'int', 'long']] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      },
+      { $sort: { '_id.device': 1, '_id.hour': 1 } },
+      {
+        $group: {
+          _id: '$_id.device',
+          data: {
+            $push: {
+              hour: '$_id.hour',
+              count: '$count',
+              avg_temp: {
+                $cond: [
+                  { $gt: ['$count_temp', 0] },
+                  { $round: [{ $divide: ['$sum_temp', '$count_temp'] }, 1] },
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          deviceId: { $toString: '$_id' },
+          data: 1
+        }
+      }
+    ]);
+
+    const statistics = result.map(stat => ({
+      ...stat,
+      deviceName: deviceNameById.get(stat.deviceId) || 'Unknown'
+    }));
+
+    res.json({ statistics });
+  } catch (error) {
+    logger.error('Get hourly detection statistics error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get single detection
 router.get('/detections/:id', authenticateToken, async (req, res) => {
   try {
