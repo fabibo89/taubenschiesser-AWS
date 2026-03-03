@@ -56,9 +56,12 @@ const detectionSchema = new mongoose.Schema({
     detection_quality: String,
     camera_source: {
       type: String,
-      enum: ['tapo', 'raspberry-pi', 'both', 'unknown'],
+      enum: ['tapo', 'raspberry-pi','local', 'both', 'unknown'],
       default: 'unknown'
-    }
+    },
+    esp_rot: Number,
+    esp_tilt: Number,
+    is_target_bird: Boolean
   }],
   target_bird: {
     class: String,
@@ -74,7 +77,10 @@ const detectionSchema = new mongoose.Schema({
       center_y: Number,
       width: Number,
       height: Number
-    }
+    },
+    esp_rot: Number,
+    esp_tilt: Number,
+    is_target_bird: Boolean
   },
   processedAt: {
     type: Date,
@@ -122,6 +128,11 @@ const detectionSchema = new mongoose.Schema({
     tilt: {
       type: Number  // Tilt (-180 bis 180 Grad)
     }
+  },
+  // Bei Hardware-Monitor: ob bei dieser Detection geschossen wurde (Monitor war scharf)
+  shotFired: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true
@@ -132,5 +143,7 @@ detectionSchema.index({ device: 1, processedAt: -1 });
 detectionSchema.index({ processedAt: -1 });
 // For unclassified list (Tauben-Tinder): find by device + classification_status + sort by date
 detectionSchema.index({ device: 1, classification_status: 1, processedAt: -1 });
+// Covering index for GET /detections/statistics (30-day dashboard) – avoids reading full ~3MB docs
+detectionSchema.index({ device: 1, processedAt: -1, classification_status: 1, temperature: 1 });
 
 module.exports = mongoose.model('Detection', detectionSchema);

@@ -100,6 +100,17 @@ const deviceSchema = new mongoose.Schema({
       fov: {
         type: Number,
         default: 75  // Default diagonal FOV in degrees for Raspberry Pi Camera Module 3
+      },
+      angle: {
+        type: Number,
+        default: 0  // Optional Bilddrehung in Grad (0 = keine Drehung)
+      },
+      square: {
+        type: Boolean,
+        default: false  // Optional: quadratischer Ausschnitt (square=true)
+      },
+      resolution: {
+        type: String  // Optional: Zielauflösung als "WIDTHxHEIGHT" oder einzelner Wert für Quadrate
       }
     },
     // For direct RTSP or other cameras
@@ -193,6 +204,11 @@ const deviceSchema = new mongoose.Schema({
     enum: ['running', 'paused', 'stopped'],
     default: 'paused'
   },
+  // Monitor scharf: bei Taubenerkennung schießen (true) oder nur Detection speichern (false)
+  monitorArmed: {
+    type: Boolean,
+    default: false
+  },
   lastSeen: {
     type: Date,
     default: Date.now
@@ -232,7 +248,30 @@ deviceSchema.methods.getImageUrl = function() {
     }
     const port = pi.port || 8080;
     const endpoint = pi.endpoint || '/image.jpg';
-    return `http://${pi.ip}:${port}${endpoint}`;
+    const flip = !!pi.flip;
+    const angle = typeof pi.angle === 'number' ? pi.angle : 0;
+    const square = !!pi.square;
+    const resolution = pi.resolution;
+
+    const params = [];
+    if (flip) {
+      params.push('flip=true');
+    }
+    if (angle && angle !== 0) {
+      params.push(`angle=${angle}`);
+    }
+    if (square) {
+      params.push('square=true');
+    }
+    if (resolution) {
+      params.push(`resolution=${encodeURIComponent(resolution)}`);
+    }
+
+    const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
+    if (params.length === 0) {
+      return baseUrl;
+    }
+    return `${baseUrl}?${params.join('&')}`;
   }
   return null;
 };

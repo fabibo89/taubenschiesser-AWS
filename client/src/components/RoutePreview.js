@@ -66,13 +66,13 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
             position: 'relative',
             display: 'inline-block',
             width: '100%',
-            maxHeight: 240,
+            maxHeight: 480,
             overflow: 'hidden',
             borderRadius: 1,
             // Stelle sicher, dass der Container die Bildproportionen hat
             ...(containerAspectRatio && {
               aspectRatio: containerAspectRatio,
-              maxHeight: 240,
+              maxHeight: 480,
               width: 'auto',
               maxWidth: '100%'
             })
@@ -84,7 +84,7 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
             src={previewImage}
             alt="Route preview"
             sx={{
-              maxHeight: 240,
+              maxHeight: 480,
               width: '100%',
               height: 'auto',
               objectFit: 'contain',
@@ -124,15 +124,15 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
                   
                   if (containerWidth / containerHeight > naturalAspectRatio) {
                     // Container ist breiter - Höhe ist der limitierende Faktor
-                    actualImageHeight = Math.min(containerHeight, 240); // maxHeight: 240
+                    actualImageHeight = Math.min(containerHeight, 480); // maxHeight: 480
                     actualImageWidth = actualImageHeight * naturalAspectRatio;
                   } else {
                     // Container ist höher - Breite ist der limitierende Faktor
                     actualImageWidth = containerWidth;
                     actualImageHeight = actualImageWidth / naturalAspectRatio;
                     // Prüfe maxHeight
-                    if (actualImageHeight > 240) {
-                      actualImageHeight = 240;
+                    if (actualImageHeight > 480) {
+                      actualImageHeight = 480;
                       actualImageWidth = actualImageHeight * naturalAspectRatio;
                     }
                   }
@@ -184,6 +184,84 @@ const RoutePreview = ({ previewImage, previewLoading, previewError, zoom }) => {
               }, 10);
             }}
           />
+          {/* Overlay: roter Kreis mit Fadenkreuz + vertikale Linien */}
+          {previewImage && imageDimensions.width > 0 && (
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: '100%',
+                pointerEvents: 'none',
+                zIndex: 1
+              }}
+            >
+              {/* Roter Kreis in der Bildmitte als Container für die diagonalen Linien */}
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  width: 80,
+                  height: 80,
+                  borderRadius: '50%',
+                  border: '2px solid rgba(255, 0, 0, 0.9)',
+                  boxSizing: 'border-box'
+                }}
+              >
+                {/* Diagonale: oben links → unten rechts */}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: 0,
+                    right: 0,
+                    height: 2,
+                    bgcolor: 'rgba(255, 0, 0, 0.9)',
+                    transform: 'translateY(-50%) rotate(45deg)'
+                  }}
+                />
+                {/* Diagonale: oben rechts → unten links */}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: 0,
+                    right: 0,
+                    height: 2,
+                    bgcolor: 'rgba(255, 0, 0, 0.9)',
+                    transform: 'translateY(-50%) rotate(-45deg)'
+                  }}
+                />
+              </Box>
+
+              {/* Vertikale Linien bei 10% und 90% der Bildbreite */}
+              <>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: '10%',
+                    width: 2,
+                    height: '100%',
+                    bgcolor: 'rgba(255, 0, 0, 0.9)'
+                  }}
+                />
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: '90%',
+                    width: 2,
+                    height: '100%',
+                    bgcolor: 'rgba(255, 0, 0, 0.9)'
+                  }}
+                />
+              </>
+            </Box>
+          )}
         </Box>
       ) : (
         <Typography variant="body2" color="text.secondary">

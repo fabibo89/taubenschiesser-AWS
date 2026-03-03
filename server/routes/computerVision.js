@@ -6,23 +6,39 @@ const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
 
-const router = express.Router();
+/** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
+async function enrichDetectionForResponse(detection, device) {
+  if (!detection || !device) return;
+  const cameraPosition = detection.camera_position;
+  const imageInfo = detection.image_info;
+  if (!cameraPosition || cameraPosition.rotation == null || cameraPosition.tilt == null || !imageInfo) return;
+  const cameraConfig = device.camera;
+  if (!cameraConfig) return;
 
-// In-memory cache for detection statistics (short TTL to reduce repeated aggregation)
-const STATS_CACHE_TTL_MS = 90 * 1000; // 90 seconds
-const statsCache = new Map(); // key -> { data, expiresAt }
-
-// In-memory cache for unclassified detections (Tauben-Tinder)
-const UNCLASSIFIED_CACHE_TTL_MS = 60 * 1000; // 60 seconds
-const unclassifiedCache = new Map(); // key -> { data, expiresAt }
-
-function invalidateUnclassifiedCacheForUser(userId) {
-  const prefix = `${userId}:unclassified:`;
-  for (const key of unclassifiedCache.keys()) {
-    if (key.startsWith(prefix)) unclassifiedCache.delete(key);
+  try {
+    const toPlain = (x) => (x && typeof x.toObject === 'function' ? x.toObject() : (x && typeof x === 'object' ? { ...x } : x));
+    const payload = {
+      detections: Array.isArray(detection.detections) ? detection.detections.map(d => toPlain(d)) : [],
+      target_bird: detection.target_bird ? toPlain(detection.target_bird) : null,
+      camera_position: cameraPosition,
+      image_info: imageInfo,
+      zoom_factor: detection.zoom_factor ?? 1.0,
+      camera_config: cameraConfig,
+      camera_source: detection.camera_source
+    };
+    const res = await axios.post(`${cvServiceUrl}/compute-esp-angles`, payload, { timeout: 5000 });
+    if (res.data && Array.isArray(res.data.detections)) {
+      detection.detections = res.data.detections;
+      detection.target_bird = res.data.target_bird != null ? res.data.target_bird : detection.target_bird;
+    }
+  } catch (err) {
+    logger.debug('CV service compute-esp-angles unavailable, skipping angle enrichment:', err.message || err.code);
   }
 }
+
+const router = express.Router();
 
 // Configure multer for image uploads
 const storage = multer.memoryStorage();
@@ -74,7 +90,7 @@ router.post('/detect', upload.single('image'), async (req, res) => {
           detections: cvResponse.data.detections || [],
           detection_count: cvResponse.data.detection_count || 0,
           processing_time: cvResponse.data.processing_time || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info,
           demo_mode: false
@@ -89,7 +105,7 @@ router.post('/detect', upload.single('image'), async (req, res) => {
           ],
           detection_count: 2,
           processing_time: 150,
-          model: { name: 'YOLOv8 Demo' },
+          model: { name: 'YOLO Demo' },
           demo_mode: true
         });
       }
@@ -277,11 +293,15 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)
-      .populate('device', 'name deviceId type');
+      .populate('device', 'name deviceId type camera');
+
+    for (const d of detections) {
+      await enrichDetectionForResponse(d, d.device);
+    }
 
     const total = await Detection.countDocuments(query);
 
@@ -350,13 +370,6 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
   try {
     const { limit = 50 } = req.query;
     const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
-    const cacheKey = `${req.user.userId}:unclassified:${limitNum}`;
-
-    const cached = unclassifiedCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.info('[Unclassified] Cache hit', { cacheKey });
-      return res.json(cached.data);
-    }
 
     // Get all devices owned by user
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
@@ -380,10 +393,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
       .limit(limitNum)
       .populate('device', 'name deviceId type');
 
-    const response = { detections };
-    unclassifiedCache.set(cacheKey, { data: response, expiresAt: Date.now() + UNCLASSIFIED_CACHE_TTL_MS });
-
-    res.json(response);
+    res.json({ detections });
   } catch (error) {
     logger.error('Get unclassified detections error:', error);
     logger.error('Get unclassified detections error details:', {
@@ -403,13 +413,6 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
   try {
     const { deviceId, days = 30 } = req.query;
     const daysNum = parseInt(days, 10) || 30;
-    const cacheKey = `${req.user.userId}:${deviceId || 'all'}:${daysNum}`;
-
-    const cached = statsCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.info('[DetectionStats] Cache hit', { cacheKey });
-      return res.json(cached.data);
-    }
 
     // Get all devices owned by user (with name for result mapping, avoid $lookup)
     const devices = await Device.find({ owner: req.user.userId }).select('_id name');
@@ -434,7 +437,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
     startDate.setDate(startDate.getDate() - daysNum);
     startDate.setHours(0, 0, 0, 0);
 
-    const result = await Detection.aggregate([
+    const statsPipeline = [
       {
         $match: {
           device: matchDevice,
@@ -443,6 +446,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       },
       {
         $project: {
+          _id: 0,
           device: 1,
           processedAt: 1,
           classification_status: 1,
@@ -526,7 +530,9 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
           data: 1
         }
       }
-    ]);
+    ];
+    // Force covering index so we don't read full ~3MB docs (only index fields)
+    const result = await Detection.aggregate(statsPipeline).hint('device_1_processedAt_-1_classification_status_1_temperature_1');
 
     // Attach device names from initial query (avoids $lookup in aggregation)
     const statistics = result.map(stat => ({
@@ -534,16 +540,7 @@ router.get('/detections/statistics', authenticateToken, async (req, res) => {
       deviceName: deviceNameById.get(stat.deviceId) || 'Unknown'
     }));
 
-    const totalDetections = statistics.reduce((sum, s) => sum + s.data.reduce((n, d) => n + d.unclassified + d.confirmed_pigeon + d.no_pigeon, 0), 0);
-    logger.info(`[DetectionStats] Returning statistics for ${statistics.length} devices (aggregation), total detections in result: ${totalDetections}`);
-    statistics.forEach(stat => {
-      logger.info(`[DetectionStats] Device ${stat.deviceId} (${stat.deviceName}): ${stat.data.length} days with data`);
-    });
-
-    const response = { statistics };
-    statsCache.set(cacheKey, { data: response, expiresAt: Date.now() + STATS_CACHE_TTL_MS });
-
-    res.json(response);
+    res.json({ statistics });
   } catch (error) {
     logger.error('Get detection statistics error:', error);
     logger.error('Error details:', {
@@ -680,7 +677,7 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
 router.get('/detections/:id', authenticateToken, async (req, res) => {
   try {
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'name deviceId type owner');
+      .populate('device', 'name deviceId type owner camera');
     
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -691,6 +688,7 @@ router.get('/detections/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json(detection);
   } catch (error) {
     logger.error('Get detection error:', error);
@@ -707,7 +705,7 @@ router.patch('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
+      .populate('device', 'owner camera');
 
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -723,6 +721,7 @@ router.patch('/detections/:id', authenticateToken, async (req, res) => {
     };
     await detection.save();
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json(detection);
   } catch (error) {
     logger.error('Patch detection error:', error);
@@ -746,7 +745,6 @@ router.delete('/detections/:id', authenticateToken, async (req, res) => {
     }
 
     await Detection.deleteOne({ _id: detection._id });
-    invalidateUnclassifiedCacheForUser(req.user.userId);
 
     res.json({ message: 'Detection deleted successfully' });
   } catch (error) {
@@ -761,7 +759,7 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     const { action } = req.body; // 'confirm_pigeon', 'no_pigeon', 'delete'
     
     const detection = await Detection.findById(req.params.id)
-      .populate('device', 'owner');
+      .populate('device', 'owner camera');
     
     if (!detection) {
       return res.status(404).json({ error: 'Detection not found' });
@@ -774,7 +772,6 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     
     if (action === 'delete') {
       await Detection.deleteOne({ _id: detection._id });
-      invalidateUnclassifiedCacheForUser(req.user.userId);
       return res.json({ message: 'Detection deleted successfully' });
     }
 
@@ -793,8 +790,8 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
       detection.classifiedAt = new Date();
     }
     await detection.save();
-    invalidateUnclassifiedCacheForUser(req.user.userId);
 
+    await enrichDetectionForResponse(detection, detection.device);
     res.json({
       message: 'Detection classified successfully',
       detection

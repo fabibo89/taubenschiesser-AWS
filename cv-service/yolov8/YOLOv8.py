@@ -60,26 +60,33 @@ class YOLOv8:
         return outputs
 
     def process_output(self, output):
-        predictions = np.squeeze(output[0]).T
+        raw = np.squeeze(output[0])
 
-        # Filter out object confidence scores below threshold
-        scores = np.max(predictions[:, 4:], axis=1)
-        predictions = predictions[scores > self.conf_threshold, :]
-        scores = scores[scores > self.conf_threshold]
-
-        if len(scores) == 0:
-            return [], [], []
-
-        # Get the class with the highest confidence
-        class_ids = np.argmax(predictions[:, 4:], axis=1)
-
-        # Get bounding boxes for each object
-        boxes = self.extract_boxes(predictions)
-
-        # Apply non-maxima suppression to suppress weak, overlapping bounding boxes
-        indices = nms(boxes, scores, self.iou_threshold)
-
-        return boxes[indices], scores[indices], class_ids[indices]
+        if self.is_yolo26_format:
+            # YOLO26: shape (300, 6) per detection: x1, y1, x2, y2, score, class_id (xyxy in input size)
+            predictions = raw if raw.ndim == 2 else raw.reshape(-1, 6)
+            scores = predictions[:, 4].astype(np.float32)
+            mask = scores > self.conf_threshold
+            predictions = predictions[mask]
+            scores = scores[mask]
+            if len(scores) == 0:
+                return [], [], []
+            class_ids = predictions[:, 5].astype(np.int32)
+            boxes = self.rescale_boxes_xyxy(predictions[:, :4])
+            indices = nms(boxes, scores, self.iou_threshold)
+            return boxes[indices], scores[indices], class_ids[indices]
+        else:
+            # YOLOv8: shape (84, 8400) -> (8400, 84) with xywh + class scores
+            predictions = raw.T
+            scores = np.max(predictions[:, 4:], axis=1)
+            predictions = predictions[scores > self.conf_threshold, :]
+            scores = scores[scores > self.conf_threshold]
+            if len(scores) == 0:
+                return [], [], []
+            class_ids = np.argmax(predictions[:, 4:], axis=1)
+            boxes = self.extract_boxes(predictions)
+            indices = nms(boxes, scores, self.iou_threshold)
+            return boxes[indices], scores[indices], class_ids[indices]
 
     def extract_boxes(self, predictions):
         # Extract boxes from predictions
@@ -94,10 +101,19 @@ class YOLOv8:
         return boxes
 
     def rescale_boxes(self, boxes):
-        # Rescale boxes to original image dimensions
+        # Rescale boxes (xywh) to original image dimensions
         input_shape = np.array([self.input_width, self.input_height, self.input_width, self.input_height])
         boxes = np.divide(boxes, input_shape, dtype=np.float32)
         boxes *= np.array([self.img_width, self.img_height, self.img_width, self.img_height])
+        return boxes
+
+    def rescale_boxes_xyxy(self, boxes):
+        # Rescale boxes (xyxy, in input size) to original image dimensions
+        scale_x = self.img_width / self.input_width
+        scale_y = self.img_height / self.input_height
+        boxes = boxes.astype(np.float32)
+        boxes[:, [0, 2]] *= scale_x
+        boxes[:, [1, 3]] *= scale_y
         return boxes
 
     def draw_detections(self, image, draw_scores=True, mask_alpha=0.4):
@@ -115,6 +131,16 @@ class YOLOv8:
     def get_output_details(self):
         model_outputs = self.session.get_outputs()
         self.output_names = [model_outputs[i].name for i in range(len(model_outputs))]
+        # Detect format: YOLO26 has shape (1, 300, 6) = (batch, num_detections, 6) with x1,y1,x2,y2,score,class_id
+        self.output_shape = getattr(model_outputs[0], 'shape', ())
+        try:
+            last_dim = self.output_shape[-1] if self.output_shape else 0
+            last_dim = int(last_dim) if isinstance(last_dim, (str, np.generic)) else last_dim
+        except (ValueError, TypeError):
+            last_dim = 0
+        self.is_yolo26_format = (
+            len(self.output_shape) == 3 and last_dim == 6
+        )
 
 
 if __name__ == '__main__':

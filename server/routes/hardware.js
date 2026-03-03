@@ -1,9 +1,23 @@
 const express = require('express');
+const axios = require('axios');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
-
 const router = express.Router();
+
+const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+
+/** Resolve current CV model display name (e.g. YOLO26, YOLOv8) from CV service for hardware detections. */
+async function getCvModelName() {
+  try {
+    const res = await axios.get(`${cvServiceUrl}/config`, { timeout: 2000 });
+    const name = res.data?.model_name;
+    return typeof name === 'string' && name ? name : 'YOLO';
+  } catch (err) {
+    logger.debug('CV service config unavailable for model name, using fallback:', err.message);
+    return 'YOLO';
+  }
+}
 
 // Hardware Monitor Detection Endpoint (no auth required)
 router.post('/detection', async (req, res) => {
@@ -22,6 +36,8 @@ router.post('/detection', async (req, res) => {
       camera_source,
       temperature,
       camera_position,
+      shotFired,
+      shot_fired,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -49,6 +65,8 @@ router.post('/detection', async (req, res) => {
       logger.debug(`⚠️ Keine Temperatur in Detection-Request (Device: ${deviceId})`);
     }
 
+    const modelDisplayName = await getCvModelName();
+
     // Create detection record - support both single and dual camera modes
     const detectionData = {
       device: device._id,
@@ -57,7 +75,7 @@ router.post('/detection', async (req, res) => {
       processingTime: processing_time || 0,
       zoom_factor: zoom_factor || 1.0,
       model: {
-        name: 'YOLOv8-Hardware',
+        name: `${modelDisplayName}-Hardware`,
         version: '1.0.0'
       },
       camera_source: camera_source || 'unknown',
@@ -65,13 +83,16 @@ router.post('/detection', async (req, res) => {
       camera_position: camera_position && camera_position.rotation !== undefined && camera_position.tilt !== undefined ? {
         rotation: camera_position.rotation,
         tilt: camera_position.tilt
-      } : undefined
+      } : undefined,
+      shotFired: shotFired === true || shot_fired === true
     };
 
     if (target_bird && (target_bird.bbox || target_bird.position)) {
       detectionData.target_bird = target_bird;
     }
-    
+
+    // esp_rot / esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
+
     // Add images based on mode (single or dual camera)
     if (tapo_original_image || raspberry_pi_original_image) {
       // Dual camera mode - both cameras

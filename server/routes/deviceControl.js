@@ -268,6 +268,54 @@ router.post('/:id/pause', authenticateToken, async (req, res) => {
   }
 });
 
+// Monitor scharf stellen (true = schießen bei Taube, false = nur Detection speichern)
+router.patch('/:id/arm', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { armed } = req.body;
+
+    if (typeof armed !== 'boolean') {
+      return res.status(400).json({ error: 'armed (boolean) ist erforderlich' });
+    }
+
+    const device = await Device.findOne({
+      _id: id,
+      owner: req.user.userId
+    });
+
+    if (!device) {
+      return res.status(404).json({ error: 'Gerät nicht gefunden' });
+    }
+
+    device.monitorArmed = armed;
+    device.lastSeen = new Date();
+    await device.save();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('device-update', device);
+    }
+
+    logger.info(`Device monitor armed=${armed} for ${device.name}`, {
+      deviceId: device._id,
+      monitorArmed: device.monitorArmed
+    });
+
+    res.json({
+      success: true,
+      message: armed ? `Monitor scharf für '${device.name}'` : `Monitor sicher für '${device.name}'`,
+      device: {
+        id: device._id,
+        name: device.name,
+        monitorArmed: device.monitorArmed
+      }
+    });
+  } catch (error) {
+    logger.error('Device arm error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Geräte-Status manuell aktualisieren
 router.post('/:id/refresh', authenticateToken, async (req, res) => {
   try {

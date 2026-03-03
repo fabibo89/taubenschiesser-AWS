@@ -14,11 +14,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
+# Build context must be repo root so we can copy shared angle_helper from cv-service
+COPY hardware-monitor/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY . .
+# Copy hardware-monitor source
+COPY hardware-monitor/ .
+
+# Copy shared angle_helper from cv-service (required for esp_rot/esp_tilt logic)
+COPY cv-service/angle_helper.py .
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app && \

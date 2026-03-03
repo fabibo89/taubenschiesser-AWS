@@ -54,7 +54,17 @@ const Devices = () => {
       directUrl: '',
       rtspUrl: '',
       tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-      raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
+      raspberryPi: { 
+        ip: '', 
+        port: 8080, 
+        endpoint: '/image.jpg', 
+        streamEndpoint: '/stream.mjpeg', 
+        flip: false, 
+        fov: 41,
+        angle: 0,
+        square: false,
+        resolution: ''
+      },
       useLocalImage: false,
       localImagePath: ''
     }
@@ -124,7 +134,17 @@ const Devices = () => {
           directUrl: '',
           rtspUrl: '',
           tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-          raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
+          raspberryPi: { 
+            ip: '', 
+            port: 8080, 
+            endpoint: '/image.jpg', 
+            streamEndpoint: '/stream.mjpeg', 
+            flip: false, 
+            fov: 41,
+            angle: 0,
+            square: false,
+            resolution: ''
+          },
           useLocalImage: false,
           localImagePath: ''
         }
@@ -140,7 +160,17 @@ const Devices = () => {
           directUrl: '',
           rtspUrl: '',
           tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-          raspberryPi: { ip: '', port: 8080, endpoint: '/image.jpg', streamEndpoint: '/stream.mjpeg', flip: false, fov: 75 },
+          raspberryPi: { 
+            ip: '', 
+            port: 8080, 
+            endpoint: '/image.jpg', 
+            streamEndpoint: '/stream.mjpeg', 
+            flip: false, 
+            fov: 75,
+            angle: 0,
+            square: false,
+            resolution: ''
+          },
           useLocalImage: false,
           localImagePath: ''
         }
@@ -717,23 +747,83 @@ const Devices = () => {
                 />
                 <TextField
                   margin="dense"
-                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  label="FOV nach Flip & Rotation (Grad)"
                   fullWidth
                   variant="outlined"
                   type="number"
-                  value={formData.camera.raspberryPi?.fov || 75}
+                  value={formData.camera.raspberryPi?.fov ?? 41}
                   onChange={(e) => setFormData({
                     ...formData,
                     camera: {
                       ...formData.camera,
                       raspberryPi: { 
                         ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 75
+                        fov: parseFloat(e.target.value) || 41
                       }
                     }
                   })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3)"
+                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
                   inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi Bilddrehung (Grad)"
+                  fullWidth
+                  variant="outlined"
+                  type="number"
+                  value={formData.camera.raspberryPi?.angle ?? 0}
+                  onChange={(e) => {
+                    const raw = parseFloat(e.target.value);
+                    const angle = Number.isNaN(raw) ? 0 : raw;
+                    setFormData({
+                      ...formData,
+                      camera: {
+                        ...formData.camera,
+                        raspberryPi: {
+                          ...(formData.camera.raspberryPi || {}),
+                          angle
+                        }
+                      }
+                    });
+                  }}
+                  helperText="Optionaler Rotationswinkel, z.B. 90, 180 oder 270"
+                  inputProps={{ min: -360, max: 360, step: 1 }}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={formData.camera.raspberryPi?.square || false}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        camera: {
+                          ...formData.camera,
+                          raspberryPi: {
+                            ...(formData.camera.raspberryPi || {}),
+                            square: e.target.checked
+                          }
+                        }
+                      })}
+                    />
+                  }
+                  label="Quadratisches Bild (square=true)"
+                />
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi Auflösung (resolution)"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.resolution || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: {
+                        ...(formData.camera.raspberryPi || {}),
+                        resolution: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Format: WIDTHxHEIGHT (z.B. 1280x720) oder einzelner Wert (z.B. 1024) für quadratische Bilder"
                 />
               </>
             )}
@@ -942,23 +1032,59 @@ const Devices = () => {
                 />
                 <TextField
                   margin="dense"
-                  label="Raspberry Pi Diagonal FOV (Grad)"
+                  label="FOV nach Flip & Rotation (Grad)"
                   fullWidth
                   variant="outlined"
                   type="number"
-                  value={formData.camera.raspberryPi?.fov || 75}
+                  value={formData.camera.raspberryPi?.fov ?? 41}
                   onChange={(e) => setFormData({
                     ...formData,
                     camera: {
                       ...formData.camera,
                       raspberryPi: { 
                         ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 75
+                        fov: parseFloat(e.target.value) || 41
                       }
                     }
                   })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 75° für Raspberry Pi Camera Module 3, wird automatisch an Tapo-FOV angepasst)"
+                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
                   inputProps={{ min: 1, max: 180, step: 0.1 }}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={formData.camera.raspberryPi?.square || false}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        camera: {
+                          ...formData.camera,
+                          raspberryPi: { 
+                            ...(formData.camera.raspberryPi || {}),
+                            square: e.target.checked
+                          }
+                        }
+                      })}
+                    />
+                  }
+                  label="Quadratisches Bild (square=true)"
+                />
+                <TextField
+                  margin="dense"
+                  label="Raspberry Pi Auflösung (resolution)"
+                  fullWidth
+                  variant="outlined"
+                  value={formData.camera.raspberryPi?.resolution || ''}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    camera: {
+                      ...formData.camera,
+                      raspberryPi: { 
+                        ...(formData.camera.raspberryPi || {}),
+                        resolution: e.target.value
+                      }
+                    }
+                  })}
+                  helperText="Format: WIDTHxHEIGHT (z.B. 1280x720) oder einzelner Wert (z.B. 1024) für quadratische Bilder"
                 />
               </>
             )}

@@ -213,7 +213,7 @@ const ImageUpload = () => {
               <Grid item xs={12} sm={4}>
                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                   <Typography variant="h4" color="primary">
-                    {result.processing_time ? `${result.processing_time.toFixed(0)}ms` : 'N/A'}
+                    {result.processing_time != null && result.processing_time !== '' ? `${(Number(result.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Verarbeitungszeit

@@ -119,7 +119,7 @@ const TaubenTinder = () => {
 
     if (action === 'delete') {
       await axios.delete(`/api/cv/detections/${detection._id}`);
-      toast.success('Erkennung gelöscht');
+      toast.error('Erkennung gelöscht');
     } else {
       const actionMap = {
         'confirm_pigeon': 'confirm_pigeon',
@@ -128,11 +128,11 @@ const TaubenTinder = () => {
       await axios.patch(`/api/cv/detections/${detection._id}/classify`, {
         action: actionMap[action]
       });
-      toast.success(
-        action === 'confirm_pigeon'
-          ? 'Als Taube bestätigt'
-          : 'Keine Taube'
-      );
+      if (action === 'confirm_pigeon') {
+        toast.success('Als Taube bestätigt');
+      } else {
+        toast.warning('Keine Taube');
+      }
     }
   };
 
@@ -610,9 +610,9 @@ const TaubenTinder = () => {
               ))}
             </Box>
 
-            {currentDetection.processingTime && (
+            {(currentDetection.processingTime != null && currentDetection.processingTime !== '') && (
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                Verarbeitungszeit: {currentDetection.processingTime.toFixed(0)}ms
+                Verarbeitungszeit: {(Number(currentDetection.processingTime) / 1000).toFixed(2)} s
               </Typography>
             )}
           </CardContent>

@@ -1039,7 +1039,7 @@ router.post('/:id/position-preview/move', authenticateToken, async (req, res) =>
     // Wait for movement to complete
     await hardwareHelper.waitForMovementComplete(device, movementContext, {
       timeoutMs: 30000,
-      stabilizationMs: 2000
+      stabilizationMs: 1000
     });
 
     res.json({
@@ -1124,7 +1124,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
               detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
               detections: cvResponse.data.detections || [],
               processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-              model: cvResponse.data.model || { name: 'YOLOv8' },
+              model: cvResponse.data.model || { name: 'YOLO' },
               image_url: cvResponse.data.image_url,
               image_info: cvResponse.data.image_info
             }
@@ -1149,7 +1149,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           
           // Calculate FOV-based zoom adjustment for Raspberry Pi (like hardware monitor does)
           const tapoFov = camera.tapo?.fov || 110;
-          const piFov = camera.raspberryPi?.fov || 75;
+          const piFov = camera.raspberryPi?.fov || 41;
           let totalZoomFactor = 1.0;
           
           if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {
@@ -1193,7 +1193,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
               detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
               detections: cvResponse.data.detections || [],
               processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-              model: cvResponse.data.model || { name: 'YOLOv8' },
+              model: cvResponse.data.model || { name: 'YOLO' },
               image_url: cvResponse.data.image_url,
               image_info: cvResponse.data.image_info
             }
@@ -1248,7 +1248,7 @@ router.post('/:id/position-preview/capture', authenticateToken, async (req, res)
           detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
           detections: cvResponse.data.detections || [],
           processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info
         };
@@ -1338,7 +1338,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
             detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
             detections: cvResponse.data.detections || [],
             processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-            model: cvResponse.data.model || { name: 'YOLOv8' },
+            model: cvResponse.data.model || { name: 'YOLO' },
             image_url: cvResponse.data.image_url,
             image_info: cvResponse.data.image_info
           }
@@ -1359,7 +1359,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
         const baseZoom = (zoom && zoom > 1.0) ? zoom : (routeZoom || 1.0);
         
         const tapoFov = camera.tapo?.fov || 110;
-        const piFov = camera.raspberryPi?.fov || 75;
+        const piFov = camera.raspberryPi?.fov || 41;
         let totalZoomFactor = 1.0;
         
         if (baseZoom > 1.0 && tapoFov > 0 && piFov > 0) {
@@ -1402,7 +1402,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
             detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
             detections: cvResponse.data.detections || [],
             processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-            model: cvResponse.data.model || { name: 'YOLOv8' },
+            model: cvResponse.data.model || { name: 'YOLO' },
             image_url: cvResponse.data.image_url,
             image_info: cvResponse.data.image_info
           }
@@ -1454,7 +1454,7 @@ router.post('/:id/position-preview/capture-camera', authenticateToken, async (re
           detection_count: cvResponse.data.detection_count || cvResponse.data.detections?.length || 0,
           detections: cvResponse.data.detections || [],
           processing_time: cvResponse.data.processing_time || cvResponse.data.processingTime || 0,
-          model: cvResponse.data.model || { name: 'YOLOv8' },
+          model: cvResponse.data.model || { name: 'YOLO' },
           image_url: cvResponse.data.image_url,
           image_info: cvResponse.data.image_info
         };

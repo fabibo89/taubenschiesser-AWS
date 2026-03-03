@@ -130,14 +130,14 @@ cat > "$CV_ENV_FILE" <<EOF
 # ============================================
 
 # Service Selection
-CV_SERVICE=yolov8  # Options: 'yolov8' or 'rekognition'
+CV_SERVICE=yolo  # Options: 'yolo' or 'rekognition'
 
 # ============================================
-# YOLOv8 Configuration (Default)
+# YOLO Configuration (Default)
 # ============================================
-# Optimized for bird detection
+# Optimized for bird detection (YOLOv8 or YOLO26 ONNX)
 # Relative path from cv-service directory
-MODEL_PATH=../models/yolov8l.onnx
+MODEL_PATH=../models/yolo26m.onnx
 YOLO_CONFIDENCE=0.25  # Confidence threshold (0.0-1.0)
 YOLO_IOU=0.45         # IoU threshold for NMS (0.0-1.0)
 
@@ -158,8 +158,8 @@ YOLO_IOU=0.45         # IoU threshold for NMS (0.0-1.0)
 # Notes:
 # ============================================
 # For local development:
-#   - Use YOLOv8 (default)
-#   - Model will be downloaded automatically if missing
+#   - Use YOLO (default), model from MODEL_PATH (e.g. yolo26m.onnx)
+#   - Export ONNX with: python3 -c "from ultralytics import YOLO; YOLO('yolo26n.pt').export(format='onnx', opset=21)"
 #
 # For AWS deployment:
 #   - Can use AWS Rekognition for serverless CV
@@ -186,7 +186,7 @@ echo "🔧 Default settings:"
 echo "  - Mode: Development (local)"
 echo "  - MQTT: Local Mosquitto (configure in Dashboard)"
 echo "  - Database: Local MongoDB"
-echo "  - CV Service: YOLOv8 (local)"
+echo "  - CV Service: YOLO (local)"
 echo ""
 echo -e "${YELLOW}📋 Next steps:${NC}"
 echo "  1. Review and adjust values if needed"
@@ -196,7 +196,7 @@ echo "     ./dev-start.sh"
 echo ""
 echo -e "${YELLOW}📖 Additional resources:${NC}"
 echo "  - Server config: $SCRIPT_DIR/ENV_CONFIGURATION.md"
-echo "  - CV Service: Use YOLOv8 (default) or AWS Rekognition"
+echo "  - CV Service: Use YOLO (default) or AWS Rekognition"
 echo "  - AWS IoT Core: Uncomment AWS_IOT_ENDPOINT after terraform deployment"
 echo ""
 

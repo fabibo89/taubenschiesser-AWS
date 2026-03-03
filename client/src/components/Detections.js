@@ -316,16 +316,16 @@ const Detections = () => {
     try {
       if (action === 'delete') {
         await axios.delete(`/api/cv/detections/${detectionToClassify._id}`);
-        toast.success('Erkennung gelöscht');
+        toast.error('Erkennung gelöscht');
       } else {
         await axios.patch(`/api/cv/detections/${detectionToClassify._id}/classify`, {
           action: action
         });
-        toast.success(
-          action === 'confirm_pigeon' 
-            ? 'Als Taube klassifiziert' 
-            : 'Als "Keine Taube" klassifiziert'
-        );
+        if (action === 'confirm_pigeon') {
+          toast.success('Als Taube klassifiziert');
+        } else {
+          toast.warning('Als "Keine Taube" klassifiziert');
+        }
       }
       
       // Aktualisiere die Liste
@@ -407,7 +407,7 @@ const Detections = () => {
       width: 150,
       renderCell: (params) => (
         <Typography variant="body2">
-          {params.value ? `${params.value.toFixed(0)}ms` : 'N/A'}
+          {params.value != null && params.value !== '' ? `${(Number(params.value) / 1000).toFixed(2)} s` : 'N/A'}
         </Typography>
       )
     },
@@ -742,9 +742,9 @@ const Detections = () => {
             </Box>
           ) : selectedDetection && (
             <Grid container spacing={2}>
-              {/* Original Image mit Bounding-Boxen */}
+              {/* Original Image mit Bounding-Boxen (bei Zoom = 1 nur dieses eine Bild; bei Zoom > 1 daneben Gezoomtes) */}
               {selectedDetection.image?.url && (
-                <Grid item xs={12} md={selectedDetection.zoomed_image?.url ? 6 : 12}>
+                <Grid item xs={12} md={selectedDetection.zoomed_image?.url && ((Number(selectedDetection.zoom_factor) || 1) > 1) ? 6 : 12}>
                   <Card>
                     <CardContent>
                       <Typography variant="subtitle1" gutterBottom>
@@ -753,11 +753,11 @@ const Detections = () => {
                       <Box
                         sx={{
                           position: 'relative',
-                          width: '100%',
-                          maxHeight: '500px',
+                          display: 'inline-block',
+                          maxWidth: '100%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
-                          overflow: 'hidden',
+                          overflow: 'visible',
                           backgroundColor: '#000'
                         }}
                       >
@@ -766,10 +766,10 @@ const Detections = () => {
                           src={selectedDetection.image.url}
                           alt="Original Detection"
                           sx={{
-                            width: '100%',
-                            height: 'auto',
                             display: 'block',
-                            objectFit: 'contain'
+                            maxWidth: '100%',
+                            height: 'auto',
+                            verticalAlign: 'middle'
                           }}
                         />
                         {selectedDetection.image_info?.original_size &&
@@ -836,8 +836,8 @@ const Detections = () => {
                 </Grid>
               )}
 
-              {/* Zoomed Image mit Bounding-Boxen */}
-              {selectedDetection.zoomed_image?.url && (
+              {/* Zoomed Image nur anzeigen wenn Zoom > 1 (sonst nur 1 Bild) */}
+              {selectedDetection.zoomed_image?.url && ((Number(selectedDetection.zoom_factor) || 1) > 1) && (
                 <Grid item xs={12} md={selectedDetection.image?.url ? 6 : 12}>
                   <Card>
                     <CardContent>
@@ -847,11 +847,11 @@ const Detections = () => {
                       <Box
                         sx={{
                           position: 'relative',
-                          width: '100%',
-                          maxHeight: '500px',
+                          display: 'inline-block',
+                          maxWidth: '100%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
-                          overflow: 'hidden',
+                          overflow: 'visible',
                           backgroundColor: '#000'
                         }}
                       >
@@ -860,10 +860,10 @@ const Detections = () => {
                           src={selectedDetection.zoomed_image.url}
                           alt="Zoomed Detection"
                           sx={{
-                            width: '100%',
-                            height: 'auto',
                             display: 'block',
-                            objectFit: 'contain'
+                            maxWidth: '100%',
+                            height: 'auto',
+                            verticalAlign: 'middle'
                           }}
                         />
                         {selectedDetection.image_info?.zoomed_size &&
@@ -941,7 +941,7 @@ const Detections = () => {
                       </Grid>
                       <Grid item xs={12} sm={6}>
                         <Typography variant="body2" color="text.secondary">
-                          Verarbeitungszeit: <strong>{selectedDetection.processingTime?.toFixed(0)}ms</strong>
+                          Verarbeitungszeit: <strong>{selectedDetection.processingTime != null && selectedDetection.processingTime !== '' ? `${(Number(selectedDetection.processingTime) / 1000).toFixed(2)} s` : 'N/A'}</strong>
                         </Typography>
                       </Grid>
                       <Grid item xs={12} sm={6}>
@@ -959,7 +959,7 @@ const Detections = () => {
                       {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
                         <Grid item xs={12} sm={6}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                            Kamera-Position (Routenpunkt)
+                            Kamera-Position (Routenpunkt, Zoom)
                           </Typography>
                           <FormControl size="small" fullWidth disabled={cameraPositionSaving}>
                             <Select
@@ -981,13 +981,15 @@ const Detections = () => {
                                 if (v === 'current') {
                                   const r = selectedDetection.camera_position.rotation;
                                   const t = selectedDetection.camera_position.tilt;
-                                  return `Aktuell: R: ${r}° / T: ${t}°`;
+                                  const z = selectedDetection.zoom_factor ?? 1;
+                                  return `Aktuell: R: ${r}° / T: ${t}° / Zoom: ${z}x`;
                                 }
                                 const c = deviceRouteCoordinates[v];
                                 if (!c) return '';
                                 const imgSrc = c.image
                                   ? (c.image.startsWith('data:') ? c.image : `data:image/jpeg;base64,${c.image}`)
                                   : null;
+                                const zoomStr = c.zoom != null ? ` / Zoom: ${c.zoom}x` : '';
                                 return (
                                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                     {imgSrc && (
@@ -998,18 +1000,19 @@ const Detections = () => {
                                         sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
                                       />
                                     )}
-                                    <span>Position {Number(v) + 1}: R: {c.rotation ?? '-'}° / T: {c.tilt ?? '-'}°</span>
+                                    <span>Position {Number(v) + 1}: R: {c.rotation ?? '-'}° / T: {c.tilt ?? '-'}°{zoomStr}</span>
                                   </Box>
                                 );
                               }}
                             >
                               <MenuItem value="current">
-                                Aktuell: R: {selectedDetection.camera_position.rotation}° / T: {selectedDetection.camera_position.tilt}°
+                                Aktuell: R: {selectedDetection.camera_position.rotation}° / T: {selectedDetection.camera_position.tilt}° / Zoom: {(selectedDetection.zoom_factor ?? 1)}x
                               </MenuItem>
                               {deviceRouteCoordinates.map((coord, idx) => {
                                 const imgSrc = coord.image
                                   ? (coord.image.startsWith('data:') ? coord.image : `data:image/jpeg;base64,${coord.image}`)
                                   : null;
+                                const zoomStr = coord.zoom != null ? ` / Zoom: ${coord.zoom}x` : '';
                                 return (
                                   <MenuItem key={idx} value={idx}>
                                     <ListItemIcon sx={{ minWidth: 56 }}>
@@ -1025,7 +1028,7 @@ const Detections = () => {
                                       )}
                                     </ListItemIcon>
                                     <ListItemText
-                                      primary={`Position ${idx + 1}: R: ${coord.rotation ?? '-'}° / T: ${coord.tilt ?? '-'}°`}
+                                      primary={`Position ${idx + 1}: R: ${coord.rotation ?? '-'}° / T: ${coord.tilt ?? '-'}°${zoomStr}`}
                                     />
                                   </MenuItem>
                                 );
@@ -1040,10 +1043,18 @@ const Detections = () => {
                         </Typography>
                         <Box display="flex" flexDirection="column" gap={1.5}>
                           {selectedDetection.detections?.map((detection, index) => (
-                            <Card key={index} variant="outlined" sx={{ p: 1.5 }}>
+                            <Card
+                              key={index}
+                              variant="outlined"
+                              sx={{
+                                p: 1.5,
+                                borderWidth: detection.is_target_bird ? 2 : 1,
+                                borderColor: detection.is_target_bird ? 'primary.main' : 'divider'
+                              }}
+                            >
                               <Grid container spacing={1}>
                                 <Grid item xs={12}>
-                                  <Box display="flex" alignItems="center" gap={1}>
+                                  <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
                                     <Chip
                                       label={`${detection.class}`}
                                       size="small"
@@ -1055,6 +1066,9 @@ const Detections = () => {
                                       color="success"
                                       variant="outlined"
                                     />
+                                    {detection.is_target_bird && (
+                                      <Chip label="Zielvogel" size="small" color="primary" />
+                                    )}
                                     {detection.size_category && (
                                       <Chip
                                         label={detection.size_category}
@@ -1064,6 +1078,13 @@ const Detections = () => {
                                     )}
                                   </Box>
                                 </Grid>
+                                {(detection.esp_rot != null || detection.esp_tilt != null) && (
+                                  <Grid item xs={12}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Move: Rot {detection.esp_rot ?? '–'}°, Tilt {detection.esp_tilt ?? '–'}°
+                                    </Typography>
+                                  </Grid>
+                                )}
                                 {detection.bbox && (
                                   <Grid item xs={12} sm={6}>
                                     <Typography variant="caption" color="text.secondary">
