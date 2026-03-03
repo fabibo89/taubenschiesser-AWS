@@ -786,16 +786,23 @@ const Dashboard = () => {
 
     if (rawData.length === 0) return null;
 
+    // Build full 24h array, then trim leading/trailing hours with 0 detections
     const hourMap = {};
     rawData.forEach(item => { hourMap[item.hour] = item; });
-    const fullData = Array.from({ length: 24 }, (_, h) => ({
+    const allHours = Array.from({ length: 24 }, (_, h) => ({
       hour: h,
       count: hourMap[h]?.count || 0,
       avg_temp: hourMap[h]?.avg_temp ?? null
     }));
 
-    const hasTempData = fullData.some(item => item.avg_temp != null);
-    const categories = fullData.map(item => `${String(item.hour).padStart(2, '0')}:00`);
+    let firstNonZero = allHours.findIndex(h => h.count > 0);
+    let lastNonZero = allHours.length - 1;
+    while (lastNonZero > firstNonZero && allHours[lastNonZero].count === 0) lastNonZero--;
+    if (firstNonZero < 0) return null;
+    const trimmedData = allHours.slice(firstNonZero, lastNonZero + 1);
+
+    const hasTempData = trimmedData.some(item => item.avg_temp != null);
+    const categories = trimmedData.map(item => `${String(item.hour).padStart(2, '0')}:00`);
 
     const chartOptions = {
       chart: {
@@ -807,14 +814,14 @@ const Dashboard = () => {
       plotOptions: {
         bar: {
           horizontal: false,
-          columnWidth: '60%',
-          borderRadius: 2
+          columnWidth: '55%',
+          borderRadius: 0
         }
       },
       dataLabels: { enabled: false },
       stroke: {
         show: true,
-        width: [1, hasTempData ? 2.5 : 0],
+        width: [1, hasTempData ? 1.5 : 0],
         colors: ['#fff', '#f44336']
       },
       xaxis: {
@@ -822,32 +829,46 @@ const Dashboard = () => {
         labels: {
           rotate: -45,
           rotateAlways: true,
-          style: { fontSize: '10px' }
-        },
-        title: { text: 'Uhrzeit', style: { fontSize: '12px' } }
+          style: { fontSize: '12px' }
+        }
       },
       yaxis: hasTempData
         ? [
             {
               seriesName: 'Tauben',
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
-              labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+              title: { show: false },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: {
+                style: { fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             },
             {
-              seriesName: 'Ø Temperatur',
+              seriesName: 'Ø Temp',
               opposite: true,
-              title: { text: '°C', style: { fontSize: '12px', color: '#f44336' } },
-              labels: { style: { colors: '#f44336', fontSize: '11px' }, formatter: (val) => val != null ? val.toFixed(1) : '' },
+              title: { show: false },
+              axisTicks: { show: true },
+              axisBorder: { show: true, color: '#f44336' },
+              labels: {
+                style: { colors: '#f44336', fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             }
           ]
         : [
             {
-              title: { text: 'Anzahl', style: { fontSize: '12px' } },
-              labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+              title: { show: false },
+              axisTicks: { show: true },
+              axisBorder: { show: true },
+              labels: {
+                style: { fontSize: '11px' },
+                formatter: (val) => Math.round(val)
+              },
               min: 0,
               forceNiceScale: true
             }
@@ -860,10 +881,10 @@ const Dashboard = () => {
         intersect: false,
         y: hasTempData
           ? [
-              { formatter: (val) => (val != null ? val + ' Tauben' : '') },
+              { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
               { formatter: (val) => (val != null ? val + ' °C' : '') }
             ]
-          : [{ formatter: (val) => (val != null ? val + ' Tauben' : '') }]
+          : [{ formatter: (val) => (val != null ? val + ' Erkennungen' : '') }]
       }
     };
 
@@ -871,13 +892,13 @@ const Dashboard = () => {
       {
         name: 'Tauben',
         type: 'column',
-        data: fullData.map(item => item.count)
+        data: trimmedData.map(item => item.count)
       },
       ...(hasTempData
         ? [{
-            name: 'Ø Temperatur',
+            name: 'Ø Temp',
             type: 'line',
-            data: fullData.map(item => item.avg_temp)
+            data: trimmedData.map(item => item.avg_temp)
           }]
         : [])
     ];
@@ -891,7 +912,7 @@ const Dashboard = () => {
           options={chartOptions}
           series={series}
           type="line"
-          height={250}
+          height={220}
         />
       </Box>
     );
