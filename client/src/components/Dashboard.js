@@ -235,7 +235,7 @@ const getDeviceStatusColor = (status) => {
 };
 
 // Ausgelagerte Geräte-Karte (modulweit definiert, verhindert Remount bei Dashboard-Updates)
-const DeviceCard = ({
+export const DeviceCard = ({
   device,
   isStreaming,
   position = { rot: 0, tilt: 0 },
@@ -596,7 +596,7 @@ const DeviceCard = ({
 };
 
 // Detection Chart Component - Using ApexCharts with memoization to prevent blinking
-const DetectionChart = React.memo(({ device, detectionStats }) => {
+export const DetectionChart = React.memo(({ device, detectionStats }) => {
   // Ensure device._id is converted to string for consistent lookup
   const deviceIdStr = String(device._id);
   const data = detectionStats[deviceIdStr] || [];
@@ -717,7 +717,7 @@ const DetectionChart = React.memo(({ device, detectionStats }) => {
 });
 
 // Taube + Temperatur Chart: Balken (Anzahl Taube) + Kurve (Ø Temperatur)
-const TaubeTempChart = React.memo(({ device, detectionStats }) => {
+export const TaubeTempChart = React.memo(({ device, detectionStats }) => {
   const deviceIdStr = String(device._id);
   const data = detectionStats[deviceIdStr] || [];
   const hasTempData = data.some(item => item.avg_temp_pigeon != null);
