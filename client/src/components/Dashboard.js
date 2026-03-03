@@ -209,6 +209,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [streamingDevices, setStreamingDevices] = useState({});
   const [detectionStats, setDetectionStats] = useState({});
+  const [hourlyStats, setHourlyStats] = useState({});
   const navigate = useNavigate();
   const { socket, connected } = useSocket();
 
@@ -276,13 +277,15 @@ const Dashboard = () => {
 
   const fetchDashboardData = async () => {
     try {
-      const [devicesResponse, statsResponse] = await Promise.all([
+      const [devicesResponse, statsResponse, hourlyResponse] = await Promise.all([
         axios.get('/api/devices'),
-        axios.get('/api/cv/detections/statistics?days=30').catch(() => ({ data: { statistics: [] } }))
+        axios.get('/api/cv/detections/statistics?days=30').catch(() => ({ data: { statistics: [] } })),
+        axios.get('/api/cv/detections/statistics/hourly?days=30').catch(() => ({ data: { statistics: [] } }))
       ]);
 
       const devicesData = devicesResponse.data;
       const stats = statsResponse.data.statistics || [];
+      const hourly = hourlyResponse.data.statistics || [];
 
       // Convert statistics to map by deviceId
       // Ensure deviceId is always a string for consistent lookup
@@ -298,6 +301,12 @@ const Dashboard = () => {
       console.log('[DetectionStats] Devices:', devicesData.map(d => ({ id: d._id, name: d.name })));
       
       setDetectionStats(statsMap);
+
+      const hourlyMap = {};
+      hourly.forEach(stat => {
+        hourlyMap[String(stat.deviceId)] = stat.data;
+      });
+      setHourlyStats(hourlyMap);
 
       // Ensure monitorStatus is set for all devices
       const devicesWithStatus = devicesData.map(device => ({
@@ -762,6 +771,135 @@ const Dashboard = () => {
     const nextDeviceId = String(nextProps.device._id);
     const prevData = prevProps.detectionStats[prevDeviceId] || [];
     const nextData = nextProps.detectionStats[nextDeviceId] || [];
+    if (prevDeviceId !== nextDeviceId) return false;
+    if (prevData.length !== nextData.length) return false;
+    if (prevData.length > 0 && nextData.length > 0) {
+      if (JSON.stringify(prevData) !== JSON.stringify(nextData)) return false;
+    }
+    return true;
+  });
+
+  // Hourly Detection Chart: bar chart showing pigeon detections by hour of day + temperature line
+  const HourlyDetectionChart = React.memo(({ device, hourlyStats }) => {
+    const deviceIdStr = String(device._id);
+    const rawData = hourlyStats[deviceIdStr] || [];
+
+    if (rawData.length === 0) return null;
+
+    const hourMap = {};
+    rawData.forEach(item => { hourMap[item.hour] = item; });
+    const fullData = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      count: hourMap[h]?.count || 0,
+      avg_temp: hourMap[h]?.avg_temp ?? null
+    }));
+
+    const hasTempData = fullData.some(item => item.avg_temp != null);
+    const categories = fullData.map(item => `${String(item.hour).padStart(2, '0')}:00`);
+
+    const chartOptions = {
+      chart: {
+        type: 'bar',
+        stacked: false,
+        toolbar: { show: false },
+        animations: { enabled: false }
+      },
+      plotOptions: {
+        bar: {
+          horizontal: false,
+          columnWidth: '60%',
+          borderRadius: 2
+        }
+      },
+      dataLabels: { enabled: false },
+      stroke: {
+        show: true,
+        width: [1, hasTempData ? 2.5 : 0],
+        colors: ['#fff', '#f44336']
+      },
+      xaxis: {
+        categories,
+        labels: {
+          rotate: -45,
+          rotateAlways: true,
+          style: { fontSize: '10px' }
+        },
+        title: { text: 'Uhrzeit', style: { fontSize: '12px' } }
+      },
+      yaxis: hasTempData
+        ? [
+            {
+              seriesName: 'Tauben',
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+              min: 0,
+              forceNiceScale: true
+            },
+            {
+              seriesName: 'Ø Temperatur',
+              opposite: true,
+              title: { text: '°C', style: { fontSize: '12px', color: '#f44336' } },
+              labels: { style: { colors: '#f44336', fontSize: '11px' }, formatter: (val) => val != null ? val.toFixed(1) : '' },
+              min: 0,
+              forceNiceScale: true
+            }
+          ]
+        : [
+            {
+              title: { text: 'Anzahl', style: { fontSize: '12px' } },
+              labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+              min: 0,
+              forceNiceScale: true
+            }
+          ],
+      fill: { opacity: 1 },
+      legend: { position: 'bottom', horizontalAlign: 'center' },
+      colors: ['#4caf50', '#f44336'],
+      tooltip: {
+        shared: true,
+        intersect: false,
+        y: hasTempData
+          ? [
+              { formatter: (val) => (val != null ? val + ' Tauben' : '') },
+              { formatter: (val) => (val != null ? val + ' °C' : '') }
+            ]
+          : [{ formatter: (val) => (val != null ? val + ' Tauben' : '') }]
+      }
+    };
+
+    const series = [
+      {
+        name: 'Tauben',
+        type: 'column',
+        data: fullData.map(item => item.count)
+      },
+      ...(hasTempData
+        ? [{
+            name: 'Ø Temperatur',
+            type: 'line',
+            data: fullData.map(item => item.avg_temp)
+          }]
+        : [])
+    ];
+
+    return (
+      <Box sx={{ mt: 2 }}>
+        <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+          Tauben nach Uhrzeit (letzte 30 Tage)
+        </Typography>
+        <Chart
+          options={chartOptions}
+          series={series}
+          type="line"
+          height={250}
+        />
+      </Box>
+    );
+  }, (prevProps, nextProps) => {
+    const prevDeviceId = String(prevProps.device._id);
+    const nextDeviceId = String(nextProps.device._id);
+    const prevData = prevProps.hourlyStats[prevDeviceId] || [];
+    const nextData = nextProps.hourlyStats[nextDeviceId] || [];
     if (prevDeviceId !== nextDeviceId) return false;
     if (prevData.length !== nextData.length) return false;
     if (prevData.length > 0 && nextData.length > 0) {
@@ -1444,6 +1582,7 @@ const Dashboard = () => {
                     </Box>
                     <DetectionChart device={device} detectionStats={detectionStats} />
                     <TaubeTempChart device={device} detectionStats={detectionStats} />
+                    <HourlyDetectionChart device={device} hourlyStats={hourlyStats} />
             </CardContent>
           </Card>
         </Grid>
