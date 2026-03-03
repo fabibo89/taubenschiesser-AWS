@@ -201,40 +201,6 @@ const StreamPlaceholder = ({ toggleStream, cameraName }) => (
   </Box>
 );
 
-// Status-Farbe für Geräte/Chips (modulweit, damit DeviceCard nicht bei jedem Dashboard-Render remountet)
-const getDeviceStatusColor = (status) => {
-  switch (status) {
-    case 'online':
-      return 'success';
-    case 'offline':
-      return 'error';
-    case 'maintenance':
-      return 'warning';
-    case 'device_waiting':
-      return 'info';
-    case 'device_moving':
-      return 'warning';
-    case 'device_stopped':
-    case 'device_stabilizing':
-      return 'success';
-    case 'device_busy':
-      return 'warning';
-    case 'analysis_started':
-    case 'analyzing':
-    case 'analyzing_cv':
-    case 'capturing':
-      return 'primary';
-    case 'cv_analysis_complete':
-    case 'birds_detected':
-      return 'success';
-    case 'error':
-      return 'error';
-    default:
-      return 'default';
-  }
-};
-
-
 const Dashboard = () => {
   const [devices, setDevices] = useState([]);
   const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
