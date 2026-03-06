@@ -1671,12 +1671,12 @@ class HardwareMonitor:
                         await self.wait_for_movement_complete(device_ip, timeout=10)
                         await asyncio.sleep(0.5)  # Brief stabilization
                         
-                        # Shoot
+                        # Shoot (duration from device settings)
+                        duration_ms = device.get("taubenschiesser", {}).get("shootingTimeMs", 500)
                         shoot_command = {
                             "type": "shoot",
-                            "duration": 400
+                            "duration": duration_ms
                         }
-                        duration_ms = shoot_command["duration"]
                         mqtt_payload = json.dumps(shoot_command)
                         mqtt_client.publish(topic, mqtt_payload)
                         logger.info(f"💥 Shot fired at target bird! (duration: {duration_ms} ms)")

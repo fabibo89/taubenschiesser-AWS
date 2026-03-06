@@ -54,6 +54,11 @@ const deviceSchema = new mongoose.Schema({
     invertTilt: {
       type: Boolean,
       default: false
+    },
+    // Schussdauer in ms (ESP shake), wird von UI, HA und Hardware-Monitor genutzt
+    shootingTimeMs: {
+      type: Number,
+      default: 500
     }
   },
   // Camera Configuration

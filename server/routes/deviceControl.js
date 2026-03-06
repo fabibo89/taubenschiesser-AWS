@@ -52,12 +52,7 @@ const MQTT_COMMANDS = {
       }
     })
   },
-  shoot: {
-    message: JSON.stringify({ 
-      type: 'shoot',
-      duration: 500
-    })
-  },
+  shoot: { dynamic: true },  // Message aus device.taubenschiesser.shootingTimeMs oder req.body.durationMs
   reset: {
     message: JSON.stringify({ 
       type: 'reset'
@@ -90,15 +85,23 @@ router.post('/:id/control', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Taubenschiesser IP nicht konfiguriert' });
     }
 
-    // MQTT-Befehl senden
-    const command = MQTT_COMMANDS[action];
+    let message;
+    if (action === 'shoot' && MQTT_COMMANDS.shoot.dynamic) {
+      const durationMs = typeof req.body.durationMs === 'number' && req.body.durationMs >= 0
+        ? req.body.durationMs
+        : (device.taubenschiesser?.shootingTimeMs ?? 500);
+      message = JSON.stringify({ type: 'shoot', duration: durationMs });
+    } else {
+      const command = MQTT_COMMANDS[action];
+      message = command.message;
+    }
+
     const topic = `taubenschiesser/${device.taubenschiesser.ip}`;
-    
     logger.info(`Sending MQTT command to device ${device.name}: ${action}`, {
       deviceId: device._id,
       deviceIp: device.taubenschiesser.ip,
       topic: topic,
-      message: command.message
+      message: message
     });
 
     // Get user to access MQTT settings
@@ -115,7 +118,7 @@ router.post('/:id/control', authenticateToken, async (req, res) => {
       
       // Send MQTT command
       await new Promise((resolve, reject) => {
-        mqttClient.publish(topic, command.message, (error) => {
+        mqttClient.publish(topic, message, (error) => {
           if (error) {
             logger.error('Failed to publish MQTT message:', error);
             reject(error);

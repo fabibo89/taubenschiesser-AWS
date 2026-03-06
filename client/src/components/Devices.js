@@ -43,12 +43,13 @@ const Devices = () => {
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingDevice, setEditingDevice] = useState(null);
+  const [shootTestLoading, setShootTestLoading] = useState(false);
   const [routeDialogOpen, setRouteDialogOpen] = useState(false);
   const [routeDeviceId, setRouteDeviceId] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500 },
     camera: { 
       type: 'tapo',
       directUrl: '',
@@ -127,7 +128,8 @@ const Devices = () => {
         taubenschiesser: {
           ip: device.taubenschiesser?.ip || '',
           invertRotation: device.taubenschiesser?.invertRotation || false,
-          invertTilt: device.taubenschiesser?.invertTilt || false
+          invertTilt: device.taubenschiesser?.invertTilt || false,
+          shootingTimeMs: device.taubenschiesser?.shootingTimeMs ?? 500
         },
         camera: device.camera || { 
           type: 'tapo',
@@ -154,18 +156,18 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false },
-        camera: { 
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500 },
+        camera: {
           type: 'tapo',
           directUrl: '',
           rtspUrl: '',
           tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-          raspberryPi: { 
-            ip: '', 
-            port: 8080, 
-            endpoint: '/image.jpg', 
-            streamEndpoint: '/stream.mjpeg', 
-            flip: false, 
+          raspberryPi: {
+            ip: '',
+            port: 8080,
+            endpoint: '/image.jpg',
+            streamEndpoint: '/stream.mjpeg',
+            flip: false,
             fov: 75,
             angle: 0,
             square: false,
@@ -182,6 +184,27 @@ const Devices = () => {
   const handleCloseDialog = () => {
     setOpenDialog(false);
     setEditingDevice(null);
+  };
+
+  const handleShootTest = async () => {
+    if (!editingDevice?._id) return;
+    const durationMs = Number(formData.taubenschiesser.shootingTimeMs);
+    if (!Number.isFinite(durationMs) || durationMs < 0) {
+      toast.error('Bitte eine gültige Schussdauer (ms) eingeben.');
+      return;
+    }
+    setShootTestLoading(true);
+    try {
+      await axios.post(`/api/device-control/${editingDevice._id}/control`, {
+        action: 'shoot',
+        durationMs
+      });
+      toast.success(`Test-Schuss mit ${durationMs} ms gesendet`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Test-Schuss fehlgeschlagen');
+    } finally {
+      setShootTestLoading(false);
+    }
   };
 
   const handleRouteDialogOpen = async (deviceId) => {
@@ -482,6 +505,31 @@ const Devices = () => {
               placeholder="192.168.1.100"
               required
             />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 1.5, flexWrap: 'wrap' }}>
+              <TextField
+                margin="dense"
+                label="Schussdauer (ms)"
+                type="number"
+                variant="outlined"
+                value={formData.taubenschiesser.shootingTimeMs ?? 500}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  taubenschiesser: { ...formData.taubenschiesser, shootingTimeMs: e.target.value === '' ? 500 : Number(e.target.value) }
+                })}
+                inputProps={{ min: 0, step: 50 }}
+                sx={{ width: 140 }}
+              />
+              {editingDevice?._id && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={handleShootTest}
+                  disabled={shootTestLoading}
+                >
+                  {shootTestLoading ? 'Sende…' : 'Test-Schuss'}
+                </Button>
+              )}
+            </Box>
             <Box sx={{ mt: 2, mb: 1 }}>
               <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>
                 Position-Invertierung
