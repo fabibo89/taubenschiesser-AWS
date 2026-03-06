@@ -244,6 +244,7 @@ const RouteEditDialog = ({
   previewLoading,
   previewError,
   onModeChange,
+  onWaitBetweenMovesChange,
   onAddCoordinate,
   onUpdateCoordinate,
   onCancelEdit,
@@ -333,6 +334,17 @@ const RouteEditDialog = ({
               <MenuItem value="route">Route</MenuItem>
             </Select>
           </FormControl>
+          <TextField
+            fullWidth
+            label="Wartezeit zwischen Bewegungen (Sekunden)"
+            type="number"
+            value={actionsConfig.waitBetweenMovesSeconds ?? 20}
+            onChange={onWaitBetweenMovesChange}
+            inputProps={{ min: 5, max: 300, step: 1 }}
+            helperText="Pause nach Ende einer Bewegung, bevor der nächste Move ausgeführt wird (5–300 s)."
+            sx={{ mt: 2 }}
+            size="small"
+          />
         </Box>
 
         {actionsConfig.mode === 'route' && (

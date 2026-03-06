@@ -357,10 +357,11 @@ class HardwareMonitor:
                 logger.info(f"⏸️ Device {device_ip} in sleep mode")
                 return
             
-            # Check if it's time to move (20s since last completed move)
+            # Check if it's time to move (configurable wait since last completed move)
             last_moved = self.device_last_moved.get(device_ip)
             time_since_last_moved = (datetime.now() - last_moved).total_seconds() if last_moved else 0
-            timeout_threshold = 20
+            raw_threshold = device.get('actions', {}).get('waitBetweenMovesSeconds', 20)
+            timeout_threshold = max(5, min(300, int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 20))
 
             if time_since_last_moved > timeout_threshold:
                 await self.move_device(device, time_since_last_moved)

@@ -142,6 +142,13 @@ const deviceSchema = new mongoose.Schema({
       enum: ['impulse', 'route'],
       default: 'impulse'
     },
+    // Sekunden Pause zwischen Ende einer Bewegung und nächster Bewegung (Hardware-Monitor)
+    waitBetweenMovesSeconds: {
+      type: Number,
+      default: 20,
+      min: 5,
+      max: 300
+    },
     route: {
       coordinates: [{
         rotation: {

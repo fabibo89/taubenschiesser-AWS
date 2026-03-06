@@ -1197,6 +1197,10 @@ const Devices = () => {
         previewLoading={previewLoading}
         previewError={previewError}
         onModeChange={handleModeChange}
+        onWaitBetweenMovesChange={(e) => setActionsConfig(prev => ({
+          ...prev,
+          waitBetweenMovesSeconds: Math.min(300, Math.max(5, Number(e.target.value) || 20))
+        }))}
         onAddCoordinate={handleAddCoordinate}
         onUpdateCoordinate={handleUpdateCoordinate}
         onCancelEdit={handleCancelEdit}
