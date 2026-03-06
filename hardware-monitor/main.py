@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
@@ -239,6 +239,7 @@ class HardwareMonitor:
         
         while True:
             try:
+                sleep_seconds = 10.0  # default: poll at least every 10s for device list/config
                 # logger.info("Fetching devices from API...")
                 # Get all devices from API
                 headers = {'Authorization': f'Bearer {self.service_token}'}
@@ -266,7 +267,6 @@ class HardwareMonitor:
                                     if prev_status == 'paused' and device_monitor_status == 'running':
                                         # Device was just restarted - set last_moved to 25s ago to trigger immediate movement
                                         logger.info(f"🔄 Device {device_ip} restarted (paused -> running), setting timer to trigger movement")
-                                        from datetime import timedelta
                                         self.device_last_seen[device_ip] = datetime.now()
                                         self.device_last_moved[device_ip] = datetime.now() - timedelta(seconds=25)
                                         # Also clear any movement state
@@ -284,6 +284,23 @@ class HardwareMonitor:
                                     await self.process_taubenschiesser_device(device)
                                 else:
                                     logger.debug(f"Skipping device {device.get('_id')} with status: {device.get('monitorStatus')}")
+                            
+                            # Dynamic sleep: wake (at latest) when the next device is allowed to move
+                            now = datetime.now()
+                            for device in devices:
+                                if device.get('monitorStatus') != 'running':
+                                    continue
+                                taubenschiesser_config = device.get('taubenschiesser', {})
+                                device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+                                if not device_ip or device_ip not in self.device_last_moved:
+                                    continue
+                                raw_threshold = device.get('actions', {}).get('waitBetweenMovesSeconds', 20)
+                                threshold = max(5, min(300, int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 20))
+                                last_moved = self.device_last_moved[device_ip]
+                                next_move_at = last_moved + timedelta(seconds=threshold)
+                                if next_move_at > now:
+                                    sec_until = (next_move_at - now).total_seconds()
+                                    sleep_seconds = min(sleep_seconds, max(0.5, sec_until))
                         elif response.status == 429:
                             logger.warning("Rate limited, waiting longer...")
                             await asyncio.sleep(60)  # Wait 1 minute if rate limited
@@ -291,7 +308,7 @@ class HardwareMonitor:
                         else:
                             logger.error(f"API error: {response.status}")
                 
-                await asyncio.sleep(10)  # Check every 60 seconds
+                await asyncio.sleep(sleep_seconds)
                 
             except Exception as e:
                 logger.error(f"Error in taubenschiesser control loop: {e}")
@@ -322,7 +339,6 @@ class HardwareMonitor:
             # First time we see this device: set last_moved to 25s ago so we move immediately
             if device_ip not in self.device_last_moved:
                 logger.info(f"ℹ️ Device {device_ip} first run - setting last_moved to trigger first movement")
-                from datetime import timedelta
                 self.device_last_moved[device_ip] = datetime.now() - timedelta(seconds=25)
             
             # Check if device is moving
