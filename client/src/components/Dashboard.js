@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Grid,
   Card,
@@ -211,6 +211,8 @@ const Dashboard = () => {
   const [hourlyStats, setHourlyStats] = useState({});
   const navigate = useNavigate();
   const { socket, connected } = useSocket();
+  /** Preserve scroll position when device status updates cause re-renders (avoid jump to top) */
+  const scrollRestoreRef = useRef(null);
 
   useEffect(() => {
     fetchDashboardData();
@@ -225,6 +227,8 @@ const Dashboard = () => {
     const handleMonitorEvent = (event) => {
       const { deviceId, eventType, data } = event || {};
       if (!deviceId || !data) return;
+
+      scrollRestoreRef.current = window.scrollY;
 
       // Try to extract rotation/tilt from several possible shapes
       const rot = (data?.position?.rot ?? data?.rot ?? data?.rotation);
@@ -326,6 +330,7 @@ const Dashboard = () => {
   useEffect(() => {
     if (socket && connected) {
       socket.on('device-update', (device) => {
+        scrollRestoreRef.current = window.scrollY;
         setDevices(prevDevices => 
           prevDevices.map(d => d._id === device._id ? device : d)
         );
@@ -334,7 +339,7 @@ const Dashboard = () => {
       // Sofortige Status-Änderungen
       socket.on('device-status-change', (statusChange) => {
         console.log('Device status changed:', statusChange);
-        
+        scrollRestoreRef.current = window.scrollY;
         // Visuelles Feedback für Status-Änderung
         const device = devices.find(d => d._id === statusChange.deviceId);
         if (device) {
@@ -367,6 +372,15 @@ const Dashboard = () => {
       };
     }
   }, [socket, connected, devices]);
+
+  // Restore scroll position after device/hardware-monitor updates re-renders (prevents jump to top)
+  useEffect(() => {
+    if (scrollRestoreRef.current != null) {
+      const y = scrollRestoreRef.current;
+      scrollRestoreRef.current = null;
+      requestAnimationFrame(() => window.scrollTo(0, y));
+    }
+  }, [devices, devicePositions, deviceStatuses]);
 
   // Helper function to calculate overall status
   const calculateOverallStatus = (taubenschiesserStatus, cameraStatus) => {
