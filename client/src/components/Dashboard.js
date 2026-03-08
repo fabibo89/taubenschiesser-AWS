@@ -1535,6 +1535,40 @@ const Dashboard = () => {
             </Box>
           </Box>
 
+          {/* Schießen bei Erkennung (Scharf/Sicher) – synchron mit HA */}
+          <Box mb={2}>
+            <Typography variant="subtitle2" gutterBottom>
+              Schießen bei Erkennung
+            </Typography>
+            <ButtonGroup variant="outlined" size="small" fullWidth>
+              <Tooltip title="Bei Taubenerkennung schießen und speichern">
+                <Button
+                  onClick={() => handleDeviceControl(device._id, 'arm')}
+                  color={device.monitorArmed ? 'error' : 'primary'}
+                  variant={device.monitorArmed ? 'contained' : 'outlined'}
+                >
+                  Scharf
+                </Button>
+              </Tooltip>
+              <Tooltip title="Nur speichern, nicht schießen">
+                <Button
+                  onClick={() => handleDeviceControl(device._id, 'disarm')}
+                  color={!device.monitorArmed ? 'success' : 'primary'}
+                  variant={!device.monitorArmed ? 'contained' : 'outlined'}
+                >
+                  Sicher
+                </Button>
+              </Tooltip>
+            </ButtonGroup>
+            <Box mt={1} textAlign="center">
+              <Chip
+                label={device.monitorArmed ? 'Scharf' : 'Sicher'}
+                color={device.monitorArmed ? 'error' : 'success'}
+                size="small"
+              />
+            </Box>
+          </Box>
+
           {/* Geräte-Info */}
           <Box>
             <Typography variant="caption" color="textSecondary">
