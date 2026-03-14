@@ -12,6 +12,7 @@ import {
   MenuItem,
   ListItemIcon,
   ListItemText,
+  ListSubheader,
   TextField,
   InputAdornment,
   Dialog,
@@ -37,6 +38,17 @@ import {
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+
+function formatTimeDiffAtPosition(seconds, direction) {
+  if (seconds < 60) {
+    const text = `${seconds} Sek`;
+    return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const text = secs > 0 ? `${minutes} Min ${secs} Sek` : `${minutes} Min`;
+  return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
+}
 
 // Renders thumbnail for a detection row; triggers load via onLoadRequest when imageUrl not yet loaded
 function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
@@ -81,7 +93,8 @@ const Detections = () => {
     classificationStatus: '',
     cameraPosition: '' // Format: "rotation,tilt" z.B. "90,45"
   });
-  const [availablePositions, setAvailablePositions] = useState([]);
+  // Positions from device routes: { device: { _id, name }, coordinates: [ { rotation, tilt, zoom, index } ] }
+  const [positionsByDevice, setPositionsByDevice] = useState([]);
   const [classificationDialogOpen, setClassificationDialogOpen] = useState(false);
   const [detectionToClassify, setDetectionToClassify] = useState(null);
   const [pagination, setPagination] = useState({
@@ -94,6 +107,7 @@ const Detections = () => {
   const [selectedDetectionLoading, setSelectedDetectionLoading] = useState(false);
   const [deviceRouteCoordinates, setDeviceRouteCoordinates] = useState([]);
   const [cameraPositionSaving, setCameraPositionSaving] = useState(false);
+  const [nearestAtPosition, setNearestAtPosition] = useState({ before: null, after: null });
   // Thumbnails loaded per row (id -> url string, or 'loading', or null for no image)
   const [imageByDetectionId, setImageByDetectionId] = useState({});
   const imageByDetectionIdRef = useRef({});
@@ -134,13 +148,47 @@ const Detections = () => {
     return () => { cancelled = true; };
   }, [selectedDetection?.device?._id]);
 
-  const fetchAvailablePositions = async () => {
+  // Fetch nearest detection at same position (before/after) for "X min davor/danach" in dialog
+  useEffect(() => {
+    if (!selectedDetection) {
+      setNearestAtPosition({ before: null, after: null });
+      return;
+    }
+    const d = selectedDetection;
+    const deviceId = d.device?._id ?? d.device;
+    const pos = d.camera_position;
+    if (!deviceId || pos?.rotation == null || pos?.tilt == null || !d.processedAt) {
+      setNearestAtPosition({ before: null, after: null });
+      return;
+    }
+    const processedAt = typeof d.processedAt === 'string' ? d.processedAt : d.processedAt?.toISO?.() ?? new Date(d.processedAt).toISOString();
+    axios.get('/api/cv/detections/nearest-at-position', {
+      params: { deviceId, rotation: pos.rotation, tilt: pos.tilt, processedAt }
+    })
+      .then((res) => setNearestAtPosition({ before: res.data.before || null, after: res.data.after || null }))
+      .catch(() => setNearestAtPosition({ before: null, after: null }));
+  }, [selectedDetection?._id, selectedDetection?.camera_position?.rotation, selectedDetection?.camera_position?.tilt, selectedDetection?.processedAt, selectedDetection?.device?._id]);
+
+  const fetchPositionsFromRoutes = async () => {
     try {
-      const response = await axios.get('/api/cv/detections/positions');
-      const positions = response.data.positions || [];
-      setAvailablePositions(positions);
+      const response = await axios.get('/api/devices');
+      const devices = response.data.devices || response.data || [];
+      const byDevice = [];
+      for (const dev of devices) {
+        const coords = dev.actions?.route?.coordinates || [];
+        const positions = coords
+          .map((c, index) => ({ rotation: c.rotation, tilt: c.tilt, zoom: c.zoom, index }))
+          .filter((c) => c.rotation !== undefined || c.tilt !== undefined);
+        if (positions.length > 0) {
+          byDevice.push({
+            device: { _id: dev._id, name: dev.name || 'Unbekannt' },
+            coordinates: positions
+          });
+        }
+      }
+      setPositionsByDevice(byDevice);
     } catch (error) {
-      console.error('Error fetching available positions:', error);
+      console.error('Error fetching positions from routes:', error);
     }
   };
 
@@ -178,7 +226,7 @@ const Detections = () => {
 
   useEffect(() => {
     fetchDetections();
-    fetchAvailablePositions();
+    fetchPositionsFromRoutes();
   }, [fetchDetections]);
 
   const handleFilterChange = (field, value) => {
@@ -451,19 +499,53 @@ const Detections = () => {
           <Typography variant="subtitle2" sx={{ flex: 1 }}>
             Kamera-Position
           </Typography>
-          <FormControl size="small" sx={{ minWidth: 150 }}>
+          <FormControl size="small" sx={{ minWidth: 200 }}>
             <Select
-              value={filters.cameraPosition || ''}
-              onChange={(e) => handleFilterChange('cameraPosition', e.target.value)}
+              value={filters.deviceId && filters.cameraPosition ? `${filters.deviceId}:${filters.cameraPosition}` : ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) {
+                  setFilters((prev) => ({ ...prev, cameraPosition: '' }));
+                  setPagination((prev) => ({ ...prev, page: 0 }));
+                  return;
+                }
+                const [deviceId, pos] = v.split(':');
+                if (deviceId && pos) {
+                  setFilters((prev) => ({ ...prev, deviceId, cameraPosition: pos }));
+                  setPagination((prev) => ({ ...prev, page: 0 }));
+                }
+              }}
               displayEmpty
               sx={{ height: '32px', fontSize: '0.75rem' }}
+              renderValue={(selected) => {
+                if (!selected) return 'Alle Positionen';
+                const [deviceId, pos] = selected.split(':');
+                const [rotation, tilt] = (pos || '').split(',');
+                const group = positionsByDevice.find((g) => String(g.device._id) === String(deviceId));
+                const coord = group?.coordinates.find(
+                  (c) => String(c.rotation) === String(rotation) && String(c.tilt) === String(tilt)
+                );
+                const num = coord ? coord.index + 1 : '';
+                const deviceName = group?.device?.name || '';
+                return deviceName && num ? `${deviceName} – Routenpunkt ${num}` : selected;
+              }}
             >
-              <MenuItem value="">Alle</MenuItem>
-              {availablePositions.map((pos, index) => (
-                <MenuItem key={index} value={`${pos.rotation},${pos.tilt}`}>
-                  R: {pos.rotation}° / T: {pos.tilt}°
-                </MenuItem>
-              ))}
+              <MenuItem value="">Alle Positionen</MenuItem>
+              {positionsByDevice.map((group) => [
+                <ListSubheader key={`sh-${group.device._id}`} sx={{ lineHeight: 2 }}>
+                  {group.device.name}
+                </ListSubheader>,
+                ...group.coordinates.map((coord) => {
+                  const value = `${group.device._id}:${coord.rotation ?? ''},${coord.tilt ?? ''}`;
+                  const label = `Routenpunkt ${coord.index + 1}`;
+                  const zoomStr = coord.zoom != null ? ` (Zoom: ${coord.zoom}x)` : '';
+                  return (
+                    <MenuItem key={value} value={value} sx={{ pl: 3 }}>
+                      {label}: R: {coord.rotation ?? '-'}° / T: {coord.tilt ?? '-'}°{zoomStr}
+                    </MenuItem>
+                  );
+                })
+              ])}
             </Select>
           </FormControl>
         </Box>
@@ -750,11 +832,12 @@ const Detections = () => {
                       <Typography variant="subtitle1" gutterBottom>
                         Original-Bild
                       </Typography>
+                      <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                       <Box
                         sx={{
                           position: 'relative',
                           display: 'inline-block',
-                          maxWidth: '100%',
+                          maxWidth: '50%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
                           overflow: 'visible',
@@ -820,6 +903,7 @@ const Detections = () => {
                             );
                           })}
                       </Box>
+                      </Box>
                       {selectedDetection.image_info?.original_size && (
                         <Typography
                           variant="caption"
@@ -844,11 +928,12 @@ const Detections = () => {
                       <Typography variant="subtitle1" gutterBottom>
                         Gezoomtes Bild {selectedDetection.zoom_factor && `(${selectedDetection.zoom_factor}x)`}
                       </Typography>
+                      <Box sx={{ display: 'flex', justifyContent: 'center' }}>
                       <Box
                         sx={{
                           position: 'relative',
                           display: 'inline-block',
-                          maxWidth: '100%',
+                          maxWidth: '50%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
                           overflow: 'visible',
@@ -905,6 +990,7 @@ const Detections = () => {
                             );
                           })}
                       </Box>
+                      </Box>
                       {selectedDetection.image_info?.zoomed_size && (
                         <Typography
                           variant="caption"
@@ -954,6 +1040,30 @@ const Detections = () => {
                           <Typography variant="body2" color="text.secondary">
                             Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
                           </Typography>
+                        </Grid>
+                      )}
+                      {(nearestAtPosition.before || nearestAtPosition.after) && (
+                        <Grid item xs={12}>
+                          <Box display="flex" flexWrap="wrap" gap={1}>
+                            {nearestAtPosition.before && (
+                              <Chip
+                                icon={<ArrowBackIcon />}
+                                label={formatTimeDiffAtPosition(nearestAtPosition.before.diffSeconds, 'before')}
+                                size="small"
+                                variant="outlined"
+                                color="info"
+                              />
+                            )}
+                            {nearestAtPosition.after && (
+                              <Chip
+                                icon={<ArrowForwardIcon />}
+                                label={formatTimeDiffAtPosition(nearestAtPosition.after.diffSeconds, 'after')}
+                                size="small"
+                                variant="outlined"
+                                color="info"
+                              />
+                            )}
+                          </Box>
                         </Grid>
                       )}
                       {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (

@@ -365,6 +365,67 @@ router.get('/detections/positions', authenticateToken, async (req, res) => {
   }
 });
 
+// Nearest detection at same camera position (before/after) for Tauben-Tinder "X min davor/danach" tag
+router.get('/detections/nearest-at-position', authenticateToken, async (req, res) => {
+  try {
+    const { deviceId, rotation, tilt, processedAt } = req.query;
+    const tolerance = Math.min(10, Math.max(1, parseInt(req.query.tolerance, 10) || 3)); // degrees, default 3
+
+    if (!deviceId || rotation === undefined || tilt === undefined || !processedAt) {
+      return res.status(400).json({
+        error: 'Missing query params: deviceId, rotation, tilt, processedAt required'
+      });
+    }
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map(d => d._id.toString());
+    if (!deviceIds.includes(deviceId)) {
+      return res.status(403).json({ error: 'Device not found or access denied' });
+    }
+
+    const rot = parseFloat(rotation);
+    const tiltVal = parseFloat(tilt);
+    const at = new Date(processedAt);
+    if (Number.isNaN(at.getTime())) {
+      return res.status(400).json({ error: 'Invalid processedAt date' });
+    }
+
+    const posMatch = {
+      device: deviceId,
+      $and: [
+        { 'camera_position.rotation': { $gte: rot - tolerance, $lte: rot + tolerance } },
+        { 'camera_position.tilt': { $gte: tiltVal - tolerance, $lte: tiltVal + tolerance } }
+      ]
+    };
+
+    const [before, after] = await Promise.all([
+      Detection.findOne({ ...posMatch, processedAt: { $lt: at } })
+        .select('_id processedAt')
+        .sort({ processedAt: -1 })
+        .limit(1)
+        .lean(),
+      Detection.findOne({ ...posMatch, processedAt: { $gt: at } })
+        .select('_id processedAt')
+        .sort({ processedAt: 1 })
+        .limit(1)
+        .lean()
+    ]);
+
+    const result = {
+      before: before
+        ? { diffSeconds: Math.round((at - new Date(before.processedAt)) / 1000), processedAt: before.processedAt }
+        : null,
+      after: after
+        ? { diffSeconds: Math.round((new Date(after.processedAt) - at) / 1000), processedAt: after.processedAt }
+        : null
+    };
+    res.json(result);
+  } catch (error) {
+    logger.error('Nearest-at-position error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Get unclassified detections for Tinder view (must be before /detections/:id)
 router.get('/detections/unclassified', authenticateToken, async (req, res) => {
   try {
@@ -388,7 +449,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
         { classification_status: { $exists: false } }
       ]
     })
-      .select('_id device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info detections target_bird processedAt processingTime')
+      .select('_id device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info detections target_bird processedAt processingTime camera_position')
       .sort({ processedAt: -1 })
       .limit(limitNum)
       .populate('device', 'name deviceId type');

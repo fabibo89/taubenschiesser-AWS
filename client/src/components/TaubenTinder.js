@@ -17,10 +17,23 @@ import {
 import {
   Favorite as FavoriteIcon,
   Close as CloseIcon,
-  Delete as DeleteIcon
+  Delete as DeleteIcon,
+  ArrowBack as ArrowBackIcon,
+  ArrowForward as ArrowForwardIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+
+function formatTimeDiff(seconds, direction) {
+  if (seconds < 60) {
+    const text = `${seconds} Sek`;
+    return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const text = secs > 0 ? `${minutes} Min ${secs} Sek` : `${minutes} Min`;
+  return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
+}
 
 const TaubenTinder = () => {
   const [detections, setDetections] = useState([]);
@@ -34,6 +47,7 @@ const TaubenTinder = () => {
   const [loadingNext, setLoadingNext] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteDetection, setPendingDeleteDetection] = useState(null);
+  const [nearestAtPosition, setNearestAtPosition] = useState({ before: null, after: null });
 
   const cardRef = useRef(null);
   const touchStartRef = useRef(null);
@@ -51,7 +65,26 @@ const TaubenTinder = () => {
   useEffect(() => {
     setRenderedImageSize({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
     setOffset({ x: 0, y: 0 });
+    setNearestAtPosition({ before: null, after: null });
   }, [currentIndex]);
+
+  // Fetch nearest detection at same position (before/after) for "X min davor/danach" tag
+  useEffect(() => {
+    if (detections.length === 0 || currentIndex >= detections.length) return;
+    const d = detections[currentIndex];
+    const deviceId = d.device?._id ?? d.device;
+    const pos = d.camera_position;
+    if (!deviceId || pos?.rotation == null || pos?.tilt == null || !d.processedAt) {
+      setNearestAtPosition({ before: null, after: null });
+      return;
+    }
+    const processedAt = typeof d.processedAt === 'string' ? d.processedAt : d.processedAt?.toISO?.() ?? new Date(d.processedAt).toISOString();
+    axios.get('/api/cv/detections/nearest-at-position', {
+      params: { deviceId, rotation: pos.rotation, tilt: pos.tilt, processedAt }
+    })
+      .then((res) => setNearestAtPosition({ before: res.data.before || null, after: res.data.after || null }))
+      .catch(() => setNearestAtPosition({ before: null, after: null }));
+  }, [detections, currentIndex]);
 
   // Recalculate image size on window resize
   useEffect(() => {
@@ -463,7 +496,7 @@ const TaubenTinder = () => {
               sx={{
                 position: 'relative',
                 width: '100%',
-                height: '70%',
+                height: '35%',
                 backgroundColor: '#000',
                 display: 'flex',
                 alignItems: 'center',
@@ -572,7 +605,7 @@ const TaubenTinder = () => {
           )}
 
           {/* Detection Info */}
-          <CardContent sx={{ height: '30%', overflow: 'auto', backgroundColor: '#fff' }}>
+          <CardContent sx={{ height: '65%', overflow: 'auto', backgroundColor: '#fff' }}>
             <Typography variant="h6" gutterBottom>
               Erkennung #{currentIndex + 1}
             </Typography>
@@ -594,6 +627,28 @@ const TaubenTinder = () => {
                 variant="outlined"
                 color="primary"
               />
+              {(nearestAtPosition.before || nearestAtPosition.after) && (
+                <>
+                  {nearestAtPosition.before && (
+                    <Chip
+                      icon={<ArrowBackIcon />}
+                      label={formatTimeDiff(nearestAtPosition.before.diffSeconds, 'before')}
+                      size="small"
+                      variant="outlined"
+                      color="info"
+                    />
+                  )}
+                  {nearestAtPosition.after && (
+                    <Chip
+                      icon={<ArrowForwardIcon />}
+                      label={formatTimeDiff(nearestAtPosition.after.diffSeconds, 'after')}
+                      size="small"
+                      variant="outlined"
+                      color="info"
+                    />
+                  )}
+                </>
+              )}
             </Box>
 
             <Typography variant="subtitle2" gutterBottom>
