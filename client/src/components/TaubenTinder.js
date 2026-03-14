@@ -496,7 +496,7 @@ const TaubenTinder = () => {
               sx={{
                 position: 'relative',
                 width: '100%',
-                height: '35%',
+                height: '70%',
                 backgroundColor: '#000',
                 display: 'flex',
                 alignItems: 'center',
@@ -605,7 +605,7 @@ const TaubenTinder = () => {
           )}
 
           {/* Detection Info */}
-          <CardContent sx={{ height: '65%', overflow: 'auto', backgroundColor: '#fff' }}>
+          <CardContent sx={{ height: '30%', overflow: 'auto', backgroundColor: '#fff' }}>
             <Typography variant="h6" gutterBottom>
               Erkennung #{currentIndex + 1}
             </Typography>
