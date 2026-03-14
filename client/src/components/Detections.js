@@ -167,7 +167,7 @@ const Detections = () => {
     })
       .then((res) => setNearestAtPosition({ before: res.data.before || null, after: res.data.after || null }))
       .catch(() => setNearestAtPosition({ before: null, after: null }));
-  }, [selectedDetection?._id, selectedDetection?.camera_position?.rotation, selectedDetection?.camera_position?.tilt, selectedDetection?.processedAt, selectedDetection?.device?._id]);
+  }, [selectedDetection]);
 
   const fetchPositionsFromRoutes = async () => {
     try {
