@@ -1399,22 +1399,29 @@ class HardwareMonitor:
             else:
                 logger.warning(f"⚠️ Keine Temperatur für Detection abgerufen (Device: {device.get('_id')}) - Wetter-API möglicherweise nicht konfiguriert oder Fehler")
             
-            # Get current camera position (rotation/tilt)
+            # Get camera position: prefer route target position (what we commanded), fallback to MQTT-reported position
             camera_position = None
-            if device_ip and device_ip in self.device_positions:
+            actions = device.get('actions', {})
+            route_coordinates = actions.get('route', {}).get('coordinates', [])
+            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            if actions.get('mode') == 'route' and route_coordinates and route_index < len(route_coordinates):
+                # Use the route target position we just drove to (avoids wrong position from MQTT timing)
+                original_rotation = route_coordinates[route_index].get('rotation', 0)
+                original_tilt = route_coordinates[route_index].get('tilt', 0)
+                rot, tilt = self.apply_position_inversion(device, int(original_rotation), int(original_tilt))
+                camera_position = {'rotation': rot, 'tilt': tilt}
+                logger.info(f"📐 Kamera-Position für Detection (Route-Ziel): Rot={rot}°, Tilt={tilt}° (Device: {device.get('_id')}, Route-Punkt {route_index + 1})")
+            elif device_ip and device_ip in self.device_positions:
                 position_data = self.device_positions[device_ip]
                 rot = position_data.get('rot')
                 tilt = position_data.get('tilt')
                 if rot is not None and tilt is not None:
-                    camera_position = {
-                        'rotation': rot,
-                        'tilt': tilt
-                    }
-                    logger.info(f"📐 Kamera-Position für Detection: Rot={rot}°, Tilt={tilt}° (Device: {device.get('_id')})")
+                    camera_position = {'rotation': rot, 'tilt': tilt}
+                    logger.info(f"📐 Kamera-Position für Detection (MQTT): Rot={rot}°, Tilt={tilt}° (Device: {device.get('_id')})")
                 else:
                     logger.debug(f"⚠️ Keine Kamera-Position verfügbar für Device {device_ip}")
             else:
-                logger.debug(f"⚠️ Device {device_ip} nicht in device_positions gefunden")
+                logger.debug(f"⚠️ Keine Kamera-Position: Device {device_ip} nicht in Route und nicht in device_positions")
 
             # esp_rot/esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
 
