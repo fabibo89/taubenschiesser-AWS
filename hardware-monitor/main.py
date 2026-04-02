@@ -54,7 +54,7 @@ class HardwareMonitor:
         self.device_last_moved = {}  # When we last completed a move (for 20s inactivity before next move)
         # Dynamic wait threshold between moves (seconds).
         # - starts at 0 (move immediately)
-        # - +1s after "no birds found" until reaching MAX (device.actions.waitBetweenMovesSeconds)
+        # - +1s after "no birds found" until reaching MAX (device.taubenschiesser.maxWaitBetweenMovesSeconds)
         # - resets to 0 when birds are found
         # - when MAX is reached, we hold position and keep analyzing (no move) until birds are found
         self.device_dynamic_wait_threshold = {}
@@ -245,7 +245,9 @@ class HardwareMonitor:
         
         while True:
             try:
-                sleep_seconds = 10.0  # default: poll at least every 10s for device list/config
+                # Pause between /api/devices polls only. dyn_wait is not implemented here — it runs
+                # inline after each analysis (_dyn_wait_after_move_analysis).
+                sleep_seconds = 5.0
                 # logger.info("Fetching devices from API...")
                 # Get all devices from API
                 headers = {'Authorization': f'Bearer {self.service_token}'}
@@ -260,7 +262,9 @@ class HardwareMonitor:
                                 owner_id = device.get('owner')
                                 if owner_id and owner_id not in self.user_mqtt_settings:
                                     await self.load_user_mqtt_settings(owner_id)
-                                
+                            
+                            running_devices: List[Dict] = []
+                            for device in devices:
                                 device_id = device.get('_id')
                                 device_monitor_status = device.get('monitorStatus')
                                 
@@ -284,12 +288,24 @@ class HardwareMonitor:
                                     # Update previous status
                                     previous_monitor_status[device_id] = device_monitor_status
                                 
-                                # Only process devices with monitorStatus: 'running'
                                 if device_monitor_status == 'running':
-                                    # logger.info(f"Processing device {device.get('_id')} with status: {device.get('monitorStatus')}")
-                                    await self.process_taubenschiesser_device(device)
+                                    running_devices.append(device)
                                 else:
                                     logger.debug(f"Skipping device {device.get('_id')} with status: {device.get('monitorStatus')}")
+                            
+                            # Process all running devices in parallel so one device's dyn_wait sleep does not block others.
+                            if running_devices:
+                                results = await asyncio.gather(
+                                    *[self.process_taubenschiesser_device(d) for d in running_devices],
+                                    return_exceptions=True
+                                )
+                                for idx, r in enumerate(results):
+                                    if isinstance(r, Exception):
+                                        d = running_devices[idx]
+                                        logger.error(
+                                            f"process_taubenschiesser_device failed for "
+                                            f"{d.get('name', d.get('_id'))}: {r}"
+                                        )
                             
                             # Dynamic sleep: wake (at latest) when the next device is allowed to move
                             now = datetime.now()
@@ -300,13 +316,34 @@ class HardwareMonitor:
                                 device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
                                 if not device_ip or device_ip not in self.device_last_moved:
                                     continue
-                                raw_threshold = device.get('actions', {}).get('waitBetweenMovesSeconds', 20)
-                                threshold = max(5, min(300, int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 20))
+                                actions = device.get('actions', {}) or {}
+                                taub_cfg = device.get('taubenschiesser', {}) or {}
+
+                                # Use dynamic wait threshold (seconds) to schedule the next wake-up.
+                                # Source of truth for max cap: taubenschiesser.maxWaitBetweenMovesSeconds (fallback: actions.waitBetweenMovesSeconds).
+                                raw_max = taub_cfg.get('maxWaitBetweenMovesSeconds')
+                                if raw_max is None:
+                                    raw_max = actions.get('waitBetweenMovesSeconds', 20)
+                                max_threshold = max(5, min(300, int(raw_max) if isinstance(raw_max, (int, float)) else 20))
+
+                                dyn = self.device_dynamic_wait_threshold.get(device_ip, 0)
+                                try:
+                                    dyn = int(dyn)
+                                except Exception:
+                                    dyn = 0
+                                dyn = max(0, min(max_threshold, dyn))
+
                                 last_moved = self.device_last_moved[device_ip]
-                                next_move_at = last_moved + timedelta(seconds=threshold)
-                                if next_move_at > now:
-                                    sec_until = (next_move_at - now).total_seconds()
-                                    sleep_seconds = min(sleep_seconds, max(0.5, sec_until))
+                                time_since = (now - last_moved).total_seconds()
+
+                                # If we've hit max, the device will "hold" and only re-analyze after max_threshold seconds.
+                                target_wait = max_threshold if dyn >= max_threshold else dyn
+                                due_in = target_wait - time_since
+
+                                if due_in <= 0:
+                                    sleep_seconds = min(sleep_seconds, 0.5)
+                                else:
+                                    sleep_seconds = min(sleep_seconds, max(0.5, due_in))
                         elif response.status == 429:
                             logger.warning("Rate limited, waiting longer...")
                             await asyncio.sleep(60)  # Wait 1 minute if rate limited
@@ -383,7 +420,12 @@ class HardwareMonitor:
             last_moved = self.device_last_moved.get(device_ip)
             time_since_last_moved = (datetime.now() - last_moved).total_seconds() if last_moved else 0
             actions = device.get('actions', {}) or {}
-            raw_max_threshold = actions.get('waitBetweenMovesSeconds', 20)  # treated as MAX now
+            taub_cfg = device.get('taubenschiesser', {}) or {}
+            # New source of truth: device settings
+            raw_max_threshold = taub_cfg.get('maxWaitBetweenMovesSeconds')
+            # Backward compatibility: old route/actions setting
+            if raw_max_threshold is None:
+                raw_max_threshold = actions.get('waitBetweenMovesSeconds', 20)
             max_threshold = max(5, min(300, int(raw_max_threshold) if isinstance(raw_max_threshold, (int, float)) else 20))
 
             current_threshold = self.device_dynamic_wait_threshold.get(device_ip, 0)
@@ -398,22 +440,45 @@ class HardwareMonitor:
             if current_threshold >= max_threshold:
                 if time_since_last_moved > max_threshold:
                     logger.info(f"🧍 Holding position at max wait={max_threshold}s. Re-analyzing (no move).")
+                    wait_iso = self._wait_started_at_iso(device_ip)
                     await self.send_monitor_event(device, 'device_waiting', {
                         'message': f'Halte Position (max {max_threshold}s). Prüfe erneut...',
-                        'current_wait': time_since_last_moved,
+                        'wait_started_at': wait_iso,
                         'threshold': max_threshold,
                         'max_threshold': max_threshold,
                         'dynamic_threshold': current_threshold,
                         'holding': True
                     })
                     await self.analyze_after_movement(device)
-                    # Reset timer so we analyze again after max_threshold seconds
-                    self.device_last_moved[device_ip] = datetime.now()
+                    # After hold re-analysis:
+                    # - If CV detected birds, `analyze_frame_for_birds()` resets dyn to 0 -> keep holding.
+                    # - If no birds were found, release hold and move again.
+                    post_dyn = self.device_dynamic_wait_threshold.get(device_ip, current_threshold)
+                    try:
+                        post_dyn = int(post_dyn)
+                    except Exception:
+                        post_dyn = current_threshold
+
+                    if post_dyn == 0:
+                        # Birds found: schedule next eligibility from now, avoid immediate move.
+                        logger.info(
+                            f"🧍‍♂️ Hold re-analysis result: birds detected (post_dyn={post_dyn}) -> keep holding"
+                        )
+                        self.device_last_moved[device_ip] = datetime.now()
+                        return
+
+                    # No birds: dyn is still at max -> time is up, move next.
+                    logger.info(
+                        f"🚀 Hold re-analysis result: no birds (post_dyn={post_dyn}) -> moving now"
+                    )
+                    await self.move_device(device, time_since_last_moved)
+                    return
                 else:
                     logger.info(f"⏳ Holding at max wait {max_threshold}s (current: {time_since_last_moved:.1f}s)")
+                    wait_iso = self._wait_started_at_iso(device_ip)
                     await self.send_monitor_event(device, 'device_waiting', {
                         'message': f'Halte Position (Warte {time_since_last_moved:.1f}s / {max_threshold}s)',
-                        'current_wait': time_since_last_moved,
+                        'wait_started_at': wait_iso,
                         'threshold': max_threshold,
                         'max_threshold': max_threshold,
                         'dynamic_threshold': current_threshold,
@@ -424,15 +489,10 @@ class HardwareMonitor:
             if time_since_last_moved > current_threshold:
                 await self.move_device(device, time_since_last_moved)
             else:
-                logger.info(f"⏳ Waiting for {current_threshold}s inactivity period (current: {time_since_last_moved:.1f}s)")
-                await self.send_monitor_event(device, 'device_waiting', {
-                    'message': f'Warte auf Inaktivität ({time_since_last_moved:.1f}s / {current_threshold}s)',
-                    'current_wait': time_since_last_moved,
-                    'threshold': current_threshold,
-                    'max_threshold': max_threshold,
-                    'dynamic_threshold': current_threshold,
-                    'holding': False
-                })
+                logger.debug(
+                    f"⏳ {device_ip}: not yet eligible to move "
+                    f"(time_since={time_since_last_moved:.1f}s <= threshold={current_threshold}s)"
+                )
             
         except Exception as e:
             logger.error(f"Error processing device {device.get('deviceId', 'unknown')}: {e}")
@@ -463,6 +523,9 @@ class HardwareMonitor:
     
     async def move_device_step(self, device: Dict, time_since_last_seen: float = None):
         """Move device step by step"""
+        device_ip = None
+        completed_move = False
+        analysis_finished = False
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -517,6 +580,7 @@ class HardwareMonitor:
             
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
+            completed_move = True
             
             # Send movement complete event
             await self.send_monitor_event(device, 'device_stopped', {
@@ -536,14 +600,15 @@ class HardwareMonitor:
                 'wait_time': stabilize_s
             })
             await asyncio.sleep(stabilize_s)
-            await self.analyze_after_movement(device)
-            
-            # Record when we last moved so the 20s inactivity period starts now
-            self.device_last_moved[device_ip] = datetime.now()
-            logger.info(f"✅ Analysis complete for device {device_ip}, resetting wait timer (20s inactivity period starts now)")
-            
+            analysis_finished = await self.analyze_after_movement(device, from_completed_move=True)
         except Exception as e:
             logger.error(f"Error moving device step: {e}")
+            analysis_finished = False
+        finally:
+            # If analyze+dyn_wait did not run, still stamp last_moved so we don't spin.
+            if completed_move and device_ip and not analysis_finished:
+                self.device_last_moved[device_ip] = datetime.now()
+                logger.info(f"✅ Move complete for device {device_ip} (analysis/dyn_wait skipped) — last_moved set")
     
     def apply_position_inversion(self, device: Dict, rotation: int, tilt: int) -> Tuple[int, int]:
         """
@@ -572,6 +637,11 @@ class HardwareMonitor:
     
     async def move_device_route(self, device: Dict, time_since_last_seen: float = None):
         """Move device along configured route"""
+        device_ip = None
+        completed_move = False
+        analysis_finished = False
+        route_index = 0
+        route_coordinates: List = []
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -641,6 +711,7 @@ class HardwareMonitor:
             
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
+            completed_move = True
             
             # Send movement complete event
             await self.send_monitor_event(device, 'device_stopped', {
@@ -660,17 +731,20 @@ class HardwareMonitor:
                 'wait_time': stabilize_s
             })
             await asyncio.sleep(stabilize_s)
-            await self.analyze_after_movement(device)
-            
-            # Record when we last moved so the 20s inactivity period starts now
-            self.device_last_moved[device_ip] = datetime.now()
-            logger.info(f"✅ Analysis complete for device {device_ip}, resetting wait timer (20s inactivity period starts now)")
-            
-            # Update route index AFTER analysis is complete
-            self.movement_queue[device_ip] = (route_index + 1) % len(route_coordinates)
-            
+            analysis_finished = await self.analyze_after_movement(device, from_completed_move=True)
         except Exception as e:
             logger.error(f"Error moving device route: {e}")
+            analysis_finished = False
+        finally:
+            if completed_move and device_ip:
+                try:
+                    if route_coordinates:
+                        self.movement_queue[device_ip] = (route_index + 1) % len(route_coordinates)
+                except Exception:
+                    pass
+                if not analysis_finished:
+                    self.device_last_moved[device_ip] = datetime.now()
+                    logger.info(f"✅ Route move complete for device {device_ip} (analysis/dyn_wait skipped) — last_moved set")
     
     async def wait_for_movement_complete(self, device_ip: str, timeout: int = 30):
         """Wait for device to complete movement via MQTT or timeout"""
@@ -705,6 +779,31 @@ class HardwareMonitor:
         """Send live monitoring event to server"""
         try:
             device_id = device.get('_id') or device.get('deviceId')
+            taub_cfg = device.get('taubenschiesser', {}) or {}
+            actions = device.get('actions', {}) or {}
+            device_ip = taub_cfg.get('ip') if isinstance(taub_cfg, dict) else None
+
+            # Always attach dynamic wait info so UIs/HA can show it even when the last event isn't device_waiting.
+            try:
+                raw_max = taub_cfg.get('maxWaitBetweenMovesSeconds')
+                if raw_max is None:
+                    raw_max = actions.get('waitBetweenMovesSeconds', 20)
+                max_threshold = max(5, min(300, int(raw_max) if isinstance(raw_max, (int, float)) else 20))
+                dyn = self.device_dynamic_wait_threshold.get(device_ip, 0) if device_ip else 0
+                try:
+                    dyn = int(dyn)
+                except Exception:
+                    dyn = 0
+                dyn = max(0, min(max_threshold, dyn))
+                if isinstance(data, dict):
+                    data.setdefault('dynamic_threshold', dyn)
+                    data.setdefault('max_threshold', max_threshold)
+                    data.setdefault('holding', dyn >= max_threshold)
+                    we = self._wait_elapsed_seconds(device_ip)
+                    if we is not None:
+                        data.setdefault('wait_elapsed_seconds', we)
+            except Exception:
+                pass
             
             event_data = {
                 'deviceId': device_id,
@@ -762,9 +861,107 @@ class HardwareMonitor:
                         
         except Exception as e:
             logger.debug(f"Error sending position update: {e}")
-    
-    async def analyze_after_movement(self, device: Dict):
-        """Analyze camera after movement - supports both Tapo and Raspberry Pi cameras"""
+
+    def _wait_started_at_iso(self, device_ip: Optional[str]) -> str:
+        """Anchor for wait display = scheduler clock (device_last_moved), same as log 'current: Xs'."""
+        if not device_ip:
+            return datetime.now().isoformat()
+        lm = self.device_last_moved.get(device_ip)
+        return lm.isoformat() if lm else datetime.now().isoformat()
+
+    def _wait_elapsed_seconds(self, device_ip: Optional[str]) -> Optional[float]:
+        """Elapsed since last_moved — matches control-loop timing vs dyn/max."""
+        if not device_ip:
+            return None
+        lm = self.device_last_moved.get(device_ip)
+        if lm is None:
+            return None
+        return max(0.0, (datetime.now() - lm).total_seconds())
+
+    async def _emit_device_waiting_snapshot(self, device: Dict) -> None:
+        """
+        Send device_waiting immediately after dyn is known (same payload the UI needs for Wartezeit).
+        Must run right after cv_analysis_complete / dyn update — before save_detection_to_db or trigger_shoot,
+        so the dashboard is not stuck on the analysis chip until slow I/O finishes.
+        wait_started_at is current time (post-analysis wait), not device_last_moved.
+        """
+        taubenschiesser_config = device.get('taubenschiesser', {})
+        device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+        if not device_ip:
+            return
+
+        actions = device.get('actions', {}) or {}
+        taub_cfg = device.get('taubenschiesser', {}) or {}
+        raw_max = taub_cfg.get('maxWaitBetweenMovesSeconds')
+        if raw_max is None:
+            raw_max = actions.get('waitBetweenMovesSeconds', 20)
+        max_threshold = max(5, min(300, int(raw_max) if isinstance(raw_max, (int, float)) else 20))
+
+        dyn = self.device_dynamic_wait_threshold.get(device_ip, 0)
+        try:
+            dyn = int(dyn)
+        except Exception:
+            dyn = 0
+        dyn = max(0, min(max_threshold, dyn))
+
+        holding = dyn >= max_threshold and max_threshold > 0
+        threshold = max_threshold if holding else dyn
+
+        logger.info(
+            f"📣 Emitting immediate device_waiting snapshot after analysis: "
+            f"device={device_ip}, holding={holding}, dyn={dyn}s, threshold={threshold}s, max={max_threshold}s"
+        )
+        # Post-analysis wait window: anchor "now" so UI elapsed starts ~0 (not time since last move).
+        wait_started_at = datetime.now().isoformat()
+        await self.send_monitor_event(device, 'device_waiting', {
+            'message': (
+                f'{"Halte Position" if holding else "Warte"}: Ziel {threshold}s '
+                f'(dyn {dyn}s / max {max_threshold}s)'
+            ),
+            'wait_started_at': wait_started_at,
+            'threshold': threshold,
+            'max_threshold': max_threshold,
+            'dynamic_threshold': dyn,
+            'holding': holding,
+        })
+
+    async def _dyn_wait_after_move_analysis(self, device: Dict) -> None:
+        """
+        After analysis: sleep dyn_wait seconds (device_waiting was already sent from analyze_frame).
+        Sets device_last_moved so the next process_taubenschiesser_device iteration can move again.
+        """
+        taubenschiesser_config = device.get('taubenschiesser', {})
+        device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+        if not device_ip:
+            return
+
+        actions = device.get('actions', {}) or {}
+        taub_cfg = device.get('taubenschiesser', {}) or {}
+        raw_max = taub_cfg.get('maxWaitBetweenMovesSeconds')
+        if raw_max is None:
+            raw_max = actions.get('waitBetweenMovesSeconds', 20)
+        max_threshold = max(5, min(300, int(raw_max) if isinstance(raw_max, (int, float)) else 20))
+
+        dyn = self.device_dynamic_wait_threshold.get(device_ip, 0)
+        try:
+            dyn = int(dyn)
+        except Exception:
+            dyn = 0
+        dyn = max(0, min(max_threshold, dyn))
+
+        holding = dyn >= max_threshold and max_threshold > 0
+        threshold = max_threshold if holding else dyn
+
+        logger.info(f"⏳ dyn_wait: sleep {dyn}s (threshold={threshold}s, max={max_threshold}s) for device {device_ip}")
+        await asyncio.sleep(float(dyn))
+
+        # Next move when time_since_last_moved > current_threshold (same dyn value until next analysis updates it)
+        self.device_last_moved[device_ip] = datetime.now() - timedelta(seconds=threshold + 1)
+
+    async def analyze_after_movement(self, device: Dict, from_completed_move: bool = False) -> bool:
+        """Analyze camera after movement - supports both Tapo and Raspberry Pi cameras.
+        If from_completed_move is True, after analysis we sleep dyn_wait (device_waiting already sent in analyze_frame).
+        Returns True if analysis path completed and dyn-wait ran when from_completed_move; False on early exit / error."""
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -780,7 +977,7 @@ class HardwareMonitor:
             last_seen = self.device_last_seen.get(device_ip)
             if not last_seen:
                 logger.info(f"ℹ️ Device {device_ip} not seen via MQTT yet - skipping image analysis")
-                return
+                return False
             
             time_since_last_seen = (datetime.now() - last_seen).total_seconds()
             if time_since_last_seen > 30:  # 30 second offline threshold
@@ -820,6 +1017,8 @@ class HardwareMonitor:
                 original_frame = await self.load_local_image(local_image_path)
                 if original_frame is not None:
                     await self.process_single_camera(device, original_frame, 'local')
+                else:
+                    return False
             elif (camera_type == 'raspberry-pi' and has_raspberry_pi) or (has_raspberry_pi and not has_tapo):
                 await self.analyze_raspberry_pi_camera(device, device_ip, camera_config)
             elif (camera_type == 'tapo' and has_tapo) or has_tapo:
@@ -829,12 +1028,18 @@ class HardwareMonitor:
                 await self.send_monitor_event(device, 'error', {
                     'message': 'No camera configured'
                 })
+                return False
+
+            if from_completed_move:
+                await self._dyn_wait_after_move_analysis(device)
+            return True
                 
         except Exception as e:
             logger.error(f"Error analyzing after movement: {e}")
             await self.send_monitor_event(device, 'error', {
                 'message': str(e)
             })
+            return False
     
     async def analyze_tapo_camera(self, device: Dict, device_ip: str, camera_config: Dict, camera_label: str = 'tapo'):
         """Analyze Tapo camera"""
@@ -1149,7 +1354,13 @@ class HardwareMonitor:
                         # Log CV service response details
                         bird_count = result.get('bird_count', 0)
                         detections = result.get('detections', [])
-                        processing_time = result.get('processing_time', 0)
+                        _pt_raw = result.get('processing_time', 0)
+                        try:
+                            processing_time_ms = float(_pt_raw or 0)
+                        except (TypeError, ValueError):
+                            processing_time_ms = 0.0
+                        # CV service returns milliseconds; UI must show seconds (else ~10000 ms looks like "10000s" or "10s" confusion)
+                        processing_time_sec = processing_time_ms / 1000.0
                         detection_classes = [d.get('class', 'unknown') for d in detections]
                         birds_found = result.get('birds_found', False)
                         logger.info(f"📥 CV response ({camera_source}): birds_found={birds_found}, bird_count={bird_count}, len(detections)={len(detections)}, classes={detection_classes}, service={result.get('service', 'N/A')}")
@@ -1206,60 +1417,34 @@ class HardwareMonitor:
                                 image_info, zoom_factor, current_rotation, current_tilt, camera_source,
                             )
 
-                        # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
-                        await self.send_monitor_event(device, 'cv_analysis_complete', {
-                            'bird_count': bird_count,
-                            'detections': detections,
-                            'target_bird': target_bird_for_event,
-                            'processing_time': processing_time,
-                            'birds_found': result.get('birds_found', False),
-                            'confidence_level': result.get('confidence_level', 0),
-                            'total_objects': len(detections),
-                            'objects_by_class': all_objects,
-                            'camera': camera_source
-                        })
-                        
-                        # Log detections only if objects found
-                        if detections:
-                            logger.info(f"🤖 CV Analysis ({camera_source}): {bird_count} birds found, processing time: {processing_time:.2f}s")
-                            for idx, detection in enumerate(detections, 1):
-                                obj_class = detection.get('class', 'unknown')
-                                confidence = detection.get('confidence', 0)
-                                logger.info(f"  Detection #{idx}: {obj_class} (confidence: {confidence:.2f})")
+                        birds_found_flag = result.get('birds_found', False)
+                        if birds_found_flag and bird_count > 0:
+                            analysis_msg = (
+                                f'Analyse: {bird_count} Vögel erkannt ({camera_source}, '
+                                f'{processing_time_sec:.2f}s)'
+                            )
+                        elif birds_found_flag:
+                            analysis_msg = (
+                                f'Analyse: Vögel erkannt ({camera_source}, {processing_time_sec:.2f}s)'
+                            )
                         else:
-                            logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time:.2f}s)")
-                        
-                        if result.get('birds_found', False):
-                            confidence = result.get('confidence_level', 0)
-                            monitor_armed = device.get('monitorArmed', False)
-                            action_msg = "save+shoot" if monitor_armed else "save only (monitor not armed)"
-                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {action_msg} because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
+                            analysis_msg = (
+                                f'Analyse: 0 Vögel ({camera_source}, {processing_time_sec:.2f}s)'
+                            )
 
-                            # Dynamic wait: birds found => reset to 0 (move immediately next time)
-                            if device_ip:
+                        # IMPORTANT: Update dynamic wait threshold BEFORE emitting cv_analysis_complete.
+                        # Otherwise the UI will briefly show a stale dyn value (often the previous max=20)
+                        # on all non-wait events until the next device_waiting arrives.
+                        if device_ip:
+                            if birds_found_flag:
+                                # birds found => reset to 0 (move immediately next time)
                                 self.device_dynamic_wait_threshold[device_ip] = 0
-                                # Ensure next loop is eligible to move immediately when threshold=0
-                                self.device_last_moved[device_ip] = datetime.now() - timedelta(seconds=5)
-                            
-                            # Send bird detection event
-                            await self.send_monitor_event(device, 'birds_detected', {
-                                'bird_count': bird_count,
-                                'confidence': confidence,
-                                'message': f'{bird_count} birds detected with confidence {confidence:.2f} ({camera_source})',
-                                'camera': camera_source
-                            })
-                            
-                            # Save detection to database (with shotFired=monitor_armed)
-                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed)
-                            
-                            # Trigger shoot only when monitor is armed
-                            if monitor_armed:
-                                await self.trigger_shoot(device, target_bird=target_bird)
-                        else:
-                            # Dynamic wait: no birds found => increase by +1s up to max
-                            if device_ip:
+                            else:
                                 actions = device.get('actions', {}) or {}
-                                raw_max_threshold = actions.get('waitBetweenMovesSeconds', 20)
+                                taub_cfg = device.get('taubenschiesser', {}) or {}
+                                raw_max_threshold = taub_cfg.get('maxWaitBetweenMovesSeconds')
+                                if raw_max_threshold is None:
+                                    raw_max_threshold = actions.get('waitBetweenMovesSeconds', 20)
                                 max_threshold = max(5, min(300, int(raw_max_threshold) if isinstance(raw_max_threshold, (int, float)) else 20))
                                 current_threshold = self.device_dynamic_wait_threshold.get(device_ip, 0)
                                 try:
@@ -1268,7 +1453,64 @@ class HardwareMonitor:
                                     current_threshold = 0
                                 new_threshold = min(max_threshold, max(0, current_threshold) + 1)
                                 self.device_dynamic_wait_threshold[device_ip] = new_threshold
-                                logger.info(f"🕒 Dynamic wait increased: {current_threshold}s -> {new_threshold}s (max {max_threshold}s) for device {device_ip}")
+                                logger.info(
+                                    f"🕒 Dynamic wait increased: {current_threshold}s -> {new_threshold}s "
+                                    f"(max {max_threshold}s) for device {device_ip}"
+                                )
+
+                        # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
+                        # Same anchor as following device_waiting: start of post-analysis wait (not last move).
+                        wait_started_at = datetime.now().isoformat()
+                        await self.send_monitor_event(device, 'cv_analysis_complete', {
+                            'bird_count': bird_count,
+                            'detections': detections,
+                            'target_bird': target_bird_for_event,
+                            'processing_time': processing_time_ms,
+                            'processing_time_sec': processing_time_sec,
+                            'birds_found': birds_found_flag,
+                            'confidence_level': result.get('confidence_level', 0),
+                            'total_objects': len(detections),
+                            'objects_by_class': all_objects,
+                            'camera': camera_source,
+                            'message': analysis_msg,
+                            'wait_started_at': wait_started_at,
+                        })
+                        
+                        # Log detections only if objects found
+                        if detections:
+                            logger.info(f"🤖 CV Analysis ({camera_source}): {bird_count} birds found, processing time: {processing_time_sec:.2f}s")
+                            for idx, detection in enumerate(detections, 1):
+                                obj_class = detection.get('class', 'unknown')
+                                confidence = detection.get('confidence', 0)
+                                logger.info(f"  Detection #{idx}: {obj_class} (confidence: {confidence:.2f})")
+                        else:
+                            logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time_sec:.2f}s)")
+                        
+                        if birds_found_flag:
+                            confidence = result.get('confidence_level', 0)
+                            monitor_armed = device.get('monitorArmed', False)
+                            action_msg = "save+shoot" if monitor_armed else "save only (monitor not armed)"
+                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {action_msg} because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
+                            
+                            # Send bird detection event
+                            await self.send_monitor_event(device, 'birds_detected', {
+                                'bird_count': bird_count,
+                                'confidence': confidence,
+                                'message': f'{bird_count} birds detected with confidence {confidence:.2f} ({camera_source})',
+                                'camera': camera_source,
+                                'wait_started_at': wait_started_at,
+                            })
+                            # Warte-Status sofort — vor DB/Schuss (kann viele Sekunden dauern)
+                            await self._emit_device_waiting_snapshot(device)
+                            
+                            # Save detection to database (with shotFired=monitor_armed)
+                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed)
+                            
+                            # Trigger shoot only when monitor is armed
+                            if monitor_armed:
+                                await self.trigger_shoot(device, target_bird=target_bird)
+                        else:
+                            await self._emit_device_waiting_snapshot(device)
                     else:
                         logger.error(f"❌ CV analysis failed for device {device_ip} ({camera_source}): HTTP {response.status}")
                         await self.send_monitor_event(device, 'error', {
@@ -1904,7 +2146,7 @@ class HardwareMonitor:
                                 if device.get('camera', {}).get('rtspUrl'):
                                     await self.process_camera_stream(device)
                 
-                await asyncio.sleep(10)  # Process every 10 seconds
+                await asyncio.sleep(60)  # Background stream poll (not the main taubenschiesser loop)
                 
             except Exception as e:
                 logger.error(f"Error processing camera streams: {e}")

@@ -326,7 +326,7 @@ class HardwareHelper {
         
         const response = await axios.get(url, {
           responseType: 'arraybuffer',
-          timeout: 10000 // 10 second timeout
+          timeout: 20000
         });
 
         if (response.data) {
@@ -366,7 +366,7 @@ class HardwareHelper {
       
       // Use rtspFrameManager (same as Dashboard) for consistent behavior
       const deviceId = device._id?.toString() || device.id || 'unknown';
-      const frameBuffer = await rtspFrameManager.getFrame(deviceId, rtspUrl, 10000);
+      const frameBuffer = await rtspFrameManager.getFrame(deviceId, rtspUrl, 20000);
       
       if (frameBuffer && frameBuffer.length > 0) {
         // Convert buffer to base64
@@ -399,7 +399,7 @@ class HardwareHelper {
         image: imageBase64,
         zoom: zoomFactor
       }, {
-        timeout: 10000
+        timeout: 20000
       });
 
       if (response.data && response.data.image) {
@@ -450,7 +450,7 @@ class HardwareHelper {
         logger.info(`Capturing original frame from Raspberry Pi: ${baseUrlWithFlip}`);
         const originalResponse = await axios.get(baseUrlWithFlip, {
           responseType: 'arraybuffer',
-          timeout: 10000
+          timeout: 20000
         });
         
         if (!originalResponse.data) {
@@ -469,7 +469,7 @@ class HardwareHelper {
           logger.info(`Capturing zoomed frame from Raspberry Pi: ${zoomedUrl}`);
           const zoomedResponse = await axios.get(zoomedUrl, {
             responseType: 'arraybuffer',
-            timeout: 10000
+            timeout: 20000
           });
           
           if (zoomedResponse.data) {

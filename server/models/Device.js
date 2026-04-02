@@ -64,6 +64,14 @@ const deviceSchema = new mongoose.Schema({
     stabilizeTimeMs: {
       type: Number,
       default: 500
+    },
+    // Max. Wartezeit zwischen Bewegungen (Sekunden) für dynamischen Timer im Hardware-Monitor
+    // (ehemals actions.waitBetweenMovesSeconds)
+    maxWaitBetweenMovesSeconds: {
+      type: Number,
+      default: 20,
+      min: 5,
+      max: 300
     }
   },
   // Camera Configuration
@@ -225,7 +233,10 @@ const deviceSchema = new mongoose.Schema({
   hardwareMonitor: {
     lastEventType: String,
     lastEventData: mongoose.Schema.Types.Mixed,
-    lastEventAt: Date
+    lastEventAt: Date,
+    // Last device_waiting payload (kept even if later events are birds_detected, etc.)
+    lastWaitingData: mongoose.Schema.Types.Mixed,
+    lastWaitingAt: Date
   },
   // Monitor scharf: bei Taubenerkennung schießen (true) oder nur Detection speichern (false)
   monitorArmed: {

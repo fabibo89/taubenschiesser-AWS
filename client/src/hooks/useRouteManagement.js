@@ -10,7 +10,6 @@ const API_URL = (typeof process !== 'undefined' && process.env && process.env.RE
 export const useRouteManagement = (deviceId) => {
   const getDefaultActionsConfig = () => ({
     mode: 'impulse',
-    waitBetweenMovesSeconds: 20,
     route: { coordinates: [] }
   });
   const getDefaultCoordinate = () => ({

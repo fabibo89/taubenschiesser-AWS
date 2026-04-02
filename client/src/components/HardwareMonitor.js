@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -7,6 +7,7 @@ import {
   CardContent,
   Grid,
   Chip,
+  Button,
   FormControl,
   InputLabel,
   Select,
@@ -27,11 +28,14 @@ import {
   Error as ErrorIcon,
   PhotoCamera as CameraIcon,
   ZoomIn as ZoomIcon,
-  Psychology as BrainIcon
+  Psychology as BrainIcon,
+  Pause as PauseIcon,
+  PlayArrow as PlayArrowIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { useSocket } from '../contexts/SocketContext';
+import { formatWaitChipLine as formatWaitLine } from '../utils/waitDisplay';
 
 const HardwareMonitor = () => {
   const [devices, setDevices] = useState([]);
@@ -40,11 +44,13 @@ const HardwareMonitor = () => {
   const [events, setEvents] = useState([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [originalImage, setOriginalImage] = useState(null);
-  const [zoomedImage, setZoomedImage] = useState(null);
   const [cvResults, setCvResults] = useState(null);
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [deviceStatus, setDeviceStatus] = useState('idle');
   const [statusMessage, setStatusMessage] = useState('');
+  const [waitingInfo, setWaitingInfo] = useState(null);
+  const [livePaused, setLivePaused] = useState(false);
+  const livePausedRef = useRef(false);
   const { socket, connected } = useSocket();
 
   const steps = [
@@ -67,6 +73,8 @@ const HardwareMonitor = () => {
   };
 
   const handleMonitorEvent = useCallback((event) => {
+    if (livePausedRef.current) return;
+
     console.log('Hardware monitor event:', event);
     
     const { eventType, data, timestamp } = event;
@@ -83,19 +91,28 @@ const HardwareMonitor = () => {
       case 'device_waiting':
         setCurrentStep(0);
         setDeviceStatus('waiting');
-        if (data?.current_wait != null && data?.threshold != null) {
+        if (data?.threshold != null) {
           const holding = data?.holding === true;
           const dyn = data?.dynamic_threshold;
           const max = data?.max_threshold;
           const base = holding ? 'Halte Position' : 'Warte';
-          const extra =
-            dyn != null && max != null
-              ? ` (dyn ${dyn}s / max ${max}s)`
-              : '';
-          setStatusMessage(
-            `${base}: ${Number(data.current_wait).toFixed(1)}s / ${Number(data.threshold).toFixed(0)}s${extra}`
-          );
+          const extra = max != null ? ` (max ${max}s)` : '';
+          const anchorMs = data.wait_started_at
+            ? Date.parse(data.wait_started_at)
+            : Date.now();
+          const t0 = Number.isNaN(anchorMs) ? Date.now() : anchorMs;
+          const elapsed = Math.max(0, (Date.now() - t0) / 1000);
+          setWaitingInfo({
+            base,
+            waitStartedAtMs: t0,
+            threshold: Number(data.threshold),
+            dynamicThreshold: dyn != null ? Number(dyn) : null,
+            maxThreshold: max != null ? Number(max) : null,
+            holding,
+          });
+          setStatusMessage(formatWaitLine(base, elapsed, data.threshold, extra));
         } else {
+          setWaitingInfo(null);
           setStatusMessage(data.message);
         }
         break;
@@ -103,24 +120,28 @@ const HardwareMonitor = () => {
       case 'device_busy':
         setCurrentStep(0);
         setDeviceStatus('busy');
+        setWaitingInfo(null);
         setStatusMessage(data.message);
         break;
       
       case 'device_moving':
         setCurrentStep(1);
         setDeviceStatus('moving');
+        setWaitingInfo(null);
         setStatusMessage(data.message);
         break;
       
       case 'device_stopped':
         setCurrentStep(1);
         setDeviceStatus('stopped');
+        setWaitingInfo(null);
         setStatusMessage(data.message);
         break;
       
       case 'device_stabilizing':
         setCurrentStep(1);
         setDeviceStatus('stabilizing');
+        setWaitingInfo(null);
         if (data?.wait_time != null) {
           setStatusMessage(`Warte ${data.wait_time}s bis Kamera stabilisiert...`);
         } else {
@@ -131,15 +152,16 @@ const HardwareMonitor = () => {
       case 'analysis_started':
         setCurrentStep(1);
         setOriginalImage(null);
-        setZoomedImage(null);
         setCvResults(null);
         setDeviceStatus('analyzing');
+        setWaitingInfo(null);
         setStatusMessage('Analyse gestartet');
         break;
       
       case 'capturing_image':
         setCurrentStep(2);
         setDeviceStatus('capturing');
+        setWaitingInfo(null);
         const cameraName = data.camera === 'tapo' ? 'Tapo' : data.camera === 'raspberry-pi' ? 'Raspberry Pi' : '';
         setStatusMessage(cameraName ? `Bild wird aufgenommen (${cameraName})...` : 'Bild wird aufgenommen...');
         break;
@@ -150,19 +172,21 @@ const HardwareMonitor = () => {
         const camLabel = data.camera === 'tapo' ? 'Tapo' : data.camera === 'raspberry-pi' ? 'Raspberry Pi' : '';
         setStatusMessage(camLabel ? `${camLabel} Bild aufgenommen (${data.width}x${data.height}px)` : `Bild aufgenommen (${data.width}x${data.height}px)`);
         setDeviceStatus('captured');
+        setWaitingInfo(null);
         break;
       
       case 'image_zoomed':
         setCurrentStep(3);
-        setZoomedImage(data.image);
         const zoomCam = data.camera === 'tapo' ? 'Tapo' : data.camera === 'raspberry-pi' ? 'Raspberry Pi' : '';
         setStatusMessage(zoomCam ? `${zoomCam} Zoom ${data.zoom_factor}x` : `Zoom ${data.zoom_factor}x angewendet`);
         setDeviceStatus('zoomed');
+        setWaitingInfo(null);
         break;
       
       case 'analyzing':
         setCurrentStep(4);
         setDeviceStatus('analyzing_cv');
+        setWaitingInfo(null);
         const analyzingName = data.camera === 'tapo' ? 'Tapo' : data.camera === 'raspberry-pi' ? 'Raspberry Pi' : '';
         setStatusMessage(analyzingName ? `CV-Analyse (${analyzingName})...` : 'CV-Analyse läuft...');
         break;
@@ -171,6 +195,7 @@ const HardwareMonitor = () => {
         setCurrentStep(4);
         setCvResults(data);
         setDeviceStatus('analysis_complete');
+        setWaitingInfo(null);
         if (data.total_objects > 0) {
           const objectSummary = Object.entries(data.objects_by_class || {})
             .map(([className, count]) => `${count}x ${className}`)
@@ -188,11 +213,13 @@ const HardwareMonitor = () => {
         break;
       
       case 'birds_detected':
+        setWaitingInfo(null);
         toast.success(`${data.bird_count} Vögel erkannt! Konfidenz: ${(data.confidence * 100).toFixed(1)}%`);
         break;
       
       case 'error':
         setDeviceStatus('error');
+        setWaitingInfo(null);
         setStatusMessage(`Fehler: ${data.message}`);
         toast.error(`Fehler: ${data.message}`);
         break;
@@ -201,6 +228,25 @@ const HardwareMonitor = () => {
         break;
     }
   }, []);
+
+  // Locally tick wait elapsed every second (anchor: wait_started_at from server).
+  useEffect(() => {
+    if (deviceStatus !== 'waiting' || !waitingInfo || livePaused) return;
+
+    const interval = setInterval(() => {
+      setWaitingInfo((prev) => {
+        if (!prev) return prev;
+        const elapsed = Math.max(0, (Date.now() - prev.waitStartedAtMs) / 1000);
+
+        const max = prev.maxThreshold;
+        const extra = max != null ? ` (max ${max}s)` : '';
+        setStatusMessage(formatWaitLine(prev.base, elapsed, prev.threshold, extra));
+        return prev;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [deviceStatus, waitingInfo, livePaused]);
 
   useEffect(() => {
     fetchDevices();
@@ -235,13 +281,28 @@ const HardwareMonitor = () => {
   const handleDeviceChange = (event) => {
     const deviceId = event.target.value;
     setSelectedDevice(deviceId);
+    setLivePaused(false);
+    livePausedRef.current = false;
     setEvents([]);
     setCurrentStep(0);
     setOriginalImage(null);
-    setZoomedImage(null);
     setCvResults(null);
     setDeviceStatus('idle');
     setStatusMessage('');
+    setWaitingInfo(null);
+
+    // Initialize UI immediately from persisted last hardware-monitor event (if available)
+    const dev = devices.find((d) => d?._id === deviceId);
+    const lastType = dev?.hardwareMonitor?.lastEventType;
+    const lastData = dev?.hardwareMonitor?.lastEventData;
+    const lastAt = dev?.hardwareMonitor?.lastEventAt;
+    if (lastType && lastData) {
+      handleMonitorEvent({
+        eventType: lastType,
+        data: lastData,
+        timestamp: lastAt || new Date().toISOString(),
+      });
+    }
   };
 
   const getStatusColor = (status) => {
@@ -361,7 +422,7 @@ const HardwareMonitor = () => {
 
   return (
     <Box>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+      <Box mb={3}>
         <Typography variant="h4">
           Hardware Monitor Live-Ansicht
         </Typography>
@@ -390,6 +451,11 @@ const HardwareMonitor = () => {
           
           {selectedDevice && isMonitoring && (
             <Box mt={2}>
+              {livePaused && (
+                <Alert severity="info" sx={{ mb: 1 }}>
+                  Live-Updates sind pausiert — die Anzeige bleibt eingefroren, bis du „Live fortsetzen“ wählst.
+                </Alert>
+              )}
               <Alert severity={getStatusColor(deviceStatus)} sx={{ mb: 1 }}>
                 <strong>Status:</strong> {statusMessage || 'Warte auf Hardware Monitor Aktivität...'}
               </Alert>
@@ -438,42 +504,21 @@ const HardwareMonitor = () => {
             </Card>
           </Grid>
 
-          {/* Images - single camera (Tapo or Raspberry Pi) */}
+          {/* Image - single camera (Tapo or Raspberry Pi) */}
           {originalImage ? (
-            <>
-              <Grid item xs={12} md={6}>
-                <Card>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>Original</Typography>
-                    <Box
-                      component="img"
-                      src={originalImage}
-                      alt="Original"
-                      sx={{ width: '100%', height: 'auto', borderRadius: 1, border: '1px solid #ddd' }}
-                    />
-                  </CardContent>
-                </Card>
-              </Grid>
-              <Grid item xs={12} md={6}>
-                <Card>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>Gezoomt</Typography>
-                    {zoomedImage ? (
-                      <Box
-                        component="img"
-                        src={zoomedImage}
-                        alt="Zoomed"
-                        sx={{ width: '100%', height: 'auto', borderRadius: 1, border: '1px solid #ddd' }}
-                      />
-                    ) : (
-                      <Box sx={{ width: '100%', height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px dashed #ccc', borderRadius: 1, backgroundColor: '#f5f5f5' }}>
-                        <Typography color="textSecondary">Kein Zoom angewendet</Typography>
-                      </Box>
-                    )}
-                  </CardContent>
-                </Card>
-              </Grid>
-            </>
+            <Grid item xs={12}>
+              <Card>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>Aktuelles Bild</Typography>
+                  <Box
+                    component="img"
+                    src={originalImage}
+                    alt="Kamerabild"
+                    sx={{ width: '100%', maxWidth: 900, height: 'auto', borderRadius: 1, border: '1px solid #ddd' }}
+                  />
+                </CardContent>
+              </Card>
+            </Grid>
           ) : (
             <Grid item xs={12}>
               <Card>
@@ -541,7 +586,14 @@ const HardwareMonitor = () => {
                     <Grid item xs={12} sm={3}>
                       <Paper sx={{ p: 2, textAlign: 'center' }}>
                         <Typography variant="h3">
-                          {(cvResults.processing_time != null && cvResults.processing_time !== '') ? `${(Number(cvResults.processing_time) / 1000).toFixed(2)} s` : 'N/A'}
+                          {(() => {
+                            const sec = cvResults.processing_time_sec != null && cvResults.processing_time_sec !== ''
+                              ? Number(cvResults.processing_time_sec)
+                              : (cvResults.processing_time != null && cvResults.processing_time !== ''
+                                ? Number(cvResults.processing_time) / 1000
+                                : null);
+                            return sec != null && Number.isFinite(sec) ? `${sec.toFixed(2)} s` : 'N/A';
+                          })()}
                         </Typography>
                         <Typography color="textSecondary">
                           Verarbeitungszeit
@@ -615,6 +667,30 @@ const HardwareMonitor = () => {
 
           {/* Event Log */}
           <Grid item xs={12}>
+            <Box
+              display="flex"
+              justifyContent="flex-end"
+              alignItems="center"
+              flexWrap="wrap"
+              gap={1}
+              sx={{ mb: 1 }}
+            >
+              <Button
+                variant={livePaused ? 'contained' : 'outlined'}
+                color={livePaused ? 'primary' : 'inherit'}
+                size="small"
+                startIcon={livePaused ? <PlayArrowIcon /> : <PauseIcon />}
+                onClick={() => {
+                  setLivePaused((p) => {
+                    const next = !p;
+                    livePausedRef.current = next;
+                    return next;
+                  });
+                }}
+              >
+                {livePaused ? 'Live fortsetzen' : 'Live pausieren'}
+              </Button>
+            </Box>
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>

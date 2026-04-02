@@ -235,6 +235,22 @@ start_application() {
     print_status "Press Ctrl+C to stop all services"
     print_status ""
     
+    # Stream background service logs into this terminal (so you see the full hardware-monitor output)
+    # Use stdbuf to avoid buffering delays when piping.
+    if command -v stdbuf >/dev/null 2>&1; then
+        print_status "Streaming hardware-monitor.log and cv-service.log..."
+        stdbuf -oL -eL tail -n 0 -f hardware-monitor.log 2>/dev/null | sed -u 's/^/[HW] /' &
+        TAIL_HW_PID=$!
+        stdbuf -oL -eL tail -n 0 -f cv-service.log 2>/dev/null | sed -u 's/^/[CV] /' &
+        TAIL_CV_PID=$!
+    else
+        print_warning "stdbuf not found; log streaming may be buffered"
+        tail -n 0 -f hardware-monitor.log 2>/dev/null | sed -u 's/^/[HW] /' &
+        TAIL_HW_PID=$!
+        tail -n 0 -f cv-service.log 2>/dev/null | sed -u 's/^/[CV] /' &
+        TAIL_CV_PID=$!
+    fi
+
     # Start the main application
     print_status "Starting Node.js services..."
     npm run dev
@@ -243,6 +259,14 @@ start_application() {
 # Function to cleanup on exit
 cleanup() {
     print_status "Cleaning up..."
+
+    # Stop log tailers (if running)
+    if [ ! -z "$TAIL_HW_PID" ] && ps -p $TAIL_HW_PID > /dev/null 2>&1; then
+        kill $TAIL_HW_PID 2>/dev/null || true
+    fi
+    if [ ! -z "$TAIL_CV_PID" ] && ps -p $TAIL_CV_PID > /dev/null 2>&1; then
+        kill $TAIL_CV_PID 2>/dev/null || true
+    fi
     
     # Kill CV service if it was started by this script
     if [ -f "cv-service.pid" ]; then

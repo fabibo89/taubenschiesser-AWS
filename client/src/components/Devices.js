@@ -49,7 +49,7 @@ const Devices = () => {
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500 },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20 },
     camera: { 
       type: 'tapo',
       directUrl: '',
@@ -130,7 +130,10 @@ const Devices = () => {
           invertRotation: device.taubenschiesser?.invertRotation || false,
           invertTilt: device.taubenschiesser?.invertTilt || false,
           shootingTimeMs: device.taubenschiesser?.shootingTimeMs ?? 500,
-          stabilizeTimeMs: device.taubenschiesser?.stabilizeTimeMs ?? 500
+          stabilizeTimeMs: device.taubenschiesser?.stabilizeTimeMs ?? 500,
+          maxWaitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds
+            ?? device.actions?.waitBetweenMovesSeconds
+            ?? 20
         },
         camera: device.camera || { 
           type: 'tapo',
@@ -157,7 +160,7 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500 },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20 },
         camera: {
           type: 'tapo',
           directUrl: '',
@@ -532,6 +535,22 @@ const Devices = () => {
                 })}
                 inputProps={{ min: 0, step: 50 }}
                 sx={{ width: 140 }}
+              />
+              <TextField
+                margin="dense"
+                label="Max Wait zwischen Moves (s)"
+                type="number"
+                variant="outlined"
+                value={formData.taubenschiesser.maxWaitBetweenMovesSeconds ?? 20}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  taubenschiesser: {
+                    ...formData.taubenschiesser,
+                    maxWaitBetweenMovesSeconds: Math.min(300, Math.max(5, Number(e.target.value) || 20))
+                  }
+                })}
+                inputProps={{ min: 5, max: 300, step: 1 }}
+                sx={{ width: 190 }}
               />
               {editingDevice?._id && (
                 <Button
@@ -1211,10 +1230,7 @@ const Devices = () => {
         previewLoading={previewLoading}
         previewError={previewError}
         onModeChange={handleModeChange}
-        onWaitBetweenMovesChange={(e) => setActionsConfig(prev => ({
-          ...prev,
-          waitBetweenMovesSeconds: Math.min(300, Math.max(5, Number(e.target.value) || 20))
-        }))}
+        onWaitBetweenMovesChange={() => {}}
         onAddCoordinate={handleAddCoordinate}
         onUpdateCoordinate={handleUpdateCoordinate}
         onCancelEdit={handleCancelEdit}

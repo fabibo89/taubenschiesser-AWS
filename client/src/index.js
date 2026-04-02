@@ -28,6 +28,18 @@ const theme = createTheme({
       main: '#0288d1',
     },
   },
+  components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        html: {
+          overflowAnchor: 'none',
+        },
+        body: {
+          overflowAnchor: 'none',
+        },
+      },
+    },
+  },
 });
 
 const root = ReactDOM.createRoot(document.getElementById('root'));

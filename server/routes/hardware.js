@@ -58,22 +58,6 @@ router.post('/detection', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
 
-    // Persist last monitor event so poll-based clients (e.g. Home Assistant) can read it
-    try {
-      device.hardwareMonitor = {
-        lastEventType: eventType,
-        lastEventData: data,
-        lastEventAt: new Date(timestamp || Date.now())
-      };
-      await device.save();
-    } catch (persistError) {
-      logger.warn('Failed to persist hardware monitor event on device', {
-        deviceId,
-        eventType,
-        error: persistError?.message || String(persistError)
-      });
-    }
-    
     // Log temperature if provided
     if (temperature !== null && temperature !== undefined) {
       logger.info(`🌡️ Temperatur in Detection-Request erhalten: ${temperature}°C (Device: ${deviceId})`);
@@ -265,6 +249,45 @@ router.post('/monitor-event', async (req, res) => {
     const device = await Device.findById(deviceId);
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
+    }
+
+    // Sanitize data before persisting (avoid MongoDB 16MB document limit, e.g. base64 images)
+    const persistedData = (() => {
+      if (!data || typeof data !== 'object') return data;
+      const d = { ...data };
+      // Most image payloads are under "image" as base64 string
+      if (typeof d.image === 'string' && d.image.length > 100_000) {
+        d.image = `[omitted ${d.image.length} chars]`;
+      }
+      // Sometimes nested image info exists
+      if (d.image_info && typeof d.image_info === 'object') {
+        d.image_info = { ...d.image_info };
+      }
+      return d;
+    })();
+
+    // Persist last monitor event so poll-based clients (e.g. Home Assistant / dashboards) can show it immediately
+    try {
+      if (!device.hardwareMonitor) {
+        device.hardwareMonitor = {};
+      }
+      device.hardwareMonitor.lastEventType = eventType;
+      device.hardwareMonitor.lastEventData = persistedData;
+      device.hardwareMonitor.lastEventAt = new Date(timestamp || Date.now());
+
+      // Keep last waiting info even if later events overwrite lastEventType
+      if (eventType === 'device_waiting') {
+        device.hardwareMonitor.lastWaitingData = persistedData;
+        device.hardwareMonitor.lastWaitingAt = new Date(timestamp || Date.now());
+      }
+
+      await device.save();
+    } catch (persistError) {
+      logger.warn('Failed to persist hardware monitor event on device', {
+        deviceId,
+        eventType,
+        error: persistError?.message || String(persistError)
+      });
     }
     
     // Emit real-time update to clients watching this device

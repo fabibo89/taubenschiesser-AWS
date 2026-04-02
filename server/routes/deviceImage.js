@@ -1,9 +1,9 @@
 const express = require('express');
 const { spawn } = require('child_process');
-const axios = require('axios');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
 const rtspFrameManager = require('../utils/rtspFrameManager');
+const hardwareHelper = require('../utils/hardwareHelper');
 
 const router = express.Router();
 
@@ -24,10 +24,50 @@ router.get('/:deviceId', async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
 
-    // RTSP-URL generieren (Fallback)
+    // Optional query params
+    const rawZoom = req.query.zoom;
+    let zoom = typeof rawZoom === 'string' ? Number.parseFloat(rawZoom) : 1.0;
+    if (!Number.isFinite(zoom) || zoom < 1.0) zoom = 1.0;
+    if (zoom > 3.0) zoom = 3.0;
+
+    const variantParam = typeof req.query.variant === 'string' ? req.query.variant : '';
+    const variant = (variantParam === 'original' || variantParam === 'zoomed')
+      ? variantParam
+      : (zoom > 1.0 ? 'zoomed' : 'original');
+
+    const format = (req.query.format === 'json') ? 'json' : 'jpeg';
+
+    // 1) Preferred: use centralized helper (supports raspberry-pi + rtsp/tapo/dual)
+    try {
+      const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(device, zoom);
+      const imageBase64 = variant === 'zoomed' ? zoomed : original;
+
+      if (format === 'json') {
+        return res.json({
+          deviceId,
+          variant,
+          zoom,
+          contentType: 'image/jpeg',
+          timestamp: new Date().toISOString(),
+          imageBase64
+        });
+      }
+
+      const buf = Buffer.from(imageBase64, 'base64');
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Last-Modified', new Date().toUTCString());
+      return res.end(buf);
+    } catch (error) {
+      logger.warn(`Centralized capture failed for device ${deviceId}: ${error.message}`);
+    }
+
+    // 2) Fallback: RTSP snapshot (legacy behavior)
     const rtspUrl = device.getRtspUrl();
     if (!rtspUrl) {
-      return res.status(400).json({ error: 'RTSP URL not available' });
+      return res.status(400).json({ error: 'Camera capture not available for this device' });
     }
 
     // Versuche, über persistenten RTSP-Stream sofort einen Frame zu liefern

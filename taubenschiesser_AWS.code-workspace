@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../taubenschiesser-HA"
+		},
+		{
+			"path": "../taubenschiesser-hardware/raspberry-pi"
 		}
 	],
 	"settings": {}

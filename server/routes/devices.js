@@ -519,7 +519,8 @@ router.get('/:id/actions', authenticateToken, async (req, res) => {
     
     res.json({
       mode: device.actions?.mode || 'impulse',
-      waitBetweenMovesSeconds: device.actions?.waitBetweenMovesSeconds ?? 20,
+      // Backward compatibility: keep returning the field, but it is now configured via device.taubenschiesser.maxWaitBetweenMovesSeconds.
+      waitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds ?? device.actions?.waitBetweenMovesSeconds ?? 20,
       route: device.actions?.route || { coordinates: [] }
     });
   } catch (error) {
@@ -551,13 +552,12 @@ router.put('/:id/actions', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Device not found' });
     }
 
-    const { mode, route, waitBetweenMovesSeconds } = req.body;
+    const { mode, route } = req.body;
     
     logger.info('Updating device actions:', { 
       deviceId: req.params.id, 
       mode, 
       route,
-      waitBetweenMovesSeconds,
       coordinates: route?.coordinates,
       coordinatesLength: route?.coordinates?.length
     });
@@ -575,20 +575,13 @@ router.put('/:id/actions', authenticateToken, async (req, res) => {
       device.actions.route = route;
     }
     
-    if (waitBetweenMovesSeconds !== undefined) {
-      const sec = Number(waitBetweenMovesSeconds);
-      if (!Number.isNaN(sec) && sec >= 5 && sec <= 300) {
-        device.actions.waitBetweenMovesSeconds = Math.round(sec);
-      }
-    }
-    
     await device.save();
     
     logger.info('Device actions updated successfully:', device.actions);
     
     res.json({
       mode: device.actions.mode,
-      waitBetweenMovesSeconds: device.actions.waitBetweenMovesSeconds ?? 20,
+      waitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds ?? device.actions.waitBetweenMovesSeconds ?? 20,
       route: device.actions.route
     });
   } catch (error) {

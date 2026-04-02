@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Grid,
   Card,
@@ -33,12 +33,13 @@ import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../contexts/SocketContext';
 import axios from 'axios';
 import Chart from 'react-apexcharts';
+import { formatWaitChipLine } from '../utils/waitDisplay';
 
 // Helper component for stream display
-const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, setIsLoading, setCurrentImage, setStreamUrl, toggleStream, cameraName, isMjpeg = false, imageRef = null }) => {
+const StreamDisplay = ({ streamUrl, isLoading, loadTimeoutRef, setIsLoading, toggleStream, cameraName, isMjpeg = false, imageRef = null }) => {
   if (!streamUrl) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%', minHeight: 180 }}>
         <CircularProgress size={40} />
         <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
           Stream wird vorbereitet...
@@ -48,7 +49,7 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
   }
   
   return (
-    <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+    <Box sx={{ width: '100%', position: 'relative' }}>
       {/* Loading-Indikator */}
       {isLoading && (
         <Box sx={{
@@ -84,8 +85,7 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
       <Box 
         sx={{ 
           position: 'relative', 
-          width: '100%', 
-          height: '100%',
+          width: '100%',
           cursor: 'pointer',
           '&:hover': {
             opacity: 0.95
@@ -102,8 +102,8 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
             alt={`${cameraName} Stream`}
             style={{
               width: '100%',
-              height: '100%',
-              objectFit: 'cover',
+              height: 'auto',
+              display: 'block',
               borderRadius: '4px'
             }}
             onError={(e) => {
@@ -114,7 +114,6 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
               setIsLoading(false);
             }}
             onLoad={() => {
-              console.log(`${cameraName} stream loaded`);
               if (loadTimeoutRef.current) {
                 clearTimeout(loadTimeoutRef.current);
               }
@@ -122,61 +121,33 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
             }}
           />
         ) : (
-          <>
-            {/* Altes Bild - wird ausgeblendet wenn neues Bild lädt */}
-            {currentImage && !isLoading && (
-              <img
-                src={currentImage}
-                alt={`Previous ${cameraName} Stream`}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  borderRadius: '4px',
-                  zIndex: 1
-                }}
-              />
-            )}
-            
-            {/* Neues Bild - bleibt immer sichtbar, auch während des Ladens */}
-            <img
-              src={streamUrl}
-              alt={`${cameraName} Stream`}
-              crossOrigin="anonymous"
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                borderRadius: '4px',
-                zIndex: 2
-              }}
-              onError={(e) => {
-                console.error(`${cameraName} image load error:`, e);
-                if (loadTimeoutRef.current) {
-                  clearTimeout(loadTimeoutRef.current);
-                }
-                setIsLoading(false);
-              }}
-              onLoad={() => {
-                console.log(`${cameraName} image loaded for:`, streamUrl);
-                if (loadTimeoutRef.current) {
-                  clearTimeout(loadTimeoutRef.current);
-                }
-                setCurrentImage(streamUrl);
-                setIsLoading(false);
-              }}
-              onLoadStart={() => {
-                console.log(`${cameraName} image loading started for:`, streamUrl);
-                setIsLoading(true);
-              }}
-            />
-          </>
+          <img
+            src={streamUrl}
+            alt={`${cameraName} Stream`}
+            crossOrigin="anonymous"
+            style={{
+              display: 'block',
+              width: '100%',
+              height: 'auto',
+              borderRadius: '4px'
+            }}
+            onError={(e) => {
+              console.error(`${cameraName} image load error:`, e);
+              if (loadTimeoutRef.current) {
+                clearTimeout(loadTimeoutRef.current);
+              }
+              setIsLoading(false);
+            }}
+            onLoad={() => {
+              if (loadTimeoutRef.current) {
+                clearTimeout(loadTimeoutRef.current);
+              }
+              setIsLoading(false);
+            }}
+            onLoadStart={() => {
+              setIsLoading(true);
+            }}
+          />
         )}
       </Box>
     </Box>
@@ -185,7 +156,7 @@ const StreamDisplay = ({ streamUrl, currentImage, isLoading, loadTimeoutRef, set
 
 // Helper component for stream placeholder
 const StreamPlaceholder = ({ toggleStream, cameraName }) => (
-  <Box textAlign="center">
+  <Box textAlign="center" sx={{ width: '100%', py: 2 }}>
     <CameraIcon sx={{ fontSize: 48, color: 'grey.400', mb: 1 }} />
     <Typography variant="body2" color="textSecondary">
       {cameraName} Stream nicht aktiv
@@ -201,21 +172,821 @@ const StreamPlaceholder = ({ toggleStream, cameraName }) => (
   </Box>
 );
 
+/** Elapsed seconds in current wait window (server anchor or legacy client-only tick). */
+const getWaitElapsedSeconds = (waitingInfo) => {
+  if (!waitingInfo) return null;
+  if (waitingInfo.wait_started_at) {
+    const t = Date.parse(waitingInfo.wait_started_at);
+    if (!Number.isNaN(t)) return Math.max(0, (Date.now() - t) / 1000);
+  }
+  if (waitingInfo.receivedAtMs != null) {
+    return Math.max(0, (Date.now() - Number(waitingInfo.receivedAtMs)) / 1000);
+  }
+  return null;
+};
+
+const getStatusColor = (status) => {
+  switch (status) {
+    case 'online':
+      return 'success';
+    case 'offline':
+      return 'error';
+    case 'maintenance':
+      return 'warning';
+    // Hardware Monitor Status Colors
+    case 'device_waiting':
+      return 'info';
+    case 'device_moving':
+      return 'warning';
+    case 'device_stopped':
+    case 'device_stabilizing':
+      return 'success';
+    case 'device_busy':
+      return 'warning';
+    case 'analysis_started':
+    case 'analyzing':
+    case 'analyzing_cv':
+    case 'capturing':
+      return 'primary';
+    case 'cv_analysis_complete':
+    case 'birds_detected':
+      return 'success';
+    case 'error':
+      return 'error';
+    default:
+      return 'default';
+  }
+};
+
+const DeviceCard = React.memo(({
+  device,
+  isStreaming,
+  position,
+  deviceStatus,
+  waitingInfo,
+  waitTick,
+  toggleStream,
+  handleDeviceControl,
+  navigate,
+}) => {
+  const [streamUrl, setStreamUrl] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const loadTimeoutRef = useRef(null);
+  // Raspberry Pi stream state
+  const [raspberryPiStreamUrl, setRaspberryPiStreamUrl] = useState(null);
+  const [raspberryPiIsLoading, setRaspberryPiIsLoading] = useState(false);
+  const raspberryPiLoadTimeoutRef = useRef(null);
+  const raspberryPiImageRef = useRef(null);
+
+  const hasTapo = device.camera?.tapo?.ip && device.camera?.tapo?.username && device.camera?.tapo?.password;
+  const hasRaspberryPi = device.camera?.raspberryPi?.ip;
+  const isDualCamera = hasTapo && hasRaspberryPi;
+
+  const normalized = useMemo(() => {
+    const rot = Math.max(0, Math.min(360, Number(position?.rot) || 0));
+    const tiltVal = Math.max(0, Math.min(180, Number(position?.tilt) || 0));
+    const rotPct = rot / 360;
+    const tiltPct = tiltVal / 180;
+    return { rotPct, tiltPct, rot, tilt: tiltVal };
+  }, [position]);
+
+  // device_waiting is only pushed from the monitor on each control-loop tick (~1s). Recompute chip
+  // text locally (same elapsed formula as waitTick).
+  const hardwareMonitorChipLabel = useMemo(() => {
+    if (deviceStatus?.status === 'device_waiting' && waitingInfo?.threshold != null) {
+      void waitTick;
+      const elapsed = getWaitElapsedSeconds(waitingInfo);
+      if (elapsed == null) return deviceStatus?.message ?? '';
+      const holding = waitingInfo.holding === true;
+      const base = holding ? 'Halte Position' : 'Warte';
+      const max = waitingInfo.max_threshold;
+      const extra = max != null ? ` (max ${Number(max).toFixed(0)}s)` : '';
+      return formatWaitChipLine(base, elapsed, waitingInfo.threshold, extra);
+    }
+    return deviceStatus?.message ?? '';
+  }, [deviceStatus?.status, deviceStatus?.message, waitingInfo, waitTick]);
+
+  useEffect(() => {
+    if (isStreaming && device && hasTapo) {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+      const imageUrl = `${API_URL}/api/device-image/${device._id}`;
+
+      setStreamUrl(imageUrl);
+
+      const interval = setInterval(() => {
+        if (isStreaming && !isLoading) {
+          const timestamp = Date.now();
+          const updatedUrl = `${imageUrl}?t=${timestamp}`;
+          setIsLoading(true);
+          setStreamUrl(updatedUrl);
+          loadTimeoutRef.current = setTimeout(() => {
+            setIsLoading(false);
+          }, 10000);
+        }
+      }, 3000);
+
+      return () => {
+        clearInterval(interval);
+        if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+      };
+    }
+
+    setStreamUrl(null);
+  }, [isStreaming, device, hasTapo, isLoading]);
+
+  /* eslint-disable react-hooks/exhaustive-deps */
+  useEffect(() => {
+    if (isStreaming && device && hasRaspberryPi) {
+      const pi = device.camera.raspberryPi;
+      const piIp = pi.ip;
+      const piPort = pi.port || 8080;
+      const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
+      const params = new URLSearchParams();
+
+      if (pi.flip) params.set('flip', 'true');
+      if (typeof pi.angle === 'number' && pi.angle !== 0) params.set('angle', String(pi.angle));
+      if (pi.square) params.set('square', 'true');
+      if (pi.resolution) params.set('resolution', String(pi.resolution));
+
+      let nextUrl = `http://${piIp}:${piPort}${streamEndpoint}`;
+      const qs = params.toString();
+      if (qs) {
+        const separator = streamEndpoint.includes('?') ? '&' : '?';
+        nextUrl = `${nextUrl}${separator}${qs}`;
+      }
+
+      setRaspberryPiStreamUrl(nextUrl);
+      setRaspberryPiIsLoading(false);
+
+      return () => {
+        const imgEl = raspberryPiImageRef.current;
+        const timeoutId = raspberryPiLoadTimeoutRef.current;
+        if (imgEl) {
+          imgEl.src = '';
+          imgEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+        }
+        setRaspberryPiStreamUrl(null);
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+    }
+
+    if (raspberryPiImageRef.current) {
+      raspberryPiImageRef.current.src = '';
+      raspberryPiImageRef.current.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    }
+    setRaspberryPiStreamUrl(null);
+  }, [isStreaming, device, hasRaspberryPi]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+
+  return (
+    <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <CardContent sx={{ flexGrow: 1 }}>
+        <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
+          <Box display="flex" alignItems="center">
+            <Avatar
+              sx={{
+                bgcolor: getStatusColor(device.status) + '.main',
+                mr: 1,
+                width: 48,
+                height: 48
+              }}
+            >
+              <img
+                src="/images/icon.png"
+                alt="Taubenschiesser"
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  objectFit: 'contain',
+                  filter: 'brightness(0) invert(1)',
+                  opacity: 0.95
+                }}
+              />
+            </Avatar>
+            <Box>
+              <Typography variant="h6">{device.name}</Typography>
+              <Box display="flex" alignItems="center" gap={0.5} flexWrap="wrap">
+                <Tooltip title={`Taubenschiesser: ${device.taubenschiesserStatus || 'offline'}`}>
+                  <Chip
+                    icon={<DevicesIcon />}
+                    label={device.taubenschiesserStatus || 'offline'}
+                    size="small"
+                    color={getStatusColor(device.taubenschiesserStatus)}
+                    sx={{ fontSize: '0.75rem' }}
+                  />
+                </Tooltip>
+                <Tooltip title={`Kamera: ${device.cameraStatus || 'offline'}`}>
+                  <Chip
+                    icon={<CameraIcon />}
+                    label={device.cameraStatus || 'offline'}
+                    size="small"
+                    color={getStatusColor(device.cameraStatus)}
+                    sx={{ fontSize: '0.75rem' }}
+                  />
+                </Tooltip>
+              </Box>
+            </Box>
+          </Box>
+          <Box display="flex" gap={1}>
+            <Tooltip title="Gerät-Einstellungen">
+              <IconButton onClick={() => navigate(`/devices/${device._id}`)}>
+                <SettingsIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Status aktualisieren">
+              <IconButton onClick={() => handleDeviceControl(device._id, 'refresh')}>
+                <RefreshIcon />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+
+        {isDualCamera ? (
+          <Box sx={{ mb: 2 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12}>
+                <Paper
+                  sx={{
+                    width: '100%',
+                    maxHeight: '400px',
+                    overflow: 'auto',
+                    display: 'flex',
+                    alignItems: 'stretch',
+                    justifyContent: 'center',
+                    bgcolor: 'grey.100',
+                    position: 'relative',
+                    mb: 2,
+                    minHeight: 120
+                  }}
+                >
+                  {isStreaming ? (
+                    <StreamDisplay
+                      streamUrl={streamUrl}
+                      isLoading={isLoading}
+                      loadTimeoutRef={loadTimeoutRef}
+                      setIsLoading={setIsLoading}
+                      toggleStream={() => toggleStream(device._id)}
+                      cameraName="Tapo"
+                    />
+                  ) : (
+                    <StreamPlaceholder toggleStream={() => toggleStream(device._id)} cameraName="Tapo" />
+                  )}
+                </Paper>
+              </Grid>
+
+              <Grid item xs={12}>
+                <Paper
+                  sx={{
+                    width: '100%',
+                    maxHeight: '400px',
+                    overflow: 'auto',
+                    display: 'flex',
+                    alignItems: 'stretch',
+                    justifyContent: 'center',
+                    bgcolor: 'grey.100',
+                    position: 'relative',
+                    minHeight: 120
+                  }}
+                >
+                  {isStreaming ? (
+                    <StreamDisplay
+                      streamUrl={raspberryPiStreamUrl}
+                      isLoading={raspberryPiIsLoading}
+                      loadTimeoutRef={raspberryPiLoadTimeoutRef}
+                      setIsLoading={setRaspberryPiIsLoading}
+                      toggleStream={() => toggleStream(device._id)}
+                      cameraName="Raspberry Pi"
+                      isMjpeg={true}
+                      imageRef={raspberryPiImageRef}
+                    />
+                  ) : (
+                    <StreamPlaceholder toggleStream={() => toggleStream(device._id)} cameraName="Raspberry Pi" />
+                  )}
+                </Paper>
+              </Grid>
+            </Grid>
+          </Box>
+        ) : (
+          <Paper
+            sx={{
+              width: '100%',
+              maxHeight: '400px',
+              overflow: 'auto',
+              mb: 2,
+              display: 'flex',
+              alignItems: 'stretch',
+              justifyContent: 'center',
+              bgcolor: 'grey.100',
+              position: 'relative',
+              minHeight: 120
+            }}
+          >
+            {isStreaming ? (
+              hasRaspberryPi && !hasTapo ? (
+                <StreamDisplay
+                  streamUrl={raspberryPiStreamUrl}
+                  isLoading={raspberryPiIsLoading}
+                  loadTimeoutRef={raspberryPiLoadTimeoutRef}
+                  setIsLoading={setRaspberryPiIsLoading}
+                  toggleStream={() => toggleStream(device._id)}
+                  cameraName="Raspberry Pi"
+                  isMjpeg={true}
+                  imageRef={raspberryPiImageRef}
+                />
+              ) : (
+                <StreamDisplay
+                  streamUrl={streamUrl}
+                  isLoading={isLoading}
+                  loadTimeoutRef={loadTimeoutRef}
+                  setIsLoading={setIsLoading}
+                  toggleStream={() => toggleStream(device._id)}
+                  cameraName="Kamera"
+                />
+              )
+            ) : (
+              <StreamPlaceholder toggleStream={() => toggleStream(device._id)} cameraName="Kamera" />
+            )}
+          </Paper>
+        )}
+
+        <Box mb={2}>
+          <Typography variant="subtitle2" gutterBottom textAlign="center">
+            Steuerung
+          </Typography>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ flex: 1 }} />
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+              <Box sx={{ position: 'relative', width: 8, height: 110, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
+                <Box sx={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: `${Math.round(normalized.tiltPct * 100)}%`, bgcolor: '#1976d2' }} />
+              </Box>
+              <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666', minWidth: '20px', textAlign: 'center' }}>
+                {normalized.tilt.toFixed(0)}°
+              </Typography>
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+                <Box sx={{ position: 'relative', width: 190, height: 8, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
+                  <Box sx={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${Math.round(normalized.rotPct * 100)}%`, bgcolor: '#1976d2' }} />
+                </Box>
+                <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666' }}>
+                  {normalized.rot.toFixed(0)}°
+                </Typography>
+              </Box>
+
+              <Button variant="outlined" size="small" onClick={() => handleDeviceControl(device._id, 'move_up')} sx={{ minWidth: 60 }}>
+                <ArrowUpIcon />
+              </Button>
+
+              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                <Button variant="outlined" size="small" onClick={() => handleDeviceControl(device._id, 'rotate_left')} sx={{ minWidth: 60 }}>
+                  <RotateLeftIcon />
+                </Button>
+                <Button variant="outlined" size="small" onClick={() => handleDeviceControl(device._id, 'shoot')} sx={{ minWidth: 60 }}>
+                  ✚
+                </Button>
+                <Button variant="outlined" size="small" onClick={() => handleDeviceControl(device._id, 'rotate_right')} sx={{ minWidth: 60 }}>
+                  <RotateRightIcon />
+                </Button>
+              </Box>
+
+              <Button variant="outlined" size="small" onClick={() => handleDeviceControl(device._id, 'move_down')} sx={{ minWidth: 60 }}>
+                <ArrowDownIcon />
+              </Button>
+
+              <Button variant="outlined" color="warning" size="small" onClick={() => handleDeviceControl(device._id, 'reset')} sx={{ mt: 1, minWidth: 60 }}>
+                Reset
+              </Button>
+            </Box>
+
+            <Box sx={{ flex: 1 }} />
+          </Box>
+        </Box>
+
+        <Box mb={2} sx={{ minHeight: 52 }}>
+          <Typography variant="caption" color="textSecondary" gutterBottom sx={{ display: 'block' }}>
+            Hardware Monitor Status:
+          </Typography>
+          {deviceStatus ? (
+            <Chip
+              label={hardwareMonitorChipLabel}
+              color={getStatusColor(deviceStatus.status)}
+              size="small"
+              sx={{
+                fontSize: '0.7rem',
+                maxWidth: '100%',
+                '& .MuiChip-label': {
+                  display: 'block',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                },
+              }}
+            />
+          ) : (
+            <Chip label="Kein Status verfügbar" color="default" size="small" sx={{ fontSize: '0.7rem' }} />
+          )}
+        </Box>
+
+        <Box mb={2}>
+          <Typography variant="subtitle2" gutterBottom>
+            Geräte-Steuerung
+          </Typography>
+          <ButtonGroup variant="outlined" size="small" fullWidth>
+            <Tooltip title="Überwachung starten">
+              <Button
+                onClick={() => handleDeviceControl(device._id, 'start')}
+                color={device.monitorStatus === 'running' ? 'success' : 'primary'}
+                variant={device.monitorStatus === 'running' ? 'contained' : 'outlined'}
+              >
+                <StartIcon />
+              </Button>
+            </Tooltip>
+            <Tooltip title="Überwachung pausieren">
+              <Button
+                onClick={() => handleDeviceControl(device._id, 'pause')}
+                color={device.monitorStatus === 'paused' ? 'warning' : 'primary'}
+                variant={device.monitorStatus === 'paused' ? 'contained' : 'outlined'}
+              >
+                <PauseIcon2 />
+              </Button>
+            </Tooltip>
+          </ButtonGroup>
+          <Box mt={1} textAlign="center">
+            <Chip
+              label={device.monitorStatus === 'running' ? 'Läuft' : device.monitorStatus === 'paused' ? 'Pausiert' : 'Gestoppt'}
+              color={device.monitorStatus === 'running' ? 'success' : device.monitorStatus === 'paused' ? 'warning' : 'default'}
+              size="small"
+            />
+          </Box>
+        </Box>
+
+        <Box mb={2}>
+          <Typography variant="subtitle2" gutterBottom>
+            Schießen bei Erkennung
+          </Typography>
+          <ButtonGroup variant="outlined" size="small" fullWidth>
+            <Tooltip title="Bei Taubenerkennung schießen und speichern">
+              <Button
+                onClick={() => handleDeviceControl(device._id, 'arm')}
+                color={device.monitorArmed ? 'error' : 'primary'}
+                variant={device.monitorArmed ? 'contained' : 'outlined'}
+              >
+                Scharf
+              </Button>
+            </Tooltip>
+            <Tooltip title="Nur speichern, nicht schießen">
+              <Button
+                onClick={() => handleDeviceControl(device._id, 'disarm')}
+                color={!device.monitorArmed ? 'success' : 'primary'}
+                variant={!device.monitorArmed ? 'contained' : 'outlined'}
+              >
+                Sicher
+              </Button>
+            </Tooltip>
+          </ButtonGroup>
+          <Box mt={1} textAlign="center">
+            <Chip label={device.monitorArmed ? 'Scharf' : 'Sicher'} color={device.monitorArmed ? 'error' : 'success'} size="small" />
+          </Box>
+        </Box>
+
+        <Box>
+          <Typography variant="caption" color="textSecondary">
+            IP: {device.taubenschiesser?.ip || 'Nicht gesetzt'}
+          </Typography>
+          <br />
+          <Typography variant="caption" color="textSecondary">
+            Letztes Signal: {device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'Nie'}
+          </Typography>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+});
+
+// IMPORTANT: These chart components must live at module scope.
+// If defined inside `Dashboard`, every Dashboard re-render changes the component identity,
+// forcing ApexCharts to unmount/mount -> visible blinking (and can trigger Safari scroll jumps).
+const DetectionChart = React.memo(({ device, detectionStats }) => {
+  const deviceIdStr = String(device._id);
+  const data = detectionStats[deviceIdStr] || [];
+
+  if (data.length === 0) {
+    return (
+      <Typography variant="body2" color="textSecondary" align="center" sx={{ py: 2 }}>
+        Keine Daten für diesen Zeitraum
+      </Typography>
+    );
+  }
+
+  const chartOptions = {
+    chart: {
+      type: 'bar',
+      stacked: true,
+      toolbar: { show: false },
+      animations: { enabled: false }
+    },
+    plotOptions: {
+      bar: {
+        horizontal: false,
+        columnWidth: '55%',
+        borderRadius: 0
+      }
+    },
+    dataLabels: { enabled: false },
+    stroke: {
+      show: true,
+      width: 1,
+      colors: ['#fff']
+    },
+    xaxis: {
+      type: 'datetime',
+      labels: {
+        rotate: -45,
+        rotateAlways: true,
+        style: { fontSize: '12px' },
+        datetimeFormatter: {
+          year: 'yyyy',
+          month: 'dd.MM',
+          day: 'dd.MM',
+          hour: 'dd.MM'
+        }
+      }
+    },
+    yaxis: {
+      title: { show: false },
+      axisTicks: { show: true },
+      axisBorder: { show: true },
+      labels: {
+        style: { fontSize: '11px' },
+        formatter: (val) => Math.round(val)
+      },
+      min: 0,
+      forceNiceScale: true
+    },
+    fill: { opacity: 1 },
+    legend: { position: 'bottom', horizontalAlign: 'center' },
+    colors: ['#9e9e9e', '#4caf50', '#f44336'],
+    tooltip: {
+      shared: true,
+      intersect: false,
+      y: [
+        { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+        { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+        { formatter: (val) => (val != null ? val + ' Erkennungen' : '') }
+      ]
+    }
+  };
+
+  const series = [
+    { name: 'Unkategorisiert', data: data.map(item => [new Date(item.date).getTime(), item.unclassified || 0]) },
+    { name: 'Taube', data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0]) },
+    { name: 'Keine Taube', data: data.map(item => [new Date(item.date).getTime(), item.no_pigeon || 0]) }
+  ];
+
+  return <Chart options={chartOptions} series={series} type="bar" height={300} />;
+}, (prevProps, nextProps) => {
+  const prevDeviceId = String(prevProps.device._id);
+  const nextDeviceId = String(nextProps.device._id);
+  const prevData = prevProps.detectionStats[prevDeviceId] || [];
+  const nextData = nextProps.detectionStats[nextDeviceId] || [];
+  if (prevDeviceId !== nextDeviceId) return false;
+  if (prevData.length !== nextData.length) return false;
+  if (prevData.length > 0 && nextData.length > 0) {
+    if (JSON.stringify(prevData) !== JSON.stringify(nextData)) return false;
+  }
+  return true;
+});
+
+const TaubeTempChart = React.memo(({ device, detectionStats }) => {
+  const deviceIdStr = String(device._id);
+  const data = detectionStats[deviceIdStr] || [];
+  const hasTempData = data.some(item => item.avg_temp_pigeon != null);
+  if (data.length === 0) return null;
+
+  const chartOptions = {
+    chart: { type: 'line', stacked: false, toolbar: { show: false }, animations: { enabled: false } },
+    plotOptions: { bar: { horizontal: false, columnWidth: '55%', borderRadius: 0 } },
+    stroke: { show: true, width: [1, hasTempData ? 1.5 : 0], colors: ['#fff', '#f44336'] },
+    dataLabels: { enabled: false },
+    xaxis: {
+      type: 'datetime',
+      labels: {
+        rotate: -45,
+        rotateAlways: true,
+        style: { fontSize: '12px' },
+        datetimeFormatter: { year: 'yyyy', month: 'dd.MM', day: 'dd.MM', hour: 'dd.MM' }
+      }
+    },
+    yaxis: hasTempData
+      ? [
+        {
+          seriesName: 'Taube',
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true },
+          labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        },
+        {
+          seriesName: 'Ø Temp',
+          opposite: true,
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true, color: '#f44336' },
+          labels: { style: { colors: '#f44336', fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        }
+      ]
+      : [
+        {
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true },
+          labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        }
+      ],
+    fill: { opacity: 1 },
+    legend: { position: 'bottom', horizontalAlign: 'center' },
+    colors: ['#4caf50', '#f44336'],
+    tooltip: {
+      shared: true,
+      intersect: false,
+      y: hasTempData
+        ? [
+          { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+          { formatter: (val) => (val != null ? val + ' °C' : '') }
+        ]
+        : [{ formatter: (val) => (val != null ? val + ' Erkennungen' : '') }]
+    }
+  };
+
+  const series = [
+    {
+      name: 'Taube',
+      type: 'column',
+      showInLegend: false,
+      data: data.map(item => [new Date(item.date).getTime(), item.confirmed_pigeon || 0])
+    },
+    ...(hasTempData ? [{
+      name: 'Ø Temp',
+      type: 'line',
+      data: data.map(item => [new Date(item.date).getTime(), item.avg_temp_pigeon != null ? item.avg_temp_pigeon : null])
+    }] : [])
+  ];
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+        Tauben-Erkennungen & Temperatur
+      </Typography>
+      <Chart options={chartOptions} series={series} type="line" height={220} />
+    </Box>
+  );
+}, (prevProps, nextProps) => {
+  const prevDeviceId = String(prevProps.device._id);
+  const nextDeviceId = String(nextProps.device._id);
+  const prevData = prevProps.detectionStats[prevDeviceId] || [];
+  const nextData = nextProps.detectionStats[nextDeviceId] || [];
+  if (prevDeviceId !== nextDeviceId) return false;
+  if (prevData.length !== nextData.length) return false;
+  if (prevData.length > 0 && nextData.length > 0) {
+    if (JSON.stringify(prevData) !== JSON.stringify(nextData)) return false;
+  }
+  return true;
+});
+
+const HourlyDetectionChart = React.memo(({ device, hourlyStats }) => {
+  const deviceIdStr = String(device._id);
+  const rawData = hourlyStats[deviceIdStr] || [];
+  if (rawData.length === 0) return null;
+
+  const hourMap = {};
+  rawData.forEach(item => { hourMap[item.hour] = item; });
+  const allHours = Array.from({ length: 24 }, (_, h) => ({
+    hour: h,
+    count: hourMap[h]?.count || 0,
+    avg_temp: hourMap[h]?.avg_temp ?? null
+  }));
+
+  let firstNonZero = allHours.findIndex(h => h.count > 0);
+  let lastNonZero = allHours.length - 1;
+  while (lastNonZero > firstNonZero && allHours[lastNonZero].count === 0) lastNonZero--;
+  if (firstNonZero < 0) return null;
+  const trimmedData = allHours.slice(firstNonZero, lastNonZero + 1);
+
+  const hasTempData = trimmedData.some(item => item.avg_temp != null);
+  const categories = trimmedData.map(item => `${String(item.hour).padStart(2, '0')}:00`);
+
+  const chartOptions = {
+    chart: { type: 'bar', stacked: false, toolbar: { show: false }, animations: { enabled: false } },
+    plotOptions: { bar: { horizontal: false, columnWidth: '55%', borderRadius: 0 } },
+    dataLabels: { enabled: false },
+    stroke: { show: true, width: [1, hasTempData ? 1.5 : 0], colors: ['#fff', '#f44336'] },
+    xaxis: {
+      categories,
+      labels: { rotate: -45, rotateAlways: true, style: { fontSize: '12px' } }
+    },
+    yaxis: hasTempData
+      ? [
+        {
+          seriesName: 'Tauben',
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true },
+          labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        },
+        {
+          seriesName: 'Ø Temp',
+          opposite: true,
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true, color: '#f44336' },
+          labels: { style: { colors: '#f44336', fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        }
+      ]
+      : [
+        {
+          title: { show: false },
+          axisTicks: { show: true },
+          axisBorder: { show: true },
+          labels: { style: { fontSize: '11px' }, formatter: (val) => Math.round(val) },
+          min: 0,
+          forceNiceScale: true
+        }
+      ],
+    fill: { opacity: 1 },
+    legend: { position: 'bottom', horizontalAlign: 'center' },
+    colors: ['#4caf50', '#f44336'],
+    tooltip: {
+      shared: true,
+      intersect: false,
+      y: hasTempData
+        ? [
+          { formatter: (val) => (val != null ? val + ' Erkennungen' : '') },
+          { formatter: (val) => (val != null ? val + ' °C' : '') }
+        ]
+        : [{ formatter: (val) => (val != null ? val + ' Erkennungen' : '') }]
+    }
+  };
+
+  const series = [
+    { name: 'Tauben', type: 'column', data: trimmedData.map(item => item.count) },
+    ...(hasTempData ? [{ name: 'Ø Temp', type: 'line', data: trimmedData.map(item => item.avg_temp) }] : [])
+  ];
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+        Tauben nach Uhrzeit (letzte 30 Tage)
+      </Typography>
+      <Chart options={chartOptions} series={series} type="line" height={220} />
+    </Box>
+  );
+}, (prevProps, nextProps) => {
+  const prevDeviceId = String(prevProps.device._id);
+  const nextDeviceId = String(nextProps.device._id);
+  const prevData = prevProps.hourlyStats[prevDeviceId] || [];
+  const nextData = nextProps.hourlyStats[nextDeviceId] || [];
+  if (prevDeviceId !== nextDeviceId) return false;
+  if (prevData.length !== nextData.length) return false;
+  if (prevData.length > 0 && nextData.length > 0) {
+    if (JSON.stringify(prevData) !== JSON.stringify(nextData)) return false;
+  }
+  return true;
+});
+
 const Dashboard = () => {
   const [devices, setDevices] = useState([]);
   const [devicePositions, setDevicePositions] = useState({}); // { [deviceId]: { rot, tilt } }
   const [deviceStatuses, setDeviceStatuses] = useState({}); // { [deviceId]: { status, message, timestamp } }
+  const [deviceWaiting, setDeviceWaiting] = useState({}); // { [deviceId]: { wait_started_at, threshold, dynamic_threshold, max_threshold, holding, receivedAtMs?, timestamp } }
+  const [waitTick, setWaitTick] = useState(0);
   const [loading, setLoading] = useState(true);
   const [streamingDevices, setStreamingDevices] = useState({});
   const [detectionStats, setDetectionStats] = useState({});
   const [hourlyStats, setHourlyStats] = useState({});
   const navigate = useNavigate();
   const { socket, connected } = useSocket();
-  /** Preserve scroll position when device status updates cause re-renders (avoid jump to top) */
-  const scrollRestoreRef = useRef(null);
 
   useEffect(() => {
     fetchDashboardData();
+  }, []);
+
+  // Tick once per second so we can locally count waiting time in the UI.
+  useEffect(() => {
+    const id = setInterval(() => setWaitTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
   }, []);
 
   // Subscribe to hardware monitor events for all loaded devices to track live rot/tilt
@@ -228,32 +999,162 @@ const Dashboard = () => {
       const { deviceId, eventType, data } = event || {};
       if (!deviceId || !data) return;
 
-      scrollRestoreRef.current = window.scrollY;
-
       // Try to extract rotation/tilt from several possible shapes
       const rot = (data?.position?.rot ?? data?.rot ?? data?.rotation);
       const tilt = (data?.position?.tilt ?? data?.tilt);
 
       if (typeof rot === 'number' || typeof tilt === 'number') {
-        setDevicePositions(prev => ({
-          ...prev,
-          [deviceId]: {
-            rot: typeof rot === 'number' ? rot : (prev[deviceId]?.rot ?? 0),
-            tilt: typeof tilt === 'number' ? tilt : (prev[deviceId]?.tilt ?? 0)
-          }
-        }));
+        setDevicePositions(prev => {
+          const prevPos = prev[deviceId] || { rot: 0, tilt: 0 };
+          const nextRot = typeof rot === 'number' ? rot : prevPos.rot;
+          const nextTilt = typeof tilt === 'number' ? tilt : prevPos.tilt;
+          if (prevPos.rot === nextRot && prevPos.tilt === nextTilt) return prev;
+          return {
+            ...prev,
+            [deviceId]: { rot: nextRot, tilt: nextTilt }
+          };
+        });
       }
 
       // Update device status for hardware monitor events
-      if (eventType && data?.message) {
-        setDeviceStatuses(prev => ({
-          ...prev,
-          [deviceId]: {
-            status: eventType,
-            message: data.message,
-            timestamp: new Date()
+      if (eventType) {
+        let message = data?.message;
+
+        // Only update dyn/max baseline from events that are part of the wait/analysis cycle.
+        // Other events may carry stale/default dyn/max and would cause the UI to "jump" to max.
+        const isDynWaitRelevantEvent =
+          eventType === 'device_waiting' ||
+          eventType === 'cv_analysis_complete' ||
+          eventType === 'birds_detected';
+        if (
+          isDynWaitRelevantEvent &&
+          (data?.dynamic_threshold != null || data?.max_threshold != null || data?.holding != null)
+        ) {
+          setDeviceWaiting(prev => {
+            const prevEntry = prev[deviceId] || {};
+            const next = {
+              ...prevEntry,
+              dynamic_threshold: data.dynamic_threshold ?? prevEntry.dynamic_threshold,
+              max_threshold: data.max_threshold ?? prevEntry.max_threshold,
+              holding: data.holding === true,
+              timestamp: new Date(),
+            };
+            return { ...prev, [deviceId]: next };
+          });
+        }
+
+        // Reset local waiting counter when leaving waiting state (not on analysis result events).
+        const preserveWaitBaseline =
+          eventType === 'cv_analysis_complete' ||
+          eventType === 'birds_detected';
+        if (eventType !== 'device_waiting' && !preserveWaitBaseline) {
+          setDeviceWaiting(prev => {
+            const prevEntry = prev[deviceId];
+            if (!prevEntry || (prevEntry.wait_started_at == null && prevEntry.receivedAtMs == null && prevEntry.threshold == null)) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [deviceId]: {
+                ...prevEntry,
+                wait_started_at: null,
+                threshold: null,
+                receivedAtMs: null,
+                timestamp: new Date(),
+              }
+            };
+          });
+        }
+
+        // After analysis / bird hit: new inactivity period — baseline 0s, keep dyn/max from payload.
+        if (eventType === 'cv_analysis_complete' || eventType === 'birds_detected') {
+          setDeviceWaiting(prev => {
+            const prevEntry = prev[deviceId] || {};
+            const dyn = data?.dynamic_threshold ?? prevEntry.dynamic_threshold;
+            const max = data?.max_threshold ?? prevEntry.max_threshold;
+            if (dyn == null && max == null) return prev;
+            return {
+              ...prev,
+              [deviceId]: {
+                ...prevEntry,
+                threshold: prevEntry.threshold,
+                dynamic_threshold: dyn,
+                max_threshold: max,
+                holding: data?.holding === true,
+                wait_started_at: data?.wait_started_at || new Date().toISOString(),
+                receivedAtMs: null,
+                timestamp: new Date(),
+              }
+            };
+          });
+        }
+
+        if (eventType === 'device_waiting' && data?.threshold != null) {
+          const holding = data?.holding === true;
+          const max = data?.max_threshold;
+          const base = holding ? 'Halte Position' : 'Warte';
+          const extra = max != null ? ` (max ${max}s)` : '';
+          const ws = data.wait_started_at ? Date.parse(data.wait_started_at) : Date.now();
+          const elapsed = Math.max(0, (Date.now() - (Number.isNaN(ws) ? Date.now() : ws)) / 1000);
+          message = formatWaitChipLine(base, elapsed, data.threshold, extra);
+
+          // Store waiting info separately for constant display line (avoid re-render if unchanged)
+          setDeviceWaiting(prev => {
+            const prevEntry = prev[deviceId];
+            const next = {
+              wait_started_at: data.wait_started_at || new Date().toISOString(),
+              threshold: data.threshold,
+              dynamic_threshold: data.dynamic_threshold,
+              max_threshold: data.max_threshold,
+              holding: data.holding === true,
+              receivedAtMs: null,
+              timestamp: new Date()
+            };
+            if (
+              prevEntry &&
+              prevEntry.wait_started_at === next.wait_started_at &&
+              prevEntry.threshold === next.threshold &&
+              prevEntry.dynamic_threshold === next.dynamic_threshold &&
+              prevEntry.max_threshold === next.max_threshold &&
+              prevEntry.holding === next.holding
+            ) {
+              return prev;
+            }
+            return { ...prev, [deviceId]: next };
+          });
+        }
+
+        if (!message) {
+          if (eventType === 'cv_analysis_complete') {
+            const bc = data?.bird_count;
+            const cam = data?.camera ? ` (${data.camera})` : '';
+            // CV service uses ms; hardware-monitor may send processing_time_sec
+            const ptRaw = data?.processing_time_sec != null ? Number(data.processing_time_sec) : (
+              data?.processing_time != null ? Number(data.processing_time) / 1000 : null
+            );
+            const pt = ptRaw != null && Number.isFinite(ptRaw) ? ` · ${ptRaw.toFixed(2)}s` : '';
+            if (data?.birds_found && bc > 0) {
+              message = `Analyse: ${bc} Vögel erkannt${cam}${pt}`;
+            } else if (data?.birds_found) {
+              message = `Analyse: Vögel erkannt${cam}${pt}`;
+            } else {
+              message = `Analyse: 0 Vögel${cam}${pt}`;
+            }
           }
-        }));
+        }
+        if (!message) return;
+        setDeviceStatuses(prev => {
+          const prevEntry = prev[deviceId];
+          if (prevEntry && prevEntry.status === eventType && prevEntry.message === message) return prev;
+          return {
+            ...prev,
+            [deviceId]: {
+              status: eventType,
+              message,
+              timestamp: new Date()
+            }
+          };
+        });
       }
     };
 
@@ -297,11 +1198,7 @@ const Dashboard = () => {
         // Ensure deviceId is string
         const deviceIdStr = String(stat.deviceId);
         statsMap[deviceIdStr] = stat.data;
-        console.log(`[DetectionStats] Mapped stats for device ${deviceIdStr}:`, stat.data?.length || 0, 'days');
       });
-      
-      console.log('[DetectionStats] Stats map:', Object.keys(statsMap));
-      console.log('[DetectionStats] Devices:', devicesData.map(d => ({ id: d._id, name: d.name })));
       
       setDetectionStats(statsMap);
 
@@ -318,6 +1215,30 @@ const Dashboard = () => {
         monitorArmed: device.monitorArmed ?? false
       }));
 
+      // Initialize waiting info from persisted hardwareMonitor (so it's not empty until next socket event)
+      const waitingInit = {};
+      devicesWithStatus.forEach(d => {
+        const hm = d?.hardwareMonitor;
+        const hmData = hm?.lastWaitingData || hm?.lastEventData;
+        if (hmData && (hmData.dynamic_threshold != null || hmData.max_threshold != null || hmData.holding != null)) {
+          waitingInit[d._id] = {
+            wait_started_at: hmData.wait_started_at,
+            threshold: hmData.threshold,
+            dynamic_threshold: hmData.dynamic_threshold,
+            max_threshold: hmData.max_threshold,
+            holding: hmData.holding === true,
+            wait_count: 0,
+            receivedAtMs: hmData.receivedAtMs,
+            timestamp: hm?.lastWaitingAt
+              ? new Date(hm.lastWaitingAt)
+              : (hm?.lastEventAt ? new Date(hm.lastEventAt) : new Date())
+          };
+        }
+      });
+      if (Object.keys(waitingInit).length > 0) {
+        setDeviceWaiting(prev => ({ ...prev, ...waitingInit }));
+      }
+
       setDevices(devicesWithStatus);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
@@ -330,7 +1251,6 @@ const Dashboard = () => {
   useEffect(() => {
     if (socket && connected) {
       socket.on('device-update', (device) => {
-        scrollRestoreRef.current = window.scrollY;
         setDevices(prevDevices => 
           prevDevices.map(d => d._id === device._id ? device : d)
         );
@@ -338,14 +1258,11 @@ const Dashboard = () => {
 
       // Sofortige Status-Änderungen
       socket.on('device-status-change', (statusChange) => {
-        console.log('Device status changed:', statusChange);
-        scrollRestoreRef.current = window.scrollY;
         // Visuelles Feedback für Status-Änderung
         const device = devices.find(d => d._id === statusChange.deviceId);
         if (device) {
           const componentName = statusChange.component === 'taubenschiesser' ? 'Taubenschiesser' : 'Kamera';
           const statusText = statusChange.status === 'online' ? 'online' : 'offline';
-          console.log(`🔄 ${device.name}: ${componentName} ist jetzt ${statusText}`);
         }
         
         setDevices(prevDevices => 
@@ -372,15 +1289,7 @@ const Dashboard = () => {
       };
     }
   }, [socket, connected, devices]);
-
-  // Restore scroll position after device/hardware-monitor updates re-renders (prevents jump to top)
-  useEffect(() => {
-    if (scrollRestoreRef.current != null) {
-      const y = scrollRestoreRef.current;
-      scrollRestoreRef.current = null;
-      requestAnimationFrame(() => window.scrollTo(0, y));
-    }
-  }, [devices, devicePositions, deviceStatuses]);
+  // NOTE: Scroll restore was removed because it caused Safari scroll jumps.
 
   // Helper function to calculate overall status
   const calculateOverallStatus = (taubenschiesserStatus, cameraStatus) => {
@@ -390,27 +1299,21 @@ const Dashboard = () => {
   };
 
   // Geräte-Steuerung
-  const handleDeviceControl = async (deviceId, action) => {
+  const handleDeviceControl = useCallback(async (deviceId, action) => {
     try {
       if (action === 'refresh') {
         // Status aktualisieren
         const response = await axios.post(`/api/device-control/${deviceId}/refresh`);
-        console.log(`Refreshing device ${deviceId}:`, response.data);
         
         // Erfolgsmeldung anzeigen
-        if (response.data.success) {
-          console.log('Device status updated successfully');
-        }
         return;
       }
 
       if (action === 'start') {
         // Geräte-Überwachung starten
         const response = await axios.post(`/api/device-control/${deviceId}/start`);
-        console.log(`Starting device monitoring ${deviceId}:`, response.data);
         
         if (response.data.success) {
-          console.log('Device monitoring started');
           // Update device status in state
           setDevices(prevDevices => 
             prevDevices.map(d => 
@@ -426,10 +1329,8 @@ const Dashboard = () => {
       if (action === 'pause') {
         // Geräte-Überwachung pausieren
         const response = await axios.post(`/api/device-control/${deviceId}/pause`);
-        console.log(`Pausing device monitoring ${deviceId}:`, response.data);
         
         if (response.data.success) {
-          console.log('Device monitoring paused');
           // Update device status in state
           setDevices(prevDevices => 
             prevDevices.map(d => 
@@ -446,7 +1347,6 @@ const Dashboard = () => {
         // Monitor scharf (schießen bei Taube) oder sicher (nur Detection speichern)
         const armed = action === 'arm';
         const response = await axios.patch(`/api/device-control/${deviceId}/arm`, { armed });
-        console.log(`Monitor ${armed ? 'armed' : 'disarmed'} for ${deviceId}:`, response.data);
         if (response.data.success) {
           setDevices(prevDevices =>
             prevDevices.map(d =>
@@ -461,8 +1361,6 @@ const Dashboard = () => {
       const response = await axios.post(`/api/device-control/${deviceId}/control`, {
         action
       });
-
-      console.log(`Command '${action}' sent to device ${deviceId}:`, response.data);
       
       // Erfolgsmeldung anzeigen (optional)
       // toast.success(`Befehl '${action}' gesendet`);
@@ -487,22 +1385,21 @@ const Dashboard = () => {
       
       // toast.error(`Fehler beim Senden des Befehls: ${error.response?.data?.error || error.message}`);
     }
-  };
+  }, []);
 
   // RTSP-Stream starten/stoppen (nur Frontend-Toggle, keine Server-Konvertierung)
-  const toggleStream = async (deviceId) => {
+  const toggleStream = useCallback(async (deviceId) => {
     try {
-      const isStreaming = streamingDevices[deviceId];
-      
       // Direkter Frontend-Toggle - keine Server-Konvertierung nötig
-      setStreamingDevices(prev => ({ ...prev, [deviceId]: !isStreaming }));
-      
-      console.log(`RTSP Stream ${!isStreaming ? 'gestartet' : 'gestoppt'} für Gerät ${deviceId} (direkt im Browser)`);
+      setStreamingDevices(prev => {
+        const next = !prev[deviceId];
+        return { ...prev, [deviceId]: next };
+      });
       
     } catch (error) {
       console.error('Error toggling RTSP stream:', error);
     }
-  };
+  }, []);
 
   // RTSP-Stream-Status ist immer verfügbar (keine Server-Abfrage nötig)
   // const getStreamStatus = async (deviceId) => {
@@ -510,51 +1407,17 @@ const Dashboard = () => {
   //   return { active: streamingDevices[deviceId] };
   // };
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'online':
-        return 'success';
-      case 'offline':
-        return 'error';
-      case 'maintenance':
-        return 'warning';
-      // Hardware Monitor Status Colors
-      case 'device_waiting':
-        return 'info';
-      case 'device_moving':
-        return 'warning';
-      case 'device_stopped':
-      case 'device_stabilizing':
-        return 'success';
-      case 'device_busy':
-        return 'warning';
-      case 'analysis_started':
-      case 'analyzing':
-      case 'analyzing_cv':
-      case 'capturing':
-        return 'primary';
-      case 'cv_analysis_complete':
-      case 'birds_detected':
-        return 'success';
-      case 'error':
-        return 'error';
-      default:
-        return 'default';
-    }
-  };
-
-  // Detection Chart Component - Using ApexCharts with memoization to prevent blinking
-  const DetectionChart = React.memo(({ device, detectionStats }) => {
+  // ⚠️ DO NOT define Chart components inside `Dashboard`.
+  // Reason: `Dashboard` re-renders frequently due to live socket events. If chart components are
+  // defined here, their *component identity changes on every render* -> ApexCharts unmount/mount
+  // -> visible blinking (all browsers) and often scroll jumps in Safari.
+  //
+  // Keep charts at *module scope* (see the `DetectionChart`/`TaubeTempChart`/`HourlyDetectionChart`
+  // definitions above `Dashboard`). These inner versions are intentionally unused.
+  const DetectionChartInner = React.memo(({ device, detectionStats }) => {
     // Ensure device._id is converted to string for consistent lookup
     const deviceIdStr = String(device._id);
     const data = detectionStats[deviceIdStr] || [];
-    
-    console.log(`[DetectionChart] Device ${deviceIdStr} (${device.name}):`, {
-      hasData: data.length > 0,
-      dataLength: data.length,
-      availableStats: Object.keys(detectionStats),
-      data: data.slice(0, 3) // Log first 3 entries
-    });
     
     if (data.length === 0) {
       return (
@@ -665,7 +1528,7 @@ const Dashboard = () => {
   });
 
   // Taube + Temperatur Chart: Balken (Anzahl Taube) + Kurve (Ø Temperatur)
-  const TaubeTempChart = React.memo(({ device, detectionStats }) => {
+  const TaubeTempChartInner = React.memo(({ device, detectionStats }) => {
     const deviceIdStr = String(device._id);
     const data = detectionStats[deviceIdStr] || [];
     const hasTempData = data.some(item => item.avg_temp_pigeon != null);
@@ -808,7 +1671,7 @@ const Dashboard = () => {
   });
 
   // Hourly Detection Chart: bar chart showing pigeon detections by hour of day + temperature line
-  const HourlyDetectionChart = React.memo(({ device, hourlyStats }) => {
+  const HourlyDetectionChartInner = React.memo(({ device, hourlyStats }) => {
     const deviceIdStr = String(device._id);
     const rawData = hourlyStats[deviceIdStr] || [];
 
@@ -957,634 +1820,6 @@ const Dashboard = () => {
     return true;
   });
 
-  // Geräte-Komponente
-  const DeviceCard = ({ device }) => {
-    const [streamUrl, setStreamUrl] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [currentImage, setCurrentImage] = useState(null);
-    const loadTimeoutRef = React.useRef(null);
-    // Raspberry Pi stream state
-    const [raspberryPiStreamUrl, setRaspberryPiStreamUrl] = useState(null);
-    const [raspberryPiIsLoading, setRaspberryPiIsLoading] = useState(false);
-    const [raspberryPiCurrentImage, setRaspberryPiCurrentImage] = useState(null);
-    const raspberryPiLoadTimeoutRef = React.useRef(null);
-    const raspberryPiImageRef = React.useRef(null); // Ref to track the img element
-    const isStreaming = streamingDevices[device._id];
-    const position = useMemo(
-      () => devicePositions[device._id] || { rot: 0, tilt: 0 },
-      // devicePositions from parent state - updates when positions change
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [devicePositions, device._id]
-    );
-    const deviceStatus = deviceStatuses[device._id];
-    
-    // Check if device has both cameras
-    const hasTapo = device.camera?.tapo?.ip && device.camera?.tapo?.username && device.camera?.tapo?.password;
-    const hasRaspberryPi = device.camera?.raspberryPi?.ip;
-    const isDualCamera = hasTapo && hasRaspberryPi;
-
-    // Normalize helpers for bar fill (rot assumed 0-360, tilt assumed 0..180; clamp as safety)
-    const normalized = useMemo(() => {
-      const rot = Math.max(0, Math.min(360, Number(position.rot) || 0));
-      const tiltVal = Math.max(0, Math.min(180, Number(position.tilt) || 0));
-      const rotPct = rot / 360; // 0..1
-      const tiltPct = tiltVal / 180; // 0..180 -> 0..1
-      return { rotPct, tiltPct, rot, tilt: tiltVal };
-    }, [position]);
-    
-  // Einfache Bild-Updates mit automatischer Aktualisierung - Tapo Camera
-  useEffect(() => {
-    if (isStreaming && device && hasTapo) {
-      // Einfache Bild-URL verwenden (kein Video-Stream)
-      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
-      const imageUrl = `${API_URL}/api/device-image/${device._id}`;
-      
-      console.log(`Setting Tapo image URL for device ${device._id}:`, imageUrl);
-      setStreamUrl(imageUrl);
-      setCurrentImage(imageUrl);
-      
-      // Automatische Aktualisierung alle 3 Sekunden
-      const interval = setInterval(() => {
-        if (isStreaming && !isLoading) {
-          // URL mit Timestamp für Cache-Busting
-          const timestamp = Date.now();
-          const updatedUrl = `${imageUrl}?t=${timestamp}`;
-          console.log(`Updating Tapo image for device ${device._id}:`, updatedUrl);
-          setIsLoading(true);
-          setStreamUrl(updatedUrl);
-          
-          // Sicherheits-Timeout: Falls Bild nicht lädt, nach 10 Sek weitermachen
-          loadTimeoutRef.current = setTimeout(() => {
-            console.warn(`Tapo image load timeout for device ${device._id}`);
-            setIsLoading(false);
-          }, 10000);
-        }
-      }, 3000);
-      
-      return () => {
-        clearInterval(interval);
-        if (loadTimeoutRef.current) {
-          clearTimeout(loadTimeoutRef.current);
-        }
-      };
-    } else {
-      setStreamUrl(null);
-    }
-  }, [isStreaming, device, hasTapo, isLoading]);
-  
-  // Raspberry Pi Camera Stream
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    if (isStreaming && device && hasRaspberryPi) {
-      const pi = device.camera.raspberryPi;
-      const piIp = pi.ip;
-      const piPort = pi.port || 8080;
-      const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
-      const piFlip = pi.flip || false;
-      
-      // Add flip parameter if needed
-      let streamUrl = `http://${piIp}:${piPort}${streamEndpoint}`;
-      if (piFlip) {
-        const separator = streamEndpoint.includes('?') ? '&' : '?';
-        streamUrl = `${streamUrl}${separator}flip=true`;
-      }
-      
-      console.log(`Setting Raspberry Pi stream URL for device ${device._id}:`, streamUrl);
-      setRaspberryPiStreamUrl(streamUrl);
-      setRaspberryPiCurrentImage(streamUrl);
-      
-      // For MJPEG stream, we don't need to update it - it's a continuous stream
-      // But we can still track loading state
-      setRaspberryPiIsLoading(false);
-      
-      return () => {
-        const imgEl = raspberryPiImageRef.current;
-        const timeoutId = raspberryPiLoadTimeoutRef.current;
-        if (imgEl) {
-          imgEl.src = '';
-          imgEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-        }
-        setRaspberryPiStreamUrl(null);
-        setRaspberryPiCurrentImage(null);
-        if (timeoutId) clearTimeout(timeoutId);
-      };
-    } else {
-      // Stop the stream when not streaming
-      if (raspberryPiImageRef.current) {
-        raspberryPiImageRef.current.src = '';
-        raspberryPiImageRef.current.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'; // 1x1 transparent pixel
-      }
-      setRaspberryPiStreamUrl(null);
-      setRaspberryPiCurrentImage(null);
-    }
-  }, [isStreaming, device, hasRaspberryPi]);
-  /* eslint-enable react-hooks/exhaustive-deps */
-
-    return (
-      <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-        <CardContent sx={{ flexGrow: 1 }}>
-          {/* Geräte-Header */}
-          <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
-            <Box display="flex" alignItems="center">
-              <Avatar 
-                sx={{ 
-                  bgcolor: getStatusColor(device.status) + '.main', 
-                  mr: 1,
-                  width: 48,
-                  height: 48
-                }}
-              >
-                <img 
-                  src="/images/icon.png" 
-                  alt="Taubenschiesser" 
-                  style={{ 
-                    width: '36px', 
-                    height: '36px',
-                    objectFit: 'contain',
-                    filter: 'brightness(0) invert(1)',
-                    opacity: 0.95
-                  }}
-                />
-              </Avatar>
-              <Box>
-                <Typography variant="h6">{device.name}</Typography>
-                <Box display="flex" alignItems="center" gap={0.5} flexWrap="wrap">
-                  <Tooltip title={`Taubenschiesser: ${device.taubenschiesserStatus || 'offline'}`}>
-                    <Chip 
-                      icon={<DevicesIcon />}
-                      label={device.taubenschiesserStatus || 'offline'}
-                      size="small"
-                      color={getStatusColor(device.taubenschiesserStatus)}
-                      sx={{ fontSize: '0.75rem' }}
-                    />
-                  </Tooltip>
-                  <Tooltip title={`Kamera: ${device.cameraStatus || 'offline'}`}>
-                    <Chip 
-                      icon={<CameraIcon />}
-                      label={device.cameraStatus || 'offline'}
-                      size="small"
-                      color={getStatusColor(device.cameraStatus)}
-                      sx={{ fontSize: '0.75rem' }}
-                    />
-                  </Tooltip>
-                </Box>
-              </Box>
-            </Box>
-            <Box display="flex" gap={1}>
-              <Tooltip title="Gerät-Einstellungen">
-                <IconButton onClick={() => navigate(`/devices/${device._id}`)}>
-                  <SettingsIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Status aktualisieren">
-                <IconButton onClick={() => handleDeviceControl(device._id, 'refresh')}>
-                  <RefreshIcon />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          </Box>
-
-          {/* Live-Stream Bereich - Support für dual cameras */}
-          {isDualCamera ? (
-            <Box sx={{ mb: 2 }}>
-              <Grid container spacing={2}>
-                {/* Tapo Camera Stream */}
-                <Grid item xs={12}>
-                  <Paper 
-                    sx={{ 
-                      width: '100%',
-                      aspectRatio: '16/9',
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'center',
-                      bgcolor: 'grey.100',
-                      position: 'relative',
-                      maxHeight: '400px',
-                      mb: 2
-                    }}
-                  >
-                    {isStreaming ? (
-                      <StreamDisplay
-                        streamUrl={streamUrl}
-                        currentImage={currentImage}
-                        isLoading={isLoading}
-                        loadTimeoutRef={loadTimeoutRef}
-                        setIsLoading={setIsLoading}
-                        setCurrentImage={setCurrentImage}
-                        setStreamUrl={setStreamUrl}
-                        toggleStream={() => toggleStream(device._id)}
-                        cameraName="Tapo"
-                      />
-                    ) : (
-                      <StreamPlaceholder
-                        toggleStream={() => toggleStream(device._id)}
-                        cameraName="Tapo"
-                      />
-                    )}
-                  </Paper>
-                </Grid>
-                
-                {/* Raspberry Pi Camera Stream */}
-                <Grid item xs={12}>
-                  <Paper 
-                    sx={{ 
-                      width: '100%',
-                      aspectRatio: '16/9',
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'center',
-                      bgcolor: 'grey.100',
-                      position: 'relative',
-                      maxHeight: '400px'
-                    }}
-                  >
-                    {isStreaming ? (
-                      <StreamDisplay
-                        streamUrl={raspberryPiStreamUrl}
-                        currentImage={raspberryPiCurrentImage}
-                        isLoading={raspberryPiIsLoading}
-                        loadTimeoutRef={raspberryPiLoadTimeoutRef}
-                        setIsLoading={setRaspberryPiIsLoading}
-                        setCurrentImage={setRaspberryPiCurrentImage}
-                        setStreamUrl={setRaspberryPiStreamUrl}
-                        toggleStream={() => toggleStream(device._id)}
-                        cameraName="Raspberry Pi"
-                        isMjpeg={true}
-                        imageRef={raspberryPiImageRef}
-                      />
-                    ) : (
-                      <StreamPlaceholder
-                        toggleStream={() => toggleStream(device._id)}
-                        cameraName="Raspberry Pi"
-                      />
-                    )}
-                  </Paper>
-                </Grid>
-              </Grid>
-            </Box>
-          ) : (
-            <Paper 
-              sx={{ 
-                width: '100%',
-                aspectRatio: '16/9',
-                mb: 2, 
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'center',
-                bgcolor: 'grey.100',
-                position: 'relative',
-                maxHeight: '400px' // Fallback für ältere Browser
-              }}
-            >
-            {isStreaming ? (
-              // Für reine Raspberry Pi Kamera: Verwende StreamDisplay mit MJPEG
-              hasRaspberryPi && !hasTapo ? (
-                <StreamDisplay
-                  streamUrl={raspberryPiStreamUrl}
-                  currentImage={raspberryPiCurrentImage}
-                  isLoading={raspberryPiIsLoading}
-                  loadTimeoutRef={raspberryPiLoadTimeoutRef}
-                  setIsLoading={setRaspberryPiIsLoading}
-                  setCurrentImage={setRaspberryPiCurrentImage}
-                  setStreamUrl={setRaspberryPiStreamUrl}
-                  toggleStream={() => toggleStream(device._id)}
-                  cameraName="Raspberry Pi"
-                  isMjpeg={true}
-                  imageRef={raspberryPiImageRef}
-                />
-              ) : (
-                // Für andere Kameras (Tapo, Direct, etc.): Verwende bestehende Logik
-                <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
-                  {/* Loading-Indikator */}
-                  {isLoading && (
-                    <Box sx={{
-                      position: 'absolute',
-                      top: 8,
-                      right: 8,
-                      zIndex: 10,
-                      backgroundColor: 'rgba(0,0,0,0.4)',
-                      color: 'rgba(255,255,255,0.8)',
-                      padding: '3px 6px',
-                      borderRadius: '3px',
-                      fontSize: '10px',
-                      fontWeight: 300
-                    }}>
-                      Aktualisiere...
-                    </Box>
-                  )}
-                  {streamUrl ? (
-                    <Box 
-                      sx={{ 
-                        position: 'relative', 
-                        width: '100%', 
-                        height: '100%',
-                        cursor: 'pointer',
-                        '&:hover': {
-                          opacity: 0.95
-                        }
-                      }}
-                      onClick={() => toggleStream(device._id)}
-                      title="Klicken um Stream zu stoppen"
-                    >
-                      {/* Altes Bild - bleibt sichtbar */}
-                      {currentImage && (
-                      <img
-                        src={currentImage}
-                        alt="Previous Device Stream"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
-                          borderRadius: '4px',
-                          zIndex: 1
-                        }}
-                      />
-                      )}
-                      
-                      {/* Neues Bild - lädt im Hintergrund */}
-                      <img
-                        key={streamUrl}
-                        src={streamUrl}
-                        alt="Device Stream"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover', // Ändert zu 'cover' für 16:9 Füllung
-                          borderRadius: '4px',
-                          opacity: isLoading ? 0 : 1,
-                          transition: 'opacity 0.3s ease',
-                          zIndex: 2
-                        }}
-                        onError={(e) => {
-                          console.error('Image load error:', e);
-                          console.error('Image URL:', streamUrl);
-                          if (loadTimeoutRef.current) {
-                            clearTimeout(loadTimeoutRef.current);
-                          }
-                          setIsLoading(false);
-                        }}
-                        onLoad={() => {
-                          console.log('Image loaded for:', streamUrl);
-                          if (loadTimeoutRef.current) {
-                            clearTimeout(loadTimeoutRef.current);
-                          }
-                          // Neues Bild ist fertig - ersetze das alte
-                          setCurrentImage(streamUrl);
-                          // Loading beendet
-                          setIsLoading(false);
-                        }}
-                        onLoadStart={() => {
-                          console.log('Image loading started for:', streamUrl);
-                        }}
-                      />
-                    </Box>
-                  ) : (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                      <CircularProgress size={40} />
-                      <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
-                        Stream wird vorbereitet...
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              )
-            ) : (
-              <Box textAlign="center">
-                <CameraIcon sx={{ fontSize: 48, color: 'grey.400', mb: 1 }} />
-                <Typography variant="body2" color="textSecondary">
-                  Stream nicht aktiv
-                </Typography>
-                <Button
-                  variant="outlined"
-                  startIcon={<PlayIcon />}
-                  onClick={() => toggleStream(device._id)}
-                  sx={{ mt: 1 }}
-                >
-                  Stream starten
-                </Button>
-              </Box>
-            )}
-          </Paper>
-          )}
-
-          {/* Bewegungs-Steuerung */}
-          <Box mb={2}>
-            <Typography variant="subtitle2" gutterBottom textAlign="center">
-              Steuerung
-            </Typography>
-            
-            {/* D-Pad Layout with live position bars */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              {/* Left spacer to push D-Pad to center */}
-              <Box sx={{ flex: 1 }} />
-              
-              {/* Vertical Tilt Bar (left of D-Pad) */}
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
-                <Box sx={{ position: 'relative', width: 8, height: 110, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
-                  <Box sx={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: `${Math.round(normalized.tiltPct * 100)}%`, bgcolor: '#1976d2' }} />
-                </Box>
-                <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666', minWidth: '20px', textAlign: 'center' }}>
-                  {normalized.tilt.toFixed(0)}°
-                </Typography>
-              </Box>
-
-              {/* D-Pad with Horizontal Rot Bar (centered) */}
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                {/* Horizontal Rot Bar (above D-Pad) */}
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
-                  <Box sx={{ position: 'relative', width: 190, height: 8, borderRadius: 4, bgcolor: '#eee', overflow: 'hidden' }}>
-                    <Box sx={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${Math.round(normalized.rotPct * 100)}%`, bgcolor: '#1976d2' }} />
-                  </Box>
-                  <Typography variant="caption" sx={{ fontSize: '0.65rem', color: '#666' }}>
-                    {normalized.rot.toFixed(0)}°
-                  </Typography>
-                </Box>
-              {/* Top Row - Up */}
-              <Button 
-                variant="outlined" 
-                size="small"
-                onClick={() => handleDeviceControl(device._id, 'move_up')}
-                sx={{ minWidth: 60 }}
-              >
-                <ArrowUpIcon />
-              </Button>
-              
-              {/* Middle Row - Left, Shoot, Right */}
-              <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                <Button 
-                  variant="outlined" 
-                  size="small"
-                  onClick={() => handleDeviceControl(device._id, 'rotate_left')}
-                  sx={{ minWidth: 60 }}
-                >
-                  <RotateLeftIcon />
-                </Button>
-                
-                <Button 
-                  variant="outlined" 
-                  size="small"
-                  onClick={() => handleDeviceControl(device._id, 'shoot')}
-                  sx={{ minWidth: 60 }}
-                >
-                  ✚
-                </Button>
-                
-                <Button 
-                  variant="outlined" 
-                  size="small"
-                  onClick={() => handleDeviceControl(device._id, 'rotate_right')}
-                  sx={{ minWidth: 60 }}
-                >
-                  <RotateRightIcon />
-                </Button>
-              </Box>
-              
-              {/* Bottom Row - Down */}
-              <Button 
-                variant="outlined" 
-                size="small"
-                onClick={() => handleDeviceControl(device._id, 'move_down')}
-                sx={{ minWidth: 60 }}
-              >
-                <ArrowDownIcon />
-              </Button>
-              
-              {/* Reset Button */}
-              <Button 
-                variant="outlined" 
-                color="warning"
-                size="small"
-                onClick={() => handleDeviceControl(device._id, 'reset')}
-                sx={{ mt: 1, minWidth: 60 }}
-              >
-                Reset
-              </Button>
-              </Box>
-              
-              {/* Right spacer to balance and center D-Pad */}
-              <Box sx={{ flex: 1 }} />
-            </Box>
-          </Box>
-
-          {/* Hardware Monitor Status */}
-          <Box mb={2}>
-            <Typography variant="caption" color="textSecondary" gutterBottom sx={{ display: 'block' }}>
-              Hardware Monitor Status:
-            </Typography>
-            {deviceStatus ? (
-              <>
-                <Chip
-                  label={deviceStatus.message}
-                  color={getStatusColor(deviceStatus.status)}
-                  size="small"
-                  sx={{ fontSize: '0.7rem' }}
-                />
-                <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 0.5 }}>
-                  {deviceStatus.timestamp.toLocaleTimeString()}
-                </Typography>
-              </>
-            ) : (
-              <Chip
-                label="Kein Status verfügbar"
-                color="default"
-                size="small"
-                sx={{ fontSize: '0.7rem' }}
-              />
-            )}
-          </Box>
-
-          {/* Steuerungs-Buttons */}
-          <Box mb={2}>
-            <Typography variant="subtitle2" gutterBottom>
-              Geräte-Steuerung
-            </Typography>
-            <ButtonGroup variant="outlined" size="small" fullWidth>
-              <Tooltip title="Überwachung starten">
-                <Button 
-                  onClick={() => handleDeviceControl(device._id, 'start')}
-                  color={device.monitorStatus === 'running' ? 'success' : 'primary'}
-                  variant={device.monitorStatus === 'running' ? 'contained' : 'outlined'}
-                >
-                  <StartIcon />
-                </Button>
-              </Tooltip>
-              <Tooltip title="Überwachung pausieren">
-                <Button 
-                  onClick={() => handleDeviceControl(device._id, 'pause')}
-                  color={device.monitorStatus === 'paused' ? 'warning' : 'primary'}
-                  variant={device.monitorStatus === 'paused' ? 'contained' : 'outlined'}
-                >
-                  <PauseIcon2 />
-                </Button>
-              </Tooltip>
-            </ButtonGroup>
-            
-            {/* Status-Anzeige */}
-            <Box mt={1} textAlign="center">
-              <Chip 
-                label={device.monitorStatus === 'running' ? 'Läuft' : device.monitorStatus === 'paused' ? 'Pausiert' : 'Gestoppt'}
-                color={device.monitorStatus === 'running' ? 'success' : device.monitorStatus === 'paused' ? 'warning' : 'default'}
-                size="small"
-              />
-            </Box>
-          </Box>
-
-          {/* Schießen bei Erkennung (Scharf/Sicher) – synchron mit HA */}
-          <Box mb={2}>
-            <Typography variant="subtitle2" gutterBottom>
-              Schießen bei Erkennung
-            </Typography>
-            <ButtonGroup variant="outlined" size="small" fullWidth>
-              <Tooltip title="Bei Taubenerkennung schießen und speichern">
-                <Button
-                  onClick={() => handleDeviceControl(device._id, 'arm')}
-                  color={device.monitorArmed ? 'error' : 'primary'}
-                  variant={device.monitorArmed ? 'contained' : 'outlined'}
-                >
-                  Scharf
-                </Button>
-              </Tooltip>
-              <Tooltip title="Nur speichern, nicht schießen">
-                <Button
-                  onClick={() => handleDeviceControl(device._id, 'disarm')}
-                  color={!device.monitorArmed ? 'success' : 'primary'}
-                  variant={!device.monitorArmed ? 'contained' : 'outlined'}
-                >
-                  Sicher
-                </Button>
-              </Tooltip>
-            </ButtonGroup>
-            <Box mt={1} textAlign="center">
-              <Chip
-                label={device.monitorArmed ? 'Scharf' : 'Sicher'}
-                color={device.monitorArmed ? 'error' : 'success'}
-                size="small"
-              />
-            </Box>
-          </Box>
-
-          {/* Geräte-Info */}
-          <Box>
-            <Typography variant="caption" color="textSecondary">
-              IP: {device.taubenschiesser?.ip || 'Nicht gesetzt'}
-            </Typography>
-            <br />
-            <Typography variant="caption" color="textSecondary">
-              Letztes Signal: {device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'Nie'}
-            </Typography>
-          </Box>
-
-        </CardContent>
-      </Card>
-    );
-  };
-
   // Helper: Gesamtzahl unkategorisierter Erkennungen (alle Tage)
   const getTotalUnclassified = (device) => {
     const deviceIdStr = String(device._id);
@@ -1622,7 +1857,7 @@ const Dashboard = () => {
   }
 
   return (
-    <Box>
+    <Box sx={{ overflowAnchor: 'none' }}>
       <Typography variant="h4" gutterBottom>
         Taubenschiesser Dashboard
       </Typography>
@@ -1689,8 +1924,11 @@ const Dashboard = () => {
                     isStreaming={!!streamingDevices[device._id]}
                     position={devicePositions[device._id] || { rot: 0, tilt: 0 }}
                     deviceStatus={deviceStatuses[device._id]}
-                    onToggleStream={() => toggleStream(device._id)}
-                    onDeviceControl={(action) => handleDeviceControl(device._id, action)}
+                    waitingInfo={deviceWaiting[device._id]}
+                    waitTick={waitTick}
+                    toggleStream={toggleStream}
+                    handleDeviceControl={handleDeviceControl}
+                    navigate={navigate}
                   />
                 </Grid>
               ))}
