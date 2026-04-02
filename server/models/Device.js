@@ -59,6 +59,11 @@ const deviceSchema = new mongoose.Schema({
     shootingTimeMs: {
       type: Number,
       default: 500
+    },
+    // Wartezeit nach Bewegung, bevor Bilder analysiert werden (ms)
+    stabilizeTimeMs: {
+      type: Number,
+      default: 500
     }
   },
   // Camera Configuration
@@ -215,6 +220,12 @@ const deviceSchema = new mongoose.Schema({
     type: String,
     enum: ['running', 'paused', 'stopped'],
     default: 'paused'
+  },
+  // Last live event from hardware-monitor (persisted so HA can show attributes)
+  hardwareMonitor: {
+    lastEventType: String,
+    lastEventData: mongoose.Schema.Types.Mixed,
+    lastEventAt: Date
   },
   // Monitor scharf: bei Taubenerkennung schießen (true) oder nur Detection speichern (false)
   monitorArmed: {

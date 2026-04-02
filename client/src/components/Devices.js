@@ -49,7 +49,7 @@ const Devices = () => {
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500 },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500 },
     camera: { 
       type: 'tapo',
       directUrl: '',
@@ -129,7 +129,8 @@ const Devices = () => {
           ip: device.taubenschiesser?.ip || '',
           invertRotation: device.taubenschiesser?.invertRotation || false,
           invertTilt: device.taubenschiesser?.invertTilt || false,
-          shootingTimeMs: device.taubenschiesser?.shootingTimeMs ?? 500
+          shootingTimeMs: device.taubenschiesser?.shootingTimeMs ?? 500,
+          stabilizeTimeMs: device.taubenschiesser?.stabilizeTimeMs ?? 500
         },
         camera: device.camera || { 
           type: 'tapo',
@@ -156,7 +157,7 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500 },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500 },
         camera: {
           type: 'tapo',
           directUrl: '',
@@ -515,6 +516,19 @@ const Devices = () => {
                 onChange={(e) => setFormData({
                   ...formData,
                   taubenschiesser: { ...formData.taubenschiesser, shootingTimeMs: e.target.value === '' ? 500 : Number(e.target.value) }
+                })}
+                inputProps={{ min: 0, step: 50 }}
+                sx={{ width: 140 }}
+              />
+              <TextField
+                margin="dense"
+                label="Stabilize (ms)"
+                type="number"
+                variant="outlined"
+                value={formData.taubenschiesser.stabilizeTimeMs ?? 500}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  taubenschiesser: { ...formData.taubenschiesser, stabilizeTimeMs: e.target.value === '' ? 500 : Number(e.target.value) }
                 })}
                 inputProps={{ min: 0, step: 50 }}
                 sx={{ width: 140 }}

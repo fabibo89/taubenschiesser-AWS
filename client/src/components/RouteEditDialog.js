@@ -336,12 +336,12 @@ const RouteEditDialog = ({
           </FormControl>
           <TextField
             fullWidth
-            label="Wartezeit zwischen Bewegungen (Sekunden)"
+            label="Max. Wartezeit zwischen Bewegungen (Sekunden)"
             type="number"
             value={actionsConfig.waitBetweenMovesSeconds ?? 20}
             onChange={onWaitBetweenMovesChange}
             inputProps={{ min: 5, max: 300, step: 1 }}
-            helperText="Pause nach Ende einer Bewegung, bevor der nächste Move ausgeführt wird (5–300 s)."
+            helperText="Dynamisch: startet bei 0s (wenn Taube erkannt), erhöht sich sonst pro Schritt bis zu diesem Maximum (5–300 s). Bei Maximum bleibt das Gerät stehen und analysiert weiter, bis Taube erkannt."
             sx={{ mt: 2 }}
             size="small"
           />

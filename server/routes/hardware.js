@@ -57,6 +57,22 @@ router.post('/detection', async (req, res) => {
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
     }
+
+    // Persist last monitor event so poll-based clients (e.g. Home Assistant) can read it
+    try {
+      device.hardwareMonitor = {
+        lastEventType: eventType,
+        lastEventData: data,
+        lastEventAt: new Date(timestamp || Date.now())
+      };
+      await device.save();
+    } catch (persistError) {
+      logger.warn('Failed to persist hardware monitor event on device', {
+        deviceId,
+        eventType,
+        error: persistError?.message || String(persistError)
+      });
+    }
     
     // Log temperature if provided
     if (temperature !== null && temperature !== undefined) {

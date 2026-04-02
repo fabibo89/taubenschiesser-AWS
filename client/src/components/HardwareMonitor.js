@@ -83,7 +83,21 @@ const HardwareMonitor = () => {
       case 'device_waiting':
         setCurrentStep(0);
         setDeviceStatus('waiting');
-        setStatusMessage(data.message);
+        if (data?.current_wait != null && data?.threshold != null) {
+          const holding = data?.holding === true;
+          const dyn = data?.dynamic_threshold;
+          const max = data?.max_threshold;
+          const base = holding ? 'Halte Position' : 'Warte';
+          const extra =
+            dyn != null && max != null
+              ? ` (dyn ${dyn}s / max ${max}s)`
+              : '';
+          setStatusMessage(
+            `${base}: ${Number(data.current_wait).toFixed(1)}s / ${Number(data.threshold).toFixed(0)}s${extra}`
+          );
+        } else {
+          setStatusMessage(data.message);
+        }
         break;
       
       case 'device_busy':
@@ -107,7 +121,11 @@ const HardwareMonitor = () => {
       case 'device_stabilizing':
         setCurrentStep(1);
         setDeviceStatus('stabilizing');
-        setStatusMessage(data.message);
+        if (data?.wait_time != null) {
+          setStatusMessage(`Warte ${data.wait_time}s bis Kamera stabilisiert...`);
+        } else {
+          setStatusMessage(data.message);
+        }
         break;
       
       case 'analysis_started':
