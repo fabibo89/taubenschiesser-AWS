@@ -11,7 +11,7 @@ import logging
 import os
 import time
 import socket
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
@@ -862,12 +862,23 @@ class HardwareMonitor:
         except Exception as e:
             logger.debug(f"Error sending position update: {e}")
 
+    def _iso_utc_z(self, dt: Optional[datetime] = None) -> str:
+        """UTC instant as RFC 3339 with Z — unambiguous for browser Date.parse (fixes TZ skew, e.g. ~7200s)."""
+        if dt is None:
+            t = datetime.now(timezone.utc)
+        elif dt.tzinfo is None:
+            # Naive = local wall time of this process; .timestamp() maps correctly in any TZ.
+            t = datetime.fromtimestamp(dt.timestamp(), tz=timezone.utc)
+        else:
+            t = dt.astimezone(timezone.utc)
+        return t.isoformat().replace("+00:00", "Z")
+
     def _wait_started_at_iso(self, device_ip: Optional[str]) -> str:
         """Anchor for wait display = scheduler clock (device_last_moved), same as log 'current: Xs'."""
         if not device_ip:
-            return datetime.now().isoformat()
+            return self._iso_utc_z(None)
         lm = self.device_last_moved.get(device_ip)
-        return lm.isoformat() if lm else datetime.now().isoformat()
+        return self._iso_utc_z(lm) if lm else self._iso_utc_z(None)
 
     def _wait_elapsed_seconds(self, device_ip: Optional[str]) -> Optional[float]:
         """Elapsed since last_moved — matches control-loop timing vs dyn/max."""
@@ -912,7 +923,7 @@ class HardwareMonitor:
             f"device={device_ip}, holding={holding}, dyn={dyn}s, threshold={threshold}s, max={max_threshold}s"
         )
         # Post-analysis wait window: anchor "now" so UI elapsed starts ~0 (not time since last move).
-        wait_started_at = datetime.now().isoformat()
+        wait_started_at = self._iso_utc_z(None)
         await self.send_monitor_event(device, 'device_waiting', {
             'message': (
                 f'{"Halte Position" if holding else "Warte"}: Ziel {threshold}s '
@@ -1460,7 +1471,7 @@ class HardwareMonitor:
 
                         # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
                         # Same anchor as following device_waiting: start of post-analysis wait (not last move).
-                        wait_started_at = datetime.now().isoformat()
+                        wait_started_at = self._iso_utc_z(None)
                         await self.send_monitor_event(device, 'cv_analysis_complete', {
                             'bird_count': bird_count,
                             'detections': detections,
