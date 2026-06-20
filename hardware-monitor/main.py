@@ -37,6 +37,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def build_shoot_command(taubenschiesser: Optional[Dict] = None) -> Dict:
+    """Build ESP shoot MQTT payload from device taubenschiesser settings."""
+    config = taubenschiesser if isinstance(taubenschiesser, dict) else {}
+    duration_ms = config.get("shootingTimeMs", 500)
+    try:
+        duration_ms = max(0, int(duration_ms))
+    except (TypeError, ValueError):
+        duration_ms = 500
+
+    use_laser = config.get("shootUseLaser", True)
+    if use_laser is None:
+        use_laser = True
+    use_audio = bool(config.get("shootUseAudio", False))
+
+    payload = {
+        "type": "shoot",
+        "duration": duration_ms,
+        "useLaser": bool(use_laser),
+        "useAudio": use_audio,
+    }
+
+    if use_laser and config.get("shootLaserBlink"):
+        blink_ms = config.get("shootLaserBlinkMs", 100)
+        try:
+            blink_ms = int(blink_ms)
+        except (TypeError, ValueError):
+            blink_ms = 100
+        payload["laserBlink"] = True
+        payload["laserBlinkMs"] = min(500, max(20, blink_ms))
+
+    return payload
+
+
 class HardwareMonitor:
     def __init__(self):
         self.api_url = os.getenv('API_URL', 'http://localhost:5001')
@@ -2025,12 +2059,9 @@ class HardwareMonitor:
                         await self.wait_for_movement_complete(device_ip, timeout=10)
                         await asyncio.sleep(0.5)  # Brief stabilization
                         
-                        # Shoot (duration from device settings)
-                        duration_ms = device.get("taubenschiesser", {}).get("shootingTimeMs", 500)
-                        shoot_command = {
-                            "type": "shoot",
-                            "duration": duration_ms
-                        }
+                        # Shoot (duration and laser from device settings)
+                        shoot_command = build_shoot_command(taubenschiesser_config)
+                        duration_ms = shoot_command.get("duration", 500)
                         mqtt_payload = json.dumps(shoot_command)
                         mqtt_client.publish(topic, mqtt_payload)
                         logger.info(f"💥 Shot fired at target bird! (duration: {duration_ms} ms)")

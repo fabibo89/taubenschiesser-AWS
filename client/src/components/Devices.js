@@ -49,7 +49,7 @@ const Devices = () => {
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20 },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100 },
     camera: { 
       type: 'tapo',
       directUrl: '',
@@ -133,7 +133,11 @@ const Devices = () => {
           stabilizeTimeMs: device.taubenschiesser?.stabilizeTimeMs ?? 500,
           maxWaitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds
             ?? device.actions?.waitBetweenMovesSeconds
-            ?? 20
+            ?? 20,
+          shootLaserBlink: device.taubenschiesser?.shootLaserBlink ?? false,
+          shootLaserBlinkMs: device.taubenschiesser?.shootLaserBlinkMs ?? 100,
+          shootUseLaser: device.taubenschiesser?.shootUseLaser !== false,
+          shootUseAudio: device.taubenschiesser?.shootUseAudio ?? false
         },
         camera: device.camera || { 
           type: 'tapo',
@@ -160,7 +164,7 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20 },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100 },
         camera: {
           type: 'tapo',
           directUrl: '',
@@ -197,13 +201,28 @@ const Devices = () => {
       toast.error('Bitte eine gültige Schussdauer (ms) eingeben.');
       return;
     }
+    const laserBlink = !!formData.taubenschiesser.shootLaserBlink;
+    const useLaser = formData.taubenschiesser.shootUseLaser !== false;
+    const useAudio = !!formData.taubenschiesser.shootUseAudio;
+    let laserBlinkMs = Number(formData.taubenschiesser.shootLaserBlinkMs ?? 100);
+    if (laserBlink && useLaser) {
+      if (!Number.isFinite(laserBlinkMs)) laserBlinkMs = 100;
+      laserBlinkMs = Math.min(500, Math.max(20, laserBlinkMs));
+    }
     setShootTestLoading(true);
     try {
       await axios.post(`/api/device-control/${editingDevice._id}/control`, {
         action: 'shoot',
-        durationMs
+        durationMs,
+        useLaser,
+        useAudio,
+        ...(useLaser && laserBlink ? { laserBlink: true, laserBlinkMs } : {})
       });
-      toast.success(`Test-Schuss mit ${durationMs} ms gesendet`);
+      const parts = [`${durationMs} ms`];
+      if (useLaser) parts.push(laserBlink ? `Laser blinkend ${laserBlinkMs} ms` : 'Laser fest');
+      else parts.push('Laser aus');
+      if (useAudio) parts.push('Audio an');
+      toast.success(`Test-Schuss gesendet (${parts.join(', ')})`);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Test-Schuss fehlgeschlagen');
     } finally {
@@ -562,6 +581,71 @@ const Devices = () => {
                   {shootTestLoading ? 'Sende…' : 'Test-Schuss'}
                 </Button>
               )}
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={formData.taubenschiesser.shootUseLaser !== false}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: {
+                        ...formData.taubenschiesser,
+                        shootUseLaser: e.target.checked
+                      }
+                    })}
+                  />
+                }
+                label="Laser nutzen"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={!!formData.taubenschiesser.shootUseAudio}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: {
+                        ...formData.taubenschiesser,
+                        shootUseAudio: e.target.checked
+                      }
+                    })}
+                  />
+                }
+                label="Akustische Signale"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={!!formData.taubenschiesser.shootLaserBlink}
+                    disabled={formData.taubenschiesser.shootUseLaser === false}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: {
+                        ...formData.taubenschiesser,
+                        shootLaserBlink: e.target.checked
+                      }
+                    })}
+                  />
+                }
+                label="Laser blinkend (sonst fest an)"
+              />
+              <TextField
+                margin="dense"
+                label="Blink-Intervall (ms)"
+                type="number"
+                variant="outlined"
+                value={formData.taubenschiesser.shootLaserBlinkMs ?? 100}
+                onChange={(e) => setFormData({
+                  ...formData,
+                  taubenschiesser: {
+                    ...formData.taubenschiesser,
+                    shootLaserBlinkMs: Math.min(500, Math.max(20, Number(e.target.value) || 100))
+                  }
+                })}
+                inputProps={{ min: 20, max: 500, step: 10 }}
+                disabled={formData.taubenschiesser.shootUseLaser === false || !formData.taubenschiesser.shootLaserBlink}
+                sx={{ width: 170 }}
+              />
             </Box>
             <Box sx={{ mt: 2, mb: 1 }}>
               <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold' }}>

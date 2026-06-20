@@ -72,6 +72,28 @@ const deviceSchema = new mongoose.Schema({
       default: 20,
       min: 5,
       max: 300
+    },
+    // Laser beim Schuss: false = durchgehend an, true = blinkend
+    shootLaserBlink: {
+      type: Boolean,
+      default: false
+    },
+    // Blink-Intervall in ms (nur wenn shootLaserBlink true)
+    shootLaserBlinkMs: {
+      type: Number,
+      default: 100,
+      min: 20,
+      max: 500
+    },
+    // Laser beim Schuss aktivieren
+    shootUseLaser: {
+      type: Boolean,
+      default: true
+    },
+    // Akustisches Signal beim Schuss (ESP Audio-Stack)
+    shootUseAudio: {
+      type: Boolean,
+      default: false
     }
   },
   // Camera Configuration

@@ -4,6 +4,7 @@ const Device = require('../models/Device');
 const logger = require('../utils/logger');
 const { authenticateToken } = require('../middleware/auth');
 const hardwareHelper = require('../utils/hardwareHelper');
+const { buildShootCommand } = require('../utils/shootCommand');
 
 // MQTT-Steuerungsbefehle für Taubenschiesser
 // Format entspricht dem ESP32-Code (verwendet "type" statt "action")
@@ -87,10 +88,14 @@ router.post('/:id/control', authenticateToken, async (req, res) => {
 
     let message;
     if (action === 'shoot' && MQTT_COMMANDS.shoot.dynamic) {
-      const durationMs = typeof req.body.durationMs === 'number' && req.body.durationMs >= 0
-        ? req.body.durationMs
-        : (device.taubenschiesser?.shootingTimeMs ?? 500);
-      message = JSON.stringify({ type: 'shoot', duration: durationMs });
+      const shootPayload = buildShootCommand(device.taubenschiesser, {
+        durationMs: typeof req.body.durationMs === 'number' ? req.body.durationMs : undefined,
+        useLaser: typeof req.body.useLaser === 'boolean' ? req.body.useLaser : undefined,
+        laserBlink: typeof req.body.laserBlink === 'boolean' ? req.body.laserBlink : undefined,
+        laserBlinkMs: typeof req.body.laserBlinkMs === 'number' ? req.body.laserBlinkMs : undefined,
+        useAudio: typeof req.body.useAudio === 'boolean' ? req.body.useAudio : undefined
+      });
+      message = JSON.stringify(shootPayload);
     } else {
       const command = MQTT_COMMANDS[action];
       message = command.message;
