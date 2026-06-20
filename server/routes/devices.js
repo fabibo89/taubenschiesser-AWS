@@ -6,6 +6,7 @@ const Detection = require('../models/Detection');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const hardwareHelper = require('../utils/hardwareHelper');
+const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
 
 const router = express.Router();
 
@@ -131,6 +132,8 @@ router.get('/', authenticateToken, async (req, res) => {
         today: deviceCounts[todayStr] || 0,
         yesterday: deviceCounts[yesterdayStr] || 0
       };
+
+      deviceTelemetryCache.attachToDevice(deviceObj);
       
       return deviceObj;
     });
@@ -156,6 +159,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     
     const deviceObj = device.toObject();
     deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+    deviceTelemetryCache.attachToDevice(deviceObj);
     
     res.json(deviceObj);
   } catch (error) {

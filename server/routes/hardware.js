@@ -3,6 +3,7 @@ const axios = require('axios');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
+const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
 const router = express.Router();
 
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
@@ -311,6 +312,49 @@ router.post('/monitor-event', async (req, res) => {
   } catch (error) {
     logger.error('Hardware monitor event error:', error);
     res.status(500).json({ error: 'Failed to emit monitor event' });
+  }
+});
+
+// Ephemeral device telemetry from hardware-monitor (MQTT-derived, not stored in MongoDB)
+router.post('/device-telemetry', async (req, res) => {
+  try {
+    const { deviceId, deviceIp, watertank, timestamp } = req.body;
+
+    if (typeof watertank !== 'boolean') {
+      return res.status(400).json({ error: 'watertank (boolean) is required' });
+    }
+
+    let resolvedDeviceId = deviceId;
+    if (!resolvedDeviceId && deviceIp) {
+      const device = await Device.findOne({
+        isActive: true,
+        'taubenschiesser.ip': deviceIp
+      }).select('_id');
+      resolvedDeviceId = device?._id;
+    }
+
+    if (!resolvedDeviceId) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const telemetry = {
+      watertank,
+      updatedAt: timestamp || new Date().toISOString()
+    };
+    deviceTelemetryCache.setTelemetry(resolvedDeviceId, telemetry);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`monitor-${resolvedDeviceId}`).emit('device-telemetry', {
+        deviceId: String(resolvedDeviceId),
+        ...telemetry
+      });
+    }
+
+    res.json({ success: true, deviceId: String(resolvedDeviceId), telemetry });
+  } catch (error) {
+    logger.error('Device telemetry error:', error);
+    res.status(500).json({ error: 'Failed to store device telemetry' });
   }
 });
 

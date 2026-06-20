@@ -92,6 +92,7 @@ class HardwareMonitor:
         # - resets to 0 when birds are found
         # - when MAX is reached, we hold position and keep analyzing (no move) until birds are found
         self.device_dynamic_wait_threshold = {}
+        self.device_watertank_reported = {}
         self.movement_queue = {}    # Queue movements per device
         self.device_movement_start = {}  # Track when movement started
         self.last_position_update = {}  # Track last position update time for throttling
@@ -255,6 +256,13 @@ class HardwareMonitor:
                 del self.device_movement_start[device_ip]
                 # Also clear the device_moving status to allow immediate next movement
                 self.device_moving[device_ip] = False
+
+            watertank = payload.get('watertank', True)
+            if isinstance(watertank, bool):
+                prev_tank = self.device_watertank_reported.get(device_ip)
+                if prev_tank is None or prev_tank != watertank:
+                    self.device_watertank_reported[device_ip] = watertank
+                    self.schedule_async(self.send_device_telemetry(device_ip, watertank))
             
         except json.JSONDecodeError as e:
             logger.error(f"❌ JSON parsing error on topic {topic}: {e}")
@@ -858,6 +866,28 @@ class HardwareMonitor:
                         
         except Exception as e:
             logger.error(f"Error sending monitor event: {e}")
+
+    async def send_device_telemetry(self, device_ip: str, watertank: bool):
+        """Forward MQTT-derived telemetry to API (in-memory, not persisted in MongoDB)."""
+        try:
+            headers = {'Authorization': f'Bearer {self.service_token}'}
+            payload = {
+                'deviceIp': device_ip,
+                'watertank': watertank,
+                'timestamp': datetime.now().isoformat()
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.api_url}/api/hardware/device-telemetry",
+                    json=payload,
+                    headers=headers
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(
+                            f"Failed to send device telemetry for {device_ip}: {response.status}"
+                        )
+        except Exception as e:
+            logger.error(f"Error sending device telemetry: {e}")
     
     async def send_position_update(self, device_ip: str, rotation: int, tilt: int):
         """Send device position update to server for real-time display"""

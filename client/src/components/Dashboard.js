@@ -588,6 +588,11 @@ const DeviceCard = React.memo(({
           ) : (
             <Chip label="Kein Status verfügbar" color="default" size="small" sx={{ fontSize: '0.7rem' }} />
           )}
+          {device.liveTelemetry?.watertank === false && (
+            <Alert severity="warning" sx={{ mt: 1, py: 0, fontSize: '0.75rem' }}>
+              Wassertank leer
+            </Alert>
+          )}
         </Box>
 
         <Box mb={2}>
@@ -1168,9 +1173,20 @@ const Dashboard = () => {
     });
 
     socket.on('hardware-monitor-event', handleMonitorEvent);
+    const handleDeviceTelemetry = (payload) => {
+      const { deviceId, watertank, updatedAt } = payload || {};
+      if (!deviceId || typeof watertank !== 'boolean') return;
+      setDevices((prev) => prev.map((d) => (
+        d._id === deviceId
+          ? { ...d, liveTelemetry: { watertank, updatedAt: updatedAt || new Date().toISOString() } }
+          : d
+      )));
+    };
+    socket.on('device-telemetry', handleDeviceTelemetry);
 
     return () => {
       socket.off('hardware-monitor-event', handleMonitorEvent);
+      socket.off('device-telemetry', handleDeviceTelemetry);
       // Leave rooms
       roomsJoined.forEach(id => {
         const monitorRoom = `monitor-${id}`;
