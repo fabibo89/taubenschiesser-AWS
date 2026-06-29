@@ -3,7 +3,7 @@ Hugin CLI panorama stitching for grid scan images.
 
 Requires Hugin command-line tools (pto_gen, pto_var, pano_modify, nona; enblend
 optional). On macOS the Homebrew cask installs them spread across several .app
-bundles; on Linux use `apt install hugin-tools enblend-enfuse`.
+bundles; on Linux use `apt install hugin-tools enblend enfuse`.
 
 Image positions (yaw/pitch/FoV) are written via pto_var --set from the known
 scan rotation/tilt, so no feature matching is required. Pixel mapping uses Hugin's pano_trafo on the final project file (source corners
@@ -86,7 +86,7 @@ def check_hugin_available() -> Dict[str, str]:
     if missing:
         raise HuginNotAvailableError(
             f'Hugin-Tools nicht gefunden: {", ".join(missing)}. '
-            'Installiere Hugin (macOS: brew install --cask hugin, Linux: apt install hugin-tools enblend-enfuse).'
+            'Installiere Hugin (macOS: brew install --cask hugin, Linux: apt install hugin-tools enblend enfuse).'
         )
     for tool in OPTIONAL_TOOLS:
         path = find_hugin_tool(tool)
