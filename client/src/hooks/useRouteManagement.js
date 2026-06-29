@@ -83,10 +83,35 @@ export const useRouteManagement = (deviceId) => {
     setEditingIndex(index);
   };
 
+  const handleSaveRoutePointSettings = (index, { laserZone, audioEnabled }) => {
+    const updatedCoordinates = [...actionsConfig.route.coordinates];
+    if (!updatedCoordinates[index]) return;
+    updatedCoordinates[index] = {
+      ...updatedCoordinates[index],
+      audioEnabled: audioEnabled === true
+    };
+    if (!audioEnabled) {
+      delete updatedCoordinates[index].audioEnabled;
+    }
+    if (laserZone) {
+      updatedCoordinates[index].laserZone = laserZone;
+    } else {
+      delete updatedCoordinates[index].laserZone;
+    }
+    setActionsConfig(prev => ({
+      ...prev,
+      route: {
+        ...prev.route,
+        coordinates: updatedCoordinates
+      }
+    }));
+  };
+
   const handleUpdateCoordinate = () => {
     if (editingIndex !== null) {
       const updatedCoordinates = [...actionsConfig.route.coordinates];
       updatedCoordinates[editingIndex] = {
+        ...updatedCoordinates[editingIndex],
         ...newCoordinate,
         order: editingIndex
       };
@@ -479,7 +504,8 @@ export const useRouteManagement = (deviceId) => {
     clearPreview,
     setEditingIndex,
     handleStitchPanorama,
-    handleSavePanorama
+    handleSavePanorama,
+    handleSaveRoutePointSettings
   };
 };
 

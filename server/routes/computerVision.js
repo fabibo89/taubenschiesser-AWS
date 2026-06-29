@@ -38,6 +38,26 @@ async function enrichDetectionForResponse(detection, device) {
   }
 }
 
+/** Resolve display image URLs (single + dual camera fields). */
+function pickDetectionImages(detection) {
+  const zoomedUrl =
+    detection.zoomed_image?.url ||
+    detection.tapo_zoomed_image?.url ||
+    detection.raspberry_pi_zoomed_image?.url ||
+    null;
+  const imageUrl =
+    detection.image?.url ||
+    detection.tapo_image?.url ||
+    detection.raspberry_pi_image?.url ||
+    null;
+
+  return {
+    image: imageUrl ? { url: imageUrl } : null,
+    zoomed_image: zoomedUrl ? { url: zoomedUrl } : null,
+    image_info: detection.image_info || null
+  };
+}
+
 const router = express.Router();
 
 // Configure multer for image uploads
@@ -293,7 +313,7 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)
@@ -438,23 +458,28 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
 
     // If user has no devices, return empty array
     if (deviceIds.length === 0) {
-      return res.json({ detections: [] });
+      return res.json({ detections: [], total: 0 });
     }
 
-    // Lean select: only fields needed by Tauben-Tinder (images, detections, image_info, etc.)
-    const detections = await Detection.find({
+    const filter = {
       device: { $in: deviceIds },
-      $or: [
-        { classification_status: null },
-        { classification_status: { $exists: false } }
-      ]
-    })
-      .select('_id device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info detections target_bird processedAt processingTime camera_position')
-      .sort({ processedAt: -1 })
-      .limit(limitNum)
-      .populate('device', 'name deviceId type');
+      classification_status: null
+    };
 
-    res.json({ detections });
+    // Metadata only; images are loaded per card via GET /detections/:id/image.
+    // `{ classification_status: null }` matches both null and missing fields,
+    // while keeping the query index-friendly.
+    const [detections, total] = await Promise.all([
+      Detection.find(filter)
+        .select('_id device image_info detections target_bird processedAt processingTime camera_position')
+        .sort({ processedAt: -1 })
+        .limit(limitNum)
+        .populate('device', 'name deviceId type')
+        .lean(),
+      Detection.countDocuments(filter)
+    ]);
+
+    res.json({ detections, total });
   } catch (error) {
     logger.error('Get unclassified detections error:', error);
     logger.error('Get unclassified detections error details:', {
@@ -733,6 +758,28 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
     res.json({ statistics });
   } catch (error) {
     logger.error('Get hourly detection statistics error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get detection images only (lightweight; used by Tauben-Tinder + Erkennungen thumbnails)
+router.get('/detections/:id/image', authenticateToken, async (req, res) => {
+  try {
+    const detection = await Detection.findById(req.params.id)
+      .select('device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info')
+      .populate('device', 'owner');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    res.json(pickDetectionImages(detection));
+  } catch (error) {
+    logger.error('Get detection image error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

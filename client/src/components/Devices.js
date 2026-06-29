@@ -100,7 +100,8 @@ const Devices = () => {
     panoramaTransformationMatrices,
     panoramaImageSizes,
     handleStitchPanorama,
-    handleSavePanorama
+    handleSavePanorama,
+    handleSaveRoutePointSettings
   } = useRouteManagement(routeDeviceId);
 
   useEffect(() => {
@@ -1340,6 +1341,7 @@ const Devices = () => {
             toast.error(result.message || 'Fehler beim Speichern des Panoramas');
           }
         }}
+        onSaveRoutePointSettings={handleSaveRoutePointSettings}
       />
     </Box>
   );

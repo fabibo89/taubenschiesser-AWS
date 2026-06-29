@@ -29,6 +29,7 @@ from angle_helper import (
     calculate_angle_adjustment as shared_calculate_angle_adjustment,
     enrich_detections_esp_angles as shared_enrich_detections_esp_angles,
 )
+from laser_zone import resolve_shoot_use_laser, resolve_shoot_use_audio, resolve_shoot_actions_for_detection
 
 # Configure logging
 logging.basicConfig(
@@ -38,19 +39,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def build_shoot_command(taubenschiesser: Optional[Dict] = None) -> Dict:
+def build_shoot_command(taubenschiesser: Optional[Dict] = None, overrides: Optional[Dict] = None) -> Dict:
     """Build ESP shoot MQTT payload from device taubenschiesser settings."""
     config = taubenschiesser if isinstance(taubenschiesser, dict) else {}
+    overrides = overrides if isinstance(overrides, dict) else {}
     duration_ms = config.get("shootingTimeMs", 500)
     try:
         duration_ms = max(0, int(duration_ms))
     except (TypeError, ValueError):
         duration_ms = 500
+    if isinstance(overrides.get("durationMs"), (int, float)) and overrides["durationMs"] >= 0:
+        duration_ms = int(overrides["durationMs"])
 
-    use_laser = config.get("shootUseLaser", True)
-    if use_laser is None:
-        use_laser = True
-    use_audio = bool(config.get("shootUseAudio", False))
+    if isinstance(overrides.get("useLaser"), bool):
+        use_laser = overrides["useLaser"]
+    else:
+        use_laser = config.get("shootUseLaser", True)
+        if use_laser is None:
+            use_laser = True
+
+    if isinstance(overrides.get("useAudio"), bool):
+        use_audio = overrides["useAudio"]
+    else:
+        use_audio = bool(config.get("shootUseAudio", False))
 
     payload = {
         "type": "shoot",
@@ -59,8 +70,9 @@ def build_shoot_command(taubenschiesser: Optional[Dict] = None) -> Dict:
         "useAudio": use_audio,
     }
 
-    if use_laser and config.get("shootLaserBlink"):
-        blink_ms = config.get("shootLaserBlinkMs", 100)
+    laser_blink = overrides.get("laserBlink") if isinstance(overrides.get("laserBlink"), bool) else config.get("shootLaserBlink")
+    if use_laser and laser_blink:
+        blink_ms = overrides.get("laserBlinkMs") if isinstance(overrides.get("laserBlinkMs"), (int, float)) else config.get("shootLaserBlinkMs", 100)
         try:
             blink_ms = int(blink_ms)
         except (TypeError, ValueError):
@@ -1641,6 +1653,47 @@ class HardwareMonitor:
 
             # esp_rot/esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
 
+            current_pos = None
+            if actions.get('mode') == 'route' and route_index < len(route_coordinates):
+                current_pos = route_coordinates[route_index]
+
+            def _frame_image_info(original_frame, zoomed_frame):
+                if original_frame is None:
+                    return None
+                zoomed = zoomed_frame if zoomed_frame is not None and zoomed_frame is not original_frame else original_frame
+                return {
+                    "original_size": {
+                        "width": original_frame.shape[1],
+                        "height": original_frame.shape[0]
+                    },
+                    "zoomed_size": {
+                        "width": zoomed.shape[1],
+                        "height": zoomed.shape[0]
+                    }
+                }
+
+            tapo_info = _frame_image_info(tapo_original_frame, tapo_zoomed_frame)
+            pi_info = _frame_image_info(raspberry_pi_original_frame, raspberry_pi_zoomed_frame)
+
+            laser_image_info = None
+            if target_bird:
+                cam = target_bird.get('camera_source')
+                if cam == 'tapo':
+                    laser_image_info = tapo_info
+                elif cam in ('raspberry-pi', 'raspberry_pi'):
+                    laser_image_info = pi_info
+            if laser_image_info is None:
+                laser_image_info = tapo_info or pi_info
+
+            shoot_active = resolve_shoot_actions_for_detection(
+                taubenschiesser_config,
+                current_pos,
+                target_bird,
+                shot_fired,
+                laser_image_info,
+                zoom_factor,
+            )
+
             # Prepare image data
             detection_data = {
                 "deviceId": device_id,
@@ -1658,6 +1711,7 @@ class HardwareMonitor:
                 "zoom_factor": zoom_factor,
                 "camera_source": "both",
                 "shotFired": shot_fired,
+                "shootActive": shoot_active,
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -1819,6 +1873,19 @@ class HardwareMonitor:
 
             # esp_rot/esp_tilt are not stored; they are computed on demand when returning detections for the UI (same logic as shoot).
 
+            current_pos = None
+            if actions.get('mode') == 'route' and route_coordinates and route_index < len(route_coordinates):
+                current_pos = route_coordinates[route_index]
+
+            shoot_active = resolve_shoot_actions_for_detection(
+                taubenschiesser_config,
+                current_pos,
+                target_bird,
+                shot_fired,
+                image_info,
+                zoom_factor,
+            )
+
             # Prepare detailed detection data
             detection_data = {
                 "deviceId": device_id,
@@ -1835,6 +1902,7 @@ class HardwareMonitor:
                 "temperature": current_temperature,  # Add temperature
                 "camera_position": camera_position,  # Add camera position (rotation/tilt)
                 "shotFired": shot_fired,  # Whether monitor was armed and shot was fired for this detection
+                "shootActive": shoot_active,
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -2088,9 +2156,35 @@ class HardwareMonitor:
                         # Wait for movement
                         await self.wait_for_movement_complete(device_ip, timeout=10)
                         await asyncio.sleep(0.5)  # Brief stabilization
-                        
-                        # Shoot (duration and laser from device settings)
-                        shoot_command = build_shoot_command(taubenschiesser_config)
+
+                        image_info = getattr(self, 'last_image_info', {})
+                        use_laser = resolve_shoot_use_laser(
+                            taubenschiesser_config,
+                            current_pos,
+                            target_bird,
+                            zoom_factor,
+                            image_info,
+                        )
+                        use_audio = resolve_shoot_use_audio(
+                            taubenschiesser_config,
+                            current_pos,
+                        )
+                        if not use_laser and taubenschiesser_config.get("shootUseLaser", True) is not False:
+                            logger.info(
+                                f"🔦 Laser disabled for shoot: target bird outside laser zone "
+                                f"(route point {route_index + 1})"
+                            )
+                        if not use_audio and taubenschiesser_config.get("shootUseAudio", False):
+                            logger.info(
+                                f"🔊 Audio disabled for shoot: audio not enabled for route point "
+                                f"{route_index + 1}"
+                            )
+
+                        # Shoot (duration, laser and audio from device settings + zone)
+                        shoot_command = build_shoot_command(
+                            taubenschiesser_config,
+                            overrides={"useLaser": use_laser, "useAudio": use_audio},
+                        )
                         duration_ms = shoot_command.get("duration", 500)
                         mqtt_payload = json.dumps(shoot_command)
                         mqtt_client.publish(topic, mqtt_payload)

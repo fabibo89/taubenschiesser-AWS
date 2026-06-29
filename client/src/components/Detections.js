@@ -50,6 +50,47 @@ function formatTimeDiffAtPosition(seconds, direction) {
   return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
 }
 
+function resolveShootActive(detection) {
+  const active = detection?.shootActive;
+  if (active && typeof active === 'object') {
+    return {
+      water: active.water === true,
+      laser: active.laser === true,
+      audio: active.audio === true,
+      known: true
+    };
+  }
+  if (detection?.shotFired === true) {
+    return { water: true, laser: false, audio: false, known: true };
+  }
+  if (detection?.shotFired === false) {
+    return { water: false, laser: false, audio: false, known: true };
+  }
+  return { water: false, laser: false, audio: false, known: false };
+}
+
+function ShootActiveLabels({ detection, sx }) {
+  const flags = resolveShootActive(detection);
+  if (!flags.known) return null;
+
+  const anyActive = flags.water || flags.laser || flags.audio;
+  if (!anyActive) {
+    return (
+      <Box display="flex" flexWrap="wrap" gap={0.5} sx={sx}>
+        <Chip label="Kein Schuss" size="small" variant="outlined" />
+      </Box>
+    );
+  }
+
+  return (
+    <Box display="flex" flexWrap="wrap" gap={0.5} sx={sx}>
+      {flags.water && <Chip label="Wasser" size="small" color="info" variant="outlined" />}
+      {flags.laser && <Chip label="Laser" size="small" color="success" variant="outlined" />}
+      {flags.audio && <Chip label="Audio" size="small" color="primary" variant="outlined" />}
+    </Box>
+  );
+}
+
 // Renders thumbnail for a detection row; triggers load via onLoadRequest when imageUrl not yet loaded
 function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
   useEffect(() => {
@@ -121,7 +162,7 @@ const Detections = () => {
       return { ...prev, [idStr]: 'loading' };
     });
     try {
-      const response = await axios.get(`/api/cv/detections/${idStr}`);
+      const response = await axios.get(`/api/cv/detections/${idStr}/image`);
       const url = response.data.zoomed_image?.url || response.data.image?.url || null;
       setImageByDetectionId(prev => ({ ...prev, [idStr]: url }));
     } catch {
@@ -790,31 +831,36 @@ const Detections = () => {
         fullWidth
       >
         <DialogTitle>
-          <Box display="flex" justifyContent="space-between" alignItems="center">
-            <Box display="flex" alignItems="center" gap={2}>
-              <IconButton
-                onClick={handlePreviousDetection}
-                disabled={currentDetectionIndex <= 0}
-                size="small"
-                title="Vorheriges Bild"
-              >
-                <ArrowBackIcon />
-              </IconButton>
-              <Typography variant="h6">
-                Erkennungs-Bilder {selectedDetection && `(${currentDetectionIndex + 1} / ${detections.length})`}
-              </Typography>
-              <IconButton
-                onClick={handleNextDetection}
-                disabled={currentDetectionIndex >= detections.length - 1}
-                size="small"
-                title="Nächstes Bild"
-              >
-                <ArrowForwardIcon />
+          <Box>
+            <Box display="flex" justifyContent="space-between" alignItems="center">
+              <Box display="flex" alignItems="center" gap={2}>
+                <IconButton
+                  onClick={handlePreviousDetection}
+                  disabled={currentDetectionIndex <= 0}
+                  size="small"
+                  title="Vorheriges Bild"
+                >
+                  <ArrowBackIcon />
+                </IconButton>
+                <Typography variant="h6">
+                  Erkennungs-Bilder {selectedDetection && `(${currentDetectionIndex + 1} / ${detections.length})`}
+                </Typography>
+                <IconButton
+                  onClick={handleNextDetection}
+                  disabled={currentDetectionIndex >= detections.length - 1}
+                  size="small"
+                  title="Nächstes Bild"
+                >
+                  <ArrowForwardIcon />
+                </IconButton>
+              </Box>
+              <IconButton onClick={handleCloseImageDialog} size="small">
+                <CloseIcon />
               </IconButton>
             </Box>
-            <IconButton onClick={handleCloseImageDialog} size="small">
-              <CloseIcon />
-            </IconButton>
+            {selectedDetection && !selectedDetectionLoading && (
+              <ShootActiveLabels detection={selectedDetection} sx={{ mt: 1 }} />
+            )}
           </Box>
         </DialogTitle>
         <DialogContent>
@@ -1040,6 +1086,14 @@ const Detections = () => {
                           <Typography variant="body2" color="text.secondary">
                             Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
                           </Typography>
+                        </Grid>
+                      )}
+                      {resolveShootActive(selectedDetection).known && (
+                        <Grid item xs={12} sm={6}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                            Schuss-Aktionen
+                          </Typography>
+                          <ShootActiveLabels detection={selectedDetection} />
                         </Grid>
                       )}
                       {(nearestAtPosition.before || nearestAtPosition.after) && (

@@ -7,6 +7,9 @@ const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const hardwareHelper = require('../utils/hardwareHelper');
 const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
+const routeImages = require('../utils/routeImages');
+const panoramaScanImages = require('../utils/panoramaScanImages');
+const panoramaScanResults = require('../utils/panoramaScanResults');
 
 const router = express.Router();
 
@@ -117,6 +120,21 @@ router.get('/', authenticateToken, async (req, res) => {
         countMap[devId][date] = stat.count;
       });
     }
+
+    // Total (all-time) unclassified detections per device (matches Tauben-Tinder).
+    // Index-friendly countDocuments per device instead of an aggregation, which would
+    // scan the full (multi-MB Base64) documents and hang.
+    let unclassifiedTotalMap = {};
+    if (deviceIds.length > 0) {
+      const unclassifiedCounts = await Promise.all(
+        deviceIds.map(id =>
+          Detection.countDocuments({ device: id, classification_status: null })
+        )
+      );
+      deviceIds.forEach((id, i) => {
+        unclassifiedTotalMap[id.toString()] = unclassifiedCounts[i];
+      });
+    }
     
     // Calculate status dynamically for each device and add daily detection counts
     const todayStr = today.toISOString().split('T')[0];
@@ -132,6 +150,7 @@ router.get('/', authenticateToken, async (req, res) => {
         today: deviceCounts[todayStr] || 0,
         yesterday: deviceCounts[yesterdayStr] || 0
       };
+      deviceObj.unclassifiedTotal = unclassifiedTotalMap[device._id.toString()] || 0;
 
       deviceTelemetryCache.attachToDevice(deviceObj);
       
@@ -151,7 +170,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const device = await Device.findOne({
       _id: req.params.id,
       owner: req.user.userId
-    });
+    }).select('-actions.route.coordinates.image');
     
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
@@ -160,6 +179,9 @@ router.get('/:id', authenticateToken, async (req, res) => {
     const deviceObj = device.toObject();
     deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
     deviceTelemetryCache.attachToDevice(deviceObj);
+    // Route coordinate images live in a separate collection; re-attach them so
+    // clients that read coordinates[i].image keep working.
+    await routeImages.attachRouteImages(deviceObj);
     
     res.json(deviceObj);
   } catch (error) {
@@ -237,10 +259,14 @@ router.put('/:id', authenticateToken, async (req, res) => {
       }
     });
     
+    // Keep coordinate images in the RouteImage collection, not the device doc.
+    await routeImages.persistAndStripCoordinateImages(device._id, device.actions?.route?.coordinates || []);
+    routeImages.stripCoordinateImagesFromDoc(device);
     await device.save();
     
     const deviceObj = device.toObject();
     deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
+    await routeImages.attachRouteImages(deviceObj);
     
     res.json(deviceObj);
   } catch (error) {
@@ -515,17 +541,23 @@ router.get('/:id/actions', authenticateToken, async (req, res) => {
     const device = await Device.findOne({
       _id: req.params.id,
       owner: req.user.userId
-    });
+    }).select('-actions.route.coordinates.image');
     
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
     }
     
+    const route = device.actions?.route
+      ? device.actions.route.toObject()
+      : { coordinates: [] };
+    // Route coordinate images are stored separately; re-attach for the editor.
+    await routeImages.attachRouteImages({ _id: device._id, actions: { route } });
+
     res.json({
       mode: device.actions?.mode || 'impulse',
       // Backward compatibility: keep returning the field, but it is now configured via device.taubenschiesser.maxWaitBetweenMovesSeconds.
       waitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds ?? device.actions?.waitBetweenMovesSeconds ?? 20,
-      route: device.actions?.route || { coordinates: [] }
+      route
     });
   } catch (error) {
     logger.error('Get device actions error:', error);
@@ -576,17 +608,27 @@ router.put('/:id/actions', authenticateToken, async (req, res) => {
     }
     
     if (route !== undefined) {
+      // Move any incoming coordinate images into the RouteImage collection and
+      // strip them from the coordinates so the device document stays small.
+      if (route.coordinates) {
+        await routeImages.persistAndStripCoordinateImages(device._id, route.coordinates);
+      }
       device.actions.route = route;
     }
     
+    // Safety net: never write coordinate images back into the device document.
+    routeImages.stripCoordinateImagesFromDoc(device);
     await device.save();
     
-    logger.info('Device actions updated successfully:', device.actions);
+    logger.info('Device actions updated successfully');
+
+    const responseRoute = device.actions.route ? device.actions.route.toObject() : { coordinates: [] };
+    await routeImages.attachRouteImages({ _id: device._id, actions: { route: responseRoute } });
     
     res.json({
       mode: device.actions.mode,
       waitBetweenMovesSeconds: device.taubenschiesser?.maxWaitBetweenMovesSeconds ?? device.actions.waitBetweenMovesSeconds ?? 20,
-      route: device.actions.route
+      route: responseRoute
     });
   } catch (error) {
     logger.error('Update device actions error:', error);
@@ -713,9 +755,11 @@ router.post('/:id/update-route-image/:index', authenticateToken, async (req, res
       logger.info(`📡 Calling hardwareHelper.updateRouteImage...`);
       const result = await hardwareHelper.updateRouteImage(device, coordinate, index);
       
-      // Update the coordinate with the new image
-      coordinates[index].image = result.image;
-      device.actions.route.coordinates = coordinates;
+      // Store the image in the RouteImage collection (not in the device doc,
+      // which would blow past MongoDB's 16MB document limit).
+      await routeImages.setRouteImage(device._id, index, result.image);
+      // Migrate/clear any image embedded in the device document so save() stays small.
+      routeImages.stripCoordinateImagesFromDoc(device);
       await device.save();
       
       logger.info(`✅ Image updated successfully for coordinate ${index}`);
@@ -760,7 +804,11 @@ router.post('/:id/stitch-panorama', authenticateToken, async (req, res) => {
       });
     }
 
-    const coordinates = device.actions.route?.coordinates || [];
+    // Coordinate images are stored in the RouteImage collection; re-attach them.
+    const coordinates = await routeImages.getCoordinatesWithImages(
+      device._id,
+      device.actions.route?.coordinates || []
+    );
     
     if (coordinates.length < 2) {
       return res.status(400).json({ 
@@ -987,6 +1035,9 @@ router.post('/:id/save-panorama', authenticateToken, async (req, res) => {
       created_at: new Date()
     };
 
+    // Keep coordinate images out of the device document (16MB BSON limit).
+    await routeImages.persistAndStripCoordinateImages(device._id, device.actions.route?.coordinates || []);
+    routeImages.stripCoordinateImagesFromDoc(device);
     await device.save();
 
     logger.info(`Panorama gespeichert für Device ${device.name}`);
@@ -1003,6 +1054,434 @@ router.post('/:id/save-panorama', authenticateToken, async (req, res) => {
       error_code: 'SERVER_ERROR',
       details: error.message
     });
+  }
+});
+
+// --- Panorama grid scan (separate image collection per device) ---
+
+router.get('/:id/panorama-scan', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const frames = await panoramaScanImages.listByDevice(device._id);
+    res.json({ frames, count: frames.length });
+  } catch (error) {
+    logger.error('Panorama scan list error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.post('/:id/panorama-scan/save', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { frames } = req.body || {};
+    if (!Array.isArray(frames) || frames.length === 0) {
+      return res.status(400).json({ error: 'Keine Bilder zum Speichern' });
+    }
+
+    for (const frame of frames) {
+      if (frame.rotation === undefined || frame.tilt === undefined || !frame.image) {
+        return res.status(400).json({ error: 'Jedes Bild braucht rotation, tilt und image' });
+      }
+    }
+
+    const count = await panoramaScanImages.replaceAll(device._id, frames);
+    logger.info(`Panorama-Scan gespeichert für ${device.name}: ${count} Bilder`);
+
+    res.json({
+      success: true,
+      message: `${count} Bilder gespeichert`,
+      count
+    });
+  } catch (error) {
+    logger.error('Panorama scan save error:', error);
+    res.status(500).json({ error: 'Server error', message: error.message });
+  }
+});
+
+router.delete('/:id/panorama-scan', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const deleted = await panoramaScanImages.clear(device._id);
+    res.json({ success: true, deleted });
+  } catch (error) {
+    logger.error('Panorama scan delete error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Per-axis FoV (horizontal == vertical) for the square-cropped scan images.
+function getDeviceFov(device) {
+  const cam = device?.camera || {};
+  if (cam.type === 'dual' || cam.type === 'tapo') {
+    return cam.tapo?.fov || 110;
+  }
+  if (cam.type === 'raspberry-pi') {
+    return cam.raspberryPi?.fov || 75;
+  }
+  return cam.tapo?.fov || cam.raspberryPi?.fov || 110;
+}
+
+function buildFrameMappings(scanFrames, transformationMatrices, imageSizes, frameCorners) {
+  return scanFrames.map((frame, i) => ({
+    order: frame.order,
+    rotation: frame.rotation,
+    tilt: frame.tilt,
+    image_size: imageSizes?.[i] || null,
+    transformation_matrix: transformationMatrices?.[i] || null,
+    panorama_corners: frameCorners?.[i] || null
+  }));
+}
+
+function buildStitchResponseFromCv(method, cvData) {
+  const meta = cvData.frame_metadata || [];
+  const scanFrames = meta.map((m, i) => ({
+    order: m.order ?? i,
+    rotation: m.rotation,
+    tilt: m.tilt
+  }));
+  const frameMappings = buildFrameMappings(
+    scanFrames,
+    cvData.transformation_matrices,
+    cvData.image_sizes,
+    cvData.frame_corners
+  );
+  return {
+    success: true,
+    method,
+    panorama_url: `data:image/jpeg;base64,${cvData.panorama_base64}`,
+    panorama_size: cvData.panorama_size,
+    statistics: cvData.statistics,
+    frames: frameMappings,
+    grid_info: cvData.grid_info || null,
+    hugin_pto: cvData.hugin_pto || null,
+    warnings: cvData.warnings || null
+  };
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+router.post('/:id/panorama-scan/stitch', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const method = req.body?.method || 'opencv';
+    if (!['opencv', 'grid', 'hugin'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    }
+
+    const scanFrames = req.body?.frames?.length
+      ? req.body.frames.map((f, i) => ({
+        order: f.order ?? i,
+        rotation: f.rotation,
+        tilt: f.tilt,
+        image: f.image
+      }))
+      : await panoramaScanImages.listByDevice(device._id);
+    if (scanFrames.length < 2) {
+      return res.status(400).json({ error: 'Mindestens 2 gespeicherte Scan-Bilder benötigt' });
+    }
+
+    const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+    let cvResponse;
+
+    if (method === 'grid') {
+      cvResponse = await axios.post(`${cvServiceUrl}/stitch-panorama-grid`, {
+        frames: scanFrames.map(f => ({
+          order: f.order,
+          rotation: f.rotation,
+          tilt: f.tilt,
+          image: f.image
+        })),
+        fov: getDeviceFov(device),
+        max_dimension: 1280
+      }, {
+        timeout: 180000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } else if (method === 'hugin') {
+      const useAsync = req.body?.async !== false;
+      const huginPayload = {
+        frames: scanFrames.map(f => ({
+          order: f.order,
+          rotation: f.rotation,
+          tilt: f.tilt,
+          image: f.image
+        })),
+        fov: getDeviceFov(device),
+        max_dimension: 1280,
+        horizon_tilt: Number(req.body?.horizon_tilt ?? 90)
+      };
+
+      if (useAsync) {
+        const cvResponse = await axios.post(`${cvServiceUrl}/stitch-panorama-hugin/jobs`, huginPayload, {
+          timeout: 120000,
+          headers: { 'Content-Type': 'application/json' }
+        });
+        return res.json({
+          success: true,
+          async: true,
+          job_id: cvResponse.data.job_id,
+          method: 'hugin',
+          frame_count: scanFrames.length
+        });
+      }
+
+      cvResponse = await axios.post(`${cvServiceUrl}/stitch-panorama-hugin`, huginPayload, {
+        timeout: 360000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } else {
+      cvResponse = await axios.post(`${cvServiceUrl}/stitch-panorama`, {
+        image_base64_list: scanFrames.map(f => f.image),
+        show_borders: false,
+        // Downscale inputs so stitching many full-res scan frames doesn't
+        // exhaust memory and crash the CV service.
+        max_dimension: 1280
+      }, {
+        timeout: 180000,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    const data = cvResponse.data;
+    if (!data.success) {
+      return res.status(500).json({
+        error: data.error || data.detail?.error || 'Stitching fehlgeschlagen'
+      });
+    }
+
+    const frameMappings = buildFrameMappings(
+      scanFrames,
+      data.transformation_matrices,
+      data.image_sizes,
+      data.frame_corners
+    );
+
+    logger.info(`Panorama-Scan Stitch (${method}) für ${device.name}: ${scanFrames.length} Bilder`);
+
+    res.json({
+      success: true,
+      method,
+      panorama_url: `data:image/jpeg;base64,${data.panorama_base64}`,
+      panorama_size: data.panorama_size,
+      statistics: data.statistics,
+      frames: frameMappings,
+      grid_info: data.grid_info || null,
+      hugin_pto: data.hugin_pto || null,
+      warnings: data.warnings || null
+    });
+  } catch (error) {
+    // IMPORTANT: never log the raw axios error or error.response.data here.
+    // The request body contains ~40MB of base64 images; serializing it (winston)
+    // blows up the Node heap (OOM). logAxiosError only logs safe metadata.
+    logAxiosError('Panorama scan stitch error', error);
+
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({ error: 'Computer Vision Service nicht verfügbar' });
+    }
+    if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+      return res.status(504).json({ error: 'Stitching hat zu lange gedauert (Timeout)' });
+    }
+
+    const detail = error.response?.data?.detail;
+    const errMsg = (typeof detail === 'object' ? detail?.error : detail)
+      || error.response?.data?.error
+      || error.message
+      || 'Stitching fehlgeschlagen';
+    const errorCode = (typeof detail === 'object' ? detail?.error_code : null)
+      || error.response?.data?.error_code;
+    res.status(error.response?.status || 500).json({ error: errMsg, error_code: errorCode || undefined });
+  }
+});
+
+router.get('/:id/panorama-scan/stitch/hugin/job/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
+    const cvResponse = await axios.get(
+      `${cvServiceUrl}/stitch-panorama-hugin/jobs/${req.params.jobId}`,
+      { timeout: 15000 }
+    );
+    const job = cvResponse.data;
+
+    if (job.status === 'done' && job.result) {
+      logger.info(`Panorama-Scan Stitch (hugin) fertig für ${device.name}`);
+      return res.json({
+        success: true,
+        status: 'done',
+        progress: 100,
+        step: job.step,
+        step_label: job.step_label || 'Fertig',
+        result: buildStitchResponseFromCv('hugin', job.result)
+      });
+    }
+
+    if (job.status === 'error') {
+      return res.status(job.error_code === 'HUGIN_NOT_INSTALLED' ? 503 : 500).json({
+        success: false,
+        status: 'error',
+        progress: job.progress || 0,
+        step: job.step,
+        step_label: job.step_label,
+        error: job.error || 'Stitching fehlgeschlagen',
+        error_code: job.error_code || 'HUGIN_STITCH_FAILED',
+        logs: job.logs || []
+      });
+    }
+
+    res.json({
+      success: true,
+      status: job.status,
+      progress: job.progress || 0,
+      step: job.step,
+      step_label: job.step_label,
+      message: job.message,
+      logs: job.logs || []
+    });
+  } catch (error) {
+    logAxiosError('Panorama hugin job status error', error);
+    if (error.response?.status === 404) {
+      return res.status(404).json({ error: 'Job nicht gefunden' });
+    }
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({ error: 'Computer Vision Service nicht verfügbar' });
+    }
+    res.status(error.response?.status || 500).json({ error: 'Job-Status konnte nicht geladen werden' });
+  }
+});
+
+router.post('/:id/panorama-scan/result/save', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const { method, panorama_url, panorama_size, frames, statistics, grid_info, hugin_pto } = req.body || {};
+    if (!method || !['opencv', 'grid', 'hugin'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    }
+    if (!panorama_url) {
+      return res.status(400).json({ error: 'panorama_url fehlt' });
+    }
+
+    let base64String = panorama_url;
+    if (panorama_url.startsWith('data:image')) {
+      const idx = panorama_url.indexOf(',');
+      if (idx >= 0) base64String = panorama_url.substring(idx + 1);
+    }
+    const maxSize = 7 * 1024 * 1024;
+    if (base64String.length > maxSize) {
+      return res.status(400).json({
+        error: `Panorama zu groß (${(base64String.length / 1024 / 1024).toFixed(2)} MB). Max 7 MB.`
+      });
+    }
+
+    await panoramaScanResults.upsert(device._id, method, {
+      panorama: panorama_url,
+      panorama_size,
+      frames: frames || [],
+      statistics,
+      grid_info,
+      hugin_pto: method === 'hugin' ? (hugin_pto || null) : null
+    });
+
+    logger.info(`Panorama-Scan Ergebnis (${method}) gespeichert für ${device.name}`);
+    res.json({ success: true, message: `Panorama (${method}) gespeichert` });
+  } catch (error) {
+    logger.error('Panorama scan result save error:', error);
+    res.status(500).json({ error: 'Server error', message: error.message });
+  }
+});
+
+router.get('/:id/panorama-scan/results', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const results = await panoramaScanResults.listByDevice(device._id);
+    res.json({ results });
+  } catch (error) {
+    logger.error('Panorama scan results list error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+router.get('/:id/panorama-scan/result/:method', authenticateToken, async (req, res) => {
+  try {
+    const device = await Device.findOne({
+      _id: req.params.id,
+      owner: req.user.userId
+    });
+    if (!device) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const method = req.params.method;
+    if (!['opencv', 'grid', 'hugin'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    }
+
+    const result = await panoramaScanResults.getPanorama(device._id, method);
+    if (!result) {
+      return res.status(404).json({ error: 'Kein gespeichertes Panorama für diese Methode' });
+    }
+
+    res.json({
+      method: result.method,
+      panorama_url: result.panorama,
+      panorama_size: result.panorama_size,
+      frames: result.frames,
+      statistics: result.statistics,
+      grid_info: result.grid_info,
+      hugin_pto: result.hugin_pto || null,
+      created_at: result.createdAt
+    });
+  } catch (error) {
+    logger.error('Panorama scan result get error:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

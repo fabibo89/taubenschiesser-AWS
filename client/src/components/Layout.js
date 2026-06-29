@@ -27,7 +27,8 @@ import {
   Settings as SettingsIcon,
   Monitor as MonitorIcon,
   Preview as PreviewIcon,
-  Route as RouteIcon
+  Route as RouteIcon,
+  Panorama as PanoramaIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -66,6 +67,7 @@ const Layout = ({ children }) => {
     { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
     { text: 'Tauben auf der Route', icon: <RouteIcon />, path: '/route-detections' },
+    { text: 'Panorama', icon: <PanoramaIcon />, path: '/panorama' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 

@@ -133,6 +133,12 @@ const detectionSchema = new mongoose.Schema({
   shotFired: {
     type: Boolean,
     default: false
+  },
+  // Welche Schuss-Aktionen bei dieser Detection aktiv waren (beim Speichern berechnet)
+  shootActive: {
+    water: { type: Boolean, default: false },
+    laser: { type: Boolean, default: false },
+    audio: { type: Boolean, default: false }
   }
 }, {
   timestamps: true

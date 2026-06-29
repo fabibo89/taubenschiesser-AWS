@@ -20,6 +20,8 @@ import logging
 import copy
 
 from angle_helper import enrich_detections_esp_angles as cv_enrich_detections_esp_angles
+from hugin_stitch import stitch_with_hugin, HuginNotAvailableError, HuginStitchError
+from hugin_jobs import create_job, get_job, make_progress_callback, start_job_thread, update_job
 
 # Load environment variables from .env file
 load_dotenv()
@@ -634,6 +636,25 @@ class StitchPanoramaRequest(BaseModel):
     image_urls: Optional[List[str]] = None
     image_base64_list: Optional[List[str]] = None
     show_borders: Optional[bool] = False
+    # Optional: downscale each input so its longest side <= max_dimension before
+    # stitching. Stitching many full-res images (e.g. a 25-image grid scan) can
+    # exhaust memory and hard-crash the process. None = keep original size.
+    max_dimension: Optional[int] = None
+
+
+def _maybe_downscale(img_bgr, max_dimension):
+    """Downscale so the longest side <= max_dimension. Returns (img, was_scaled)."""
+    if not max_dimension or max_dimension <= 0:
+        return img_bgr, False
+    h, w = img_bgr.shape[:2]
+    longest = max(h, w)
+    if longest <= max_dimension:
+        return img_bgr, False
+    scale = max_dimension / float(longest)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    return resized, True
 
 @app.post("/capture_frame")
 async def capture_frame(request: CaptureFrameRequest):
@@ -782,13 +803,15 @@ async def stitch_panorama(request: StitchPanoramaRequest):
                 else:
                     img_bgr = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
                 
+                img_bgr, scaled = _maybe_downscale(img_bgr, request.max_dimension)
                 images.append(img_bgr)
-                # Speichere Originalgröße (height, width)
+                # Speichere die tatsächlich verwendete Größe (nach optionalem Downscale),
+                # damit transformation_matrices und image_sizes konsistent bleiben.
                 image_sizes.append({
                     "width": img_bgr.shape[1],
                     "height": img_bgr.shape[0]
                 })
-                print(f"Bild {i+1} erfolgreich geladen: {img_bgr.shape}")
+                print(f"Bild {i+1} geladen{' (skaliert)' if scaled else ''}: {img_bgr.shape}")
                 
             except requests.RequestException as e:
                 print(f"Fehler beim Laden von Bild {i+1} ({url}): {e}")
@@ -818,13 +841,14 @@ async def stitch_panorama(request: StitchPanoramaRequest):
                 else:
                     img_bgr = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
                 
+                img_bgr, scaled = _maybe_downscale(img_bgr, request.max_dimension)
                 images.append(img_bgr)
-                # Speichere Originalgröße (height, width)
+                # Speichere die tatsächlich verwendete Größe (nach optionalem Downscale).
                 image_sizes.append({
                     "width": img_bgr.shape[1],
                     "height": img_bgr.shape[0]
                 })
-                print(f"Bild {img_index} erfolgreich geladen: {img_bgr.shape}")
+                print(f"Bild {img_index} geladen{' (skaliert)' if scaled else ''}: {img_bgr.shape}")
                 
             except Exception as e:
                 print(f"Fehler beim Verarbeiten von base64 Bild {img_index}: {e}")
@@ -1531,6 +1555,369 @@ async def stitch_panorama(request: StitchPanoramaRequest):
                 "error": f"Unerwarteter Fehler: {str(e)}",
                 "error_code": "UNEXPECTED_ERROR"
             }
+        )
+
+
+class GridStitchFrame(BaseModel):
+    order: int
+    rotation: float
+    tilt: float
+    image: str  # base64 or data URL
+
+
+class StitchPanoramaGridRequest(BaseModel):
+    frames: List[GridStitchFrame]
+    # Per-axis FoV in degrees. The stored device FoV already reflects rotation +
+    # square crop, so horizontal == vertical == fov (no diagonal conversion).
+    fov: float = 41.0
+    max_dimension: Optional[int] = None
+    # Device tilt value that corresponds to the horizon in Hugin pitch (default 90).
+    horizon_tilt: float = 90.0
+
+
+def _decode_base64_image(base64_data: str) -> np.ndarray:
+    if base64_data.startswith('data:image'):
+        base64_data = base64_data.split(',', 1)[1]
+    image_data = base64.b64decode(base64_data)
+    img = Image.open(BytesIO(image_data))
+    img_array = np.array(img)
+    if len(img_array.shape) == 3:
+        return cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    return cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+
+
+def _source_pixel_to_angles(x, y, w, h, rotation, tilt, fov):
+    """Map a source image pixel to world rotation/tilt angles (degrees)."""
+    rot_w = rotation + (float(x) - w / 2.0) * (fov / w)
+    tilt_w = tilt - (float(y) - h / 2.0) * (fov / h)
+    return rot_w, tilt_w
+
+
+def _angles_to_panorama_px(rot_w, tilt_w, rot_min, tilt_max, ppd_x, ppd_y):
+    """Map world angles to panorama pixel coordinates."""
+    ox = (rot_w - rot_min) * ppd_x
+    oy = (tilt_max - tilt_w) * ppd_y
+    return ox, oy
+
+
+def _frame_panorama_corners(w, h, rotation, tilt, fov, rot_min, tilt_max, ppd_x, ppd_y):
+    """Return the 4 source-image corners projected into panorama pixel space."""
+    corners = []
+    for x, y in [(0, 0), (w, 0), (w, h), (0, h)]:
+        rw, tw = _source_pixel_to_angles(x, y, w, h, rotation, tilt, fov)
+        ox, oy = _angles_to_panorama_px(rw, tw, rot_min, tilt_max, ppd_x, ppd_y)
+        corners.append([float(ox), float(oy)])
+    return corners
+
+
+def _build_spherical_mapping(meta, fov, canvas_w, canvas_h, image_sizes):
+    """Build grid_info + per-frame panorama_corners for a given output canvas size."""
+    rotations = [m['rotation'] for m in meta]
+    tilts = [m['tilt'] for m in meta]
+    rot_min = min(rotations) - fov / 2
+    rot_max = max(rotations) + fov / 2
+    tilt_min = min(tilts) - fov / 2
+    tilt_max = max(tilts) + fov / 2
+    rot_span = max(rot_max - rot_min, 1e-6)
+    tilt_span = max(tilt_max - tilt_min, 1e-6)
+    ppd_x = canvas_w / rot_span
+    ppd_y = canvas_h / tilt_span
+    grid_info = {
+        'projection': 'spherical_equirectangular',
+        'fov': fov,
+        'horizontal_fov': fov,
+        'vertical_fov': fov,
+        'rot_min': rot_min,
+        'rot_max': rot_max,
+        'tilt_min': tilt_min,
+        'tilt_max': tilt_max,
+        'pixels_per_degree_x': ppd_x,
+        'pixels_per_degree_y': ppd_y,
+        'canvas_width': canvas_w,
+        'canvas_height': canvas_h,
+    }
+    frame_corners = []
+    for m, size in zip(meta, image_sizes):
+        w, h = size['width'], size['height']
+        frame_corners.append(
+            _frame_panorama_corners(w, h, m['rotation'], m['tilt'], fov, rot_min, tilt_max, ppd_x, ppd_y)
+        )
+    return grid_info, frame_corners
+
+
+@app.post("/stitch-panorama-grid")
+async def stitch_panorama_grid(request: StitchPanoramaGridRequest):
+    """
+    Spherical equirectangular grid stitch.
+    Each frame is projected by rotation/tilt + per-axis FoV onto an angle-space
+    canvas, with cosine feather blending in overlap regions.
+    Returns panorama + per-frame corner coordinates for pixel mapping.
+    """
+    try:
+        if not request.frames or len(request.frames) < 1:
+            raise HTTPException(status_code=400, detail="Mindestens 1 Bild benötigt")
+
+        sorted_frames = sorted(request.frames, key=lambda f: f.order)
+        images = []
+        meta = []
+        for frame in sorted_frames:
+            img_bgr = _decode_base64_image(frame.image)
+            img_bgr, _ = _maybe_downscale(img_bgr, request.max_dimension)
+            images.append(img_bgr)
+            meta.append({
+                'order': frame.order,
+                'rotation': frame.rotation,
+                'tilt': frame.tilt
+            })
+
+        h_img, w_img = images[0].shape[:2]
+        fov = request.fov
+
+        rotations = [m['rotation'] for m in meta]
+        tilts = [m['tilt'] for m in meta]
+        rot_min = min(rotations) - fov / 2
+        rot_max = max(rotations) + fov / 2
+        tilt_min = min(tilts) - fov / 2
+        tilt_max = max(tilts) + fov / 2
+
+        # Output canvas: same pixels-per-degree as source images.
+        ppd_x = w_img / fov
+        ppd_y = h_img / fov
+        canvas_w = max(1, int(np.ceil((rot_max - rot_min) * ppd_x)))
+        canvas_h = max(1, int(np.ceil((tilt_max - tilt_min) * ppd_y)))
+
+        canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.float64)
+        weight = np.zeros((canvas_h, canvas_w), dtype=np.float64)
+
+        image_sizes = []
+        frame_corners = []
+
+        for img, m in zip(images, meta):
+            ih, iw = img.shape[:2]
+            image_sizes.append({'width': iw, 'height': ih})
+
+            # Source pixel grid
+            ys, xs = np.mgrid[0:ih, 0:iw]
+
+            # Spherical projection: pixel → world angles → panorama pixels
+            rot_w = m['rotation'] + (xs.astype(np.float64) - iw / 2.0) * (fov / iw)
+            tilt_w = m['tilt'] - (ys.astype(np.float64) - ih / 2.0) * (fov / ih)
+            ox = np.round((rot_w - rot_min) * ppd_x).astype(np.int32)
+            oy = np.round((tilt_max - tilt_w) * ppd_y).astype(np.int32)
+
+            # Cosine feather: smooth blend in overlap regions
+            nx = (xs.astype(np.float64) - iw / 2.0) / max(iw / 2.0, 1.0)
+            ny = (ys.astype(np.float64) - ih / 2.0) / max(ih / 2.0, 1.0)
+            nw = (
+                np.cos(np.clip(nx, -1.0, 1.0) * np.pi / 2.0) ** 2
+                * np.cos(np.clip(ny, -1.0, 1.0) * np.pi / 2.0) ** 2
+            )
+
+            valid = (ox >= 0) & (ox < canvas_w) & (oy >= 0) & (oy < canvas_h)
+            ox_v = ox[valid]
+            oy_v = oy[valid]
+            nw_v = nw[valid]
+            colors = img[valid].astype(np.float64)
+
+            np.add.at(canvas, (oy_v, ox_v, 0), colors[:, 0] * nw_v)
+            np.add.at(canvas, (oy_v, ox_v, 1), colors[:, 1] * nw_v)
+            np.add.at(canvas, (oy_v, ox_v, 2), colors[:, 2] * nw_v)
+            np.add.at(weight, (oy_v, ox_v), nw_v)
+
+            corners = _frame_panorama_corners(
+                iw, ih, m['rotation'], m['tilt'], fov,
+                rot_min, tilt_max, ppd_x, ppd_y
+            )
+            frame_corners.append(corners)
+
+        mask = weight > 1e-6
+        panorama = np.zeros((canvas_h, canvas_w, 3), dtype=np.float64)
+        panorama[mask] = canvas[mask] / weight[mask, np.newaxis]
+        panorama = np.clip(panorama, 0, 255).astype(np.uint8)
+
+        success, buffer = cv2.imencode('.jpg', panorama, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not success:
+            raise HTTPException(status_code=500, detail="Fehler beim Encodieren des Panoramas")
+
+        panorama_base64 = base64.b64encode(buffer).decode('utf-8')
+
+        grid_info = {
+            'projection': 'spherical_equirectangular',
+            'fov': fov,
+            'horizontal_fov': fov,
+            'vertical_fov': fov,
+            'rot_min': rot_min,
+            'rot_max': rot_max,
+            'tilt_min': tilt_min,
+            'tilt_max': tilt_max,
+            'pixels_per_degree_x': ppd_x,
+            'pixels_per_degree_y': ppd_y
+        }
+
+        return {
+            'success': True,
+            'method': 'grid',
+            'panorama_base64': panorama_base64,
+            'panorama_size': {'width': panorama.shape[1], 'height': panorama.shape[0]},
+            'transformation_matrices': None,
+            'image_sizes': image_sizes,
+            'frame_corners': frame_corners,
+            'frame_metadata': meta,
+            'grid_info': grid_info,
+            'statistics': {
+                'total_requested': len(sorted_frames),
+                'total_loaded': len(images),
+                'total_failed': 0,
+                'total_used': len(images)
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Grid stitch error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/stitch-panorama-hugin/jobs")
+async def create_stitch_panorama_hugin_job(request: StitchPanoramaGridRequest):
+    """Start async Hugin stitch; poll GET /stitch-panorama-hugin/jobs/{job_id} for progress."""
+    if not request.frames or len(request.frames) < 2:
+        raise HTTPException(status_code=400, detail="Mindestens 2 Bilder benötigt")
+
+    job_id = create_job()
+
+    def run_job():
+        try:
+            result = _run_hugin_stitch(request, make_progress_callback(job_id))
+            update_job(job_id, status='done', progress=100, step='done', step_label='Fertig', result=result)
+        except HuginNotAvailableError as e:
+            update_job(
+                job_id,
+                status='error',
+                step='error',
+                step_label='Fehler',
+                error=str(e),
+                error_code='HUGIN_NOT_INSTALLED',
+            )
+        except Exception as e:
+            error_code = getattr(e, 'error_code', 'HUGIN_STITCH_FAILED')
+            update_job(
+                job_id,
+                status='error',
+                step='error',
+                step_label='Fehler',
+                error=str(e),
+                error_code=error_code,
+            )
+
+    start_job_thread(job_id, run_job)
+    return {'success': True, 'job_id': job_id}
+
+
+@app.get("/stitch-panorama-hugin/jobs/{job_id}")
+async def get_stitch_panorama_hugin_job(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job nicht gefunden")
+    return {
+        'success': True,
+        'job_id': job['job_id'],
+        'status': job['status'],
+        'progress': job['progress'],
+        'step': job['step'],
+        'step_label': job['step_label'],
+        'message': job.get('message'),
+        'logs': job.get('logs') or [],
+        'result': job.get('result'),
+        'error': job.get('error'),
+        'error_code': job.get('error_code'),
+        'created_at': job.get('created_at'),
+        'updated_at': job.get('updated_at'),
+    }
+
+
+def _run_hugin_stitch(request: StitchPanoramaGridRequest, on_progress=None):
+    sorted_frames = sorted(request.frames, key=lambda f: f.order)
+    images = []
+    meta = []
+    image_sizes = []
+    for frame in sorted_frames:
+        img_bgr = _decode_base64_image(frame.image)
+        img_bgr, _ = _maybe_downscale(img_bgr, request.max_dimension)
+        ih, iw = img_bgr.shape[:2]
+        images.append(img_bgr)
+        image_sizes.append({'width': iw, 'height': ih})
+        meta.append({
+            'order': frame.order,
+            'rotation': frame.rotation,
+            'tilt': frame.tilt
+        })
+
+    fov = request.fov
+    horizon_tilt = request.horizon_tilt
+    hugin_timeout = max(300, min(900, len(images) * 30))
+    panorama, stats, mapping = stitch_with_hugin(
+        images, meta, fov, request.max_dimension, timeout=hugin_timeout,
+        on_progress=on_progress, horizon_tilt=horizon_tilt
+    )
+
+    canvas_h, canvas_w = panorama.shape[:2]
+    grid_info = mapping['grid_info']
+    frame_corners = mapping['frame_corners']
+    # Ensure grid_info matches actual encoded panorama dimensions.
+    grid_info['canvas_width'] = canvas_w
+    grid_info['canvas_height'] = canvas_h
+
+    success, buffer = cv2.imencode('.jpg', panorama, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not success:
+        raise HuginStitchError('Fehler beim Encodieren des Panoramas')
+
+    panorama_base64 = base64.b64encode(buffer).decode('utf-8')
+
+    return {
+        'success': True,
+        'method': 'hugin',
+        'panorama_base64': panorama_base64,
+        'panorama_size': {'width': canvas_w, 'height': canvas_h},
+        'transformation_matrices': None,
+        'image_sizes': image_sizes,
+        'frame_corners': frame_corners,
+        'frame_metadata': meta,
+        'grid_info': grid_info,
+        'hugin_pto': mapping.get('hugin_pto'),
+        'statistics': stats
+    }
+
+
+@app.post("/stitch-panorama-hugin")
+async def stitch_panorama_hugin(request: StitchPanoramaGridRequest):
+    """
+    Stitch via Hugin CLI (pto_gen → nona → enblend).
+    Visual quality from Hugin; pixel mapping via pano_trafo on the final Hugin project.
+    """
+    try:
+        if not request.frames or len(request.frames) < 2:
+            raise HTTPException(status_code=400, detail="Mindestens 2 Bilder benötigt")
+        return _run_hugin_stitch(request)
+    except HuginNotAvailableError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                'error': str(e),
+                'error_code': 'HUGIN_NOT_INSTALLED'
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Hugin stitch error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={'error': str(e), 'error_code': 'HUGIN_STITCH_FAILED'}
         )
 
 

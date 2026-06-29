@@ -1466,8 +1466,8 @@ const Dashboard = () => {
       {devices.length > 0 && (
         <Grid container spacing={3} sx={{ mb: 4 }}>
           {devices.map((device) => {
-            const { total } = getTodayDetections(device);
-            const totalUnclassified = getTotalUnclassified(device);
+            const { total, unclassified: unclassifiedToday } = getTodayDetections(device);
+            const totalUnclassified = device.unclassifiedTotal ?? getTotalUnclassified(device);
             return (
               <Grid item xs={12} md={6} lg={4} key={device._id}>
           <Card>
@@ -1484,7 +1484,7 @@ const Dashboard = () => {
                         />
                         {totalUnclassified > 0 && (
                       <Chip
-                            label={`${totalUnclassified} unkategorisiert`}
+                            label={`${unclassifiedToday}/${totalUnclassified} unklassifiziert`}
                             color="warning"
                         variant="outlined"
                       />

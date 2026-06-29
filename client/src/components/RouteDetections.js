@@ -180,10 +180,9 @@ function RoutePointCard({ coord, index, detections }) {
             sx={{
               position: 'relative',
               width: '100%',
-              paddingTop: '75%',
-              backgroundColor: '#111',
               borderRadius: 1,
-              overflow: 'hidden'
+              overflow: 'hidden',
+              lineHeight: 0
             }}
           >
             <Box
@@ -191,12 +190,9 @@ function RoutePointCard({ coord, index, detections }) {
               src={imageUrl}
               alt={`Position ${index + 1}`}
               sx={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
+                display: 'block',
                 width: '100%',
-                height: '100%',
-                objectFit: 'contain',
+                height: 'auto',
                 zIndex: 0
               }}
               onLoad={(e) => {

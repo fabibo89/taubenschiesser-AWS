@@ -66,7 +66,8 @@ const DeviceDetail = () => {
     panoramaTransformationMatrices,
     panoramaImageSizes,
     handleStitchPanorama,
-    handleSavePanorama
+    handleSavePanorama,
+    handleSaveRoutePointSettings
   } = useRouteManagement(id);
 
   const fetchDevice = useCallback(async () => {
@@ -421,6 +422,7 @@ const DeviceDetail = () => {
             toast.error(result.message || 'Fehler beim Speichern des Panoramas');
           }
         }}
+        onSaveRoutePointSettings={handleSaveRoutePointSettings}
       />
     </Box>
   );

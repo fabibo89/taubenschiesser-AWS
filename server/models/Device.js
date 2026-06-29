@@ -210,6 +210,23 @@ const deviceSchema = new mongoose.Schema({
         },
         image: {
           type: String  // Base64 encoded image
+        },
+        audioEnabled: {
+          type: Boolean,
+          default: false
+        },
+        laserZone: {
+          enabled: { type: Boolean, default: false },
+          laserEnabled: { type: Boolean, default: false },
+          shape: { type: String, enum: ['rect', 'quad', 'polygon'], default: 'polygon' },
+          x: { type: Number, min: 0, max: 1 },
+          y: { type: Number, min: 0, max: 1 },
+          width: { type: Number, min: 0.01, max: 1 },
+          height: { type: Number, min: 0.01, max: 1 },
+          points: [{
+            x: { type: Number, min: 0, max: 1 },
+            y: { type: Number, min: 0, max: 1 }
+          }]
         }
       }],
       panorama: {

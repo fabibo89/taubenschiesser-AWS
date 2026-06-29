@@ -34,10 +34,14 @@ import {
   Panorama as PanoramaIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
-  Download as DownloadIcon
+  Download as DownloadIcon,
+  GpsFixed as GpsFixedIcon
 } from '@mui/icons-material';
 import RouteVisualization from './RouteVisualization';
 import RoutePreview from './RoutePreview';
+import LaserZoneEditor from './LaserZoneEditor';
+import LaserZoneThumbnailOverlay from './LaserZoneThumbnailOverlay';
+import { hasActiveLaserZone, hasRoutePointSettings, isRoutePointAudioEnabled } from '../utils/laserZone';
 
 /**
  * Komponente für Panorama mit Canvas-Overlay für Rahmen
@@ -263,10 +267,12 @@ const RouteEditDialog = ({
   panoramaTransformationMatrices = null,
   panoramaImageSizes = null,
   onStitchPanorama = null,
-  onSavePanorama = null
+  onSavePanorama = null,
+  onSaveRoutePointSettings = null
 }) => {
   const [panoramaExpanded, setPanoramaExpanded] = React.useState(false);
   const [showBorders, setShowBorders] = React.useState(false);
+  const [zoneEditorIndex, setZoneEditorIndex] = React.useState(null);
   
   const handleCoordinateImageUpdate = (index) => {
     onUpdateImage(index);
@@ -657,6 +663,12 @@ const RouteEditDialog = ({
                           <Typography variant="body2" color="textSecondary">
                             Zoom: {coord.zoom || 1}x
                           </Typography>
+                          {hasActiveLaserZone(coord.laserZone) && (
+                            <Chip label="Laser" size="small" color="success" variant="outlined" />
+                          )}
+                          {isRoutePointAudioEnabled(coord) && (
+                            <Chip label="Audio" size="small" color="primary" variant="outlined" />
+                          )}
                         </Box>
                       </Grid>
                       <Grid item xs={12} md={3}>
@@ -671,7 +683,8 @@ const RouteEditDialog = ({
                             justifyContent: 'center',
                             backgroundColor: coord.image ? 'transparent' : '#f5f5f5',
                             borderRadius: 1,
-                            overflow: 'hidden'
+                            overflow: 'hidden',
+                            position: 'relative'
                           }}
                         >
                           {updatingImages.has(index) ? (
@@ -682,15 +695,9 @@ const RouteEditDialog = ({
                               </Typography>
                             </Box>
                           ) : coord.image ? (
-                            <img 
-                              src={coord.image} 
-                              alt={`Route point ${index + 1}`}
-                              style={{ 
-                                width: '100%', 
-                                height: '100%', 
-                                objectFit: 'contain',
-                                borderRadius: '4px'
-                              }}
+                            <LaserZoneThumbnailOverlay
+                              image={coord.image}
+                              laserZone={coord.laserZone}
                             />
                           ) : (
                             <Box textAlign="center">
@@ -713,6 +720,17 @@ const RouteEditDialog = ({
                             fullWidth
                           >
                             Bild aktualisieren
+                          </Button>
+                          <Button
+                            variant={hasRoutePointSettings(coord) ? 'contained' : 'outlined'}
+                            color={hasRoutePointSettings(coord) ? 'success' : 'primary'}
+                            startIcon={<GpsFixedIcon />}
+                            onClick={() => setZoneEditorIndex(index)}
+                            disabled={!coord.image || updatingImages.has(index)}
+                            size="small"
+                            fullWidth
+                          >
+                            Zone
                           </Button>
                           <Box display="flex" gap={1}>
                             <IconButton
@@ -753,6 +771,22 @@ const RouteEditDialog = ({
           Speichern
         </Button>
       </DialogActions>
+
+      <LaserZoneEditor
+        open={zoneEditorIndex !== null}
+        onClose={() => setZoneEditorIndex(null)}
+        image={zoneEditorIndex !== null ? actionsConfig.route.coordinates[zoneEditorIndex]?.image : null}
+        zoom={zoneEditorIndex !== null ? (actionsConfig.route.coordinates[zoneEditorIndex]?.zoom || 1) : 1}
+        laserZone={zoneEditorIndex !== null ? actionsConfig.route.coordinates[zoneEditorIndex]?.laserZone : null}
+        audioEnabled={zoneEditorIndex !== null ? actionsConfig.route.coordinates[zoneEditorIndex]?.audioEnabled : false}
+        routePointIndex={zoneEditorIndex}
+        onSave={(settings) => {
+          if (zoneEditorIndex !== null && onSaveRoutePointSettings) {
+            onSaveRoutePointSettings(zoneEditorIndex, settings);
+          }
+          setZoneEditorIndex(null);
+        }}
+      />
     </Dialog>
   );
 };

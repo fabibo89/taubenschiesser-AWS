@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -48,6 +48,11 @@ const TaubenTinder = () => {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteDetection, setPendingDeleteDetection] = useState(null);
   const [nearestAtPosition, setNearestAtPosition] = useState({ before: null, after: null });
+  const [imageByDetectionId, setImageByDetectionId] = useState({});
+  const [totalUnclassified, setTotalUnclassified] = useState(0);
+  const [sessionBase, setSessionBase] = useState(0);
+  const imageByDetectionIdRef = useRef({});
+  imageByDetectionIdRef.current = imageByDetectionId;
 
   const cardRef = useRef(null);
   const touchStartRef = useRef(null);
@@ -60,6 +65,31 @@ const TaubenTinder = () => {
   useEffect(() => {
     fetchUnclassifiedDetections();
   }, []);
+
+  const loadImageForDetection = useCallback(async (id) => {
+    const idStr = typeof id === 'string' ? id : id?.toString?.();
+    if (!idStr || imageByDetectionIdRef.current[idStr] !== undefined) return;
+    setImageByDetectionId((prev) => {
+      if (prev[idStr] !== undefined) return prev;
+      return { ...prev, [idStr]: 'loading' };
+    });
+    try {
+      const response = await axios.get(`/api/cv/detections/${idStr}/image`);
+      setImageByDetectionId((prev) => ({ ...prev, [idStr]: response.data }));
+    } catch {
+      setImageByDetectionId((prev) => ({ ...prev, [idStr]: null }));
+    }
+  }, []);
+
+  // Load current card image and preload the next two
+  useEffect(() => {
+    if (detections.length === 0 || currentIndex >= detections.length) return;
+    loadImageForDetection(detections[currentIndex]._id);
+    for (let offset = 1; offset <= 2; offset += 1) {
+      const next = detections[currentIndex + offset];
+      if (next) loadImageForDetection(next._id);
+    }
+  }, [detections, currentIndex, loadImageForDetection]);
 
   // Reset rendered image size and card position when detection changes
   useEffect(() => {
@@ -91,9 +121,10 @@ const TaubenTinder = () => {
     const handleResize = () => {
       if (imageRef.current && containerRef.current && detections.length > 0 && currentIndex < detections.length) {
         const currentDet = detections[currentIndex];
-        const imgInfo = currentDet.zoomed_image?.url 
-          ? currentDet.image_info?.zoomed_size 
-          : currentDet.image_info?.original_size;
+        const imageData = imageByDetectionId[currentDet._id];
+        const imgInfo = imageData?.zoomed_image?.url
+          ? imageData.image_info?.zoomed_size
+          : imageData?.image_info?.original_size;
         
         if (!imgInfo) return;
         
@@ -128,13 +159,20 @@ const TaubenTinder = () => {
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [detections, currentIndex]);
+  }, [detections, currentIndex, imageByDetectionId]);
 
-  const fetchUnclassifiedDetections = async () => {
+  const fetchUnclassifiedDetections = async ({ appendSession = false, previousBatchSize = 0 } = {}) => {
     try {
       setLoading(true);
+      setImageByDetectionId({});
+      if (appendSession && previousBatchSize > 0) {
+        setSessionBase((prev) => prev + previousBatchSize);
+      } else if (!appendSession) {
+        setSessionBase(0);
+      }
       const response = await axios.get('/api/cv/detections/unclassified?limit=50');
       setDetections(response.data.detections);
+      setTotalUnclassified(response.data.total ?? response.data.detections.length);
       setCurrentIndex(0);
     } catch (error) {
       console.error('Error fetching detections:', error);
@@ -172,7 +210,7 @@ const TaubenTinder = () => {
   const advanceToNext = async () => {
     const nextIndex = currentIndex + 1;
     if (nextIndex >= detections.length) {
-      await fetchUnclassifiedDetections();
+      await fetchUnclassifiedDetections({ appendSession: true, previousBatchSize: detections.length });
     } else {
       setCurrentIndex(nextIndex);
     }
@@ -420,10 +458,14 @@ const TaubenTinder = () => {
   }
 
   const currentDetection = detections[currentIndex];
-  const displayImage = currentDetection.zoomed_image?.url || currentDetection.image?.url;
-  const imageInfo = currentDetection.zoomed_image?.url 
-    ? currentDetection.image_info?.zoomed_size 
-    : currentDetection.image_info?.original_size;
+  const displayPosition = sessionBase + currentIndex + 1;
+  const displayTotal = sessionBase + totalUnclassified;
+  const currentImageData = imageByDetectionId[currentDetection._id];
+  const currentImageLoading = currentImageData === 'loading' || currentImageData === undefined;
+  const displayImage = currentImageData?.zoomed_image?.url || currentImageData?.image?.url;
+  const imageInfo = currentImageData?.zoomed_image?.url
+    ? currentImageData.image_info?.zoomed_size
+    : currentImageData?.image_info?.original_size;
 
   return (
     <Box>
@@ -431,7 +473,7 @@ const TaubenTinder = () => {
         Tauben-Tinder
       </Typography>
       <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 2 }}>
-        {currentIndex + 1} / {detections.length} - Rechts: Taube ✓ | Links: Keine Taube ✗ | Hoch: Löschen ✗
+        {displayPosition} / {displayTotal} unklassifiziert — Rechts: Taube ✓ | Links: Keine Taube ✗ | Hoch: Löschen ✗
       </Typography>
 
       <Box
@@ -490,19 +532,23 @@ const TaubenTinder = () => {
           }}
         >
           {/* Image with bounding boxes */}
-          {displayImage && (
-            <Box
-              ref={containerRef}
-              sx={{
-                position: 'relative',
-                width: '100%',
-                height: '70%',
-                backgroundColor: '#000',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}
-            >
+          <Box
+            ref={containerRef}
+            sx={{
+              position: 'relative',
+              width: '100%',
+              height: '70%',
+              backgroundColor: '#000',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            {currentImageLoading && (
+              <CircularProgress sx={{ color: 'white' }} />
+            )}
+            {!currentImageLoading && displayImage && (
+              <>
               <Box
                 ref={imageRef}
                 component="img"
@@ -559,7 +605,7 @@ const TaubenTinder = () => {
                 
                 let bboxLeft, bboxTop, bboxWidth, bboxHeight;
                 
-                if (currentDetection.zoomed_image?.url && detection.position) {
+                if (currentImageData?.zoomed_image?.url && detection.position) {
                   const { center_x, center_y, width, height } = detection.position;
                   bboxLeft = center_x - width / 2;
                   bboxTop = center_y - height / 2;
@@ -583,7 +629,9 @@ const TaubenTinder = () => {
                 const topPx = bboxTop * scaleY + renderedImageSize.offsetY;
                 const widthPx = bboxWidth * scaleX;
                 const heightPx = bboxHeight * scaleY;
-                
+
+                const isTarget = detection.is_target_bird === true;
+
                 return (
                   <Box
                     key={index}
@@ -593,21 +641,22 @@ const TaubenTinder = () => {
                       top: `${topPx}px`,
                       width: `${widthPx}px`,
                       height: `${heightPx}px`,
-                      border: '3px solid #ff1744',
-                      boxShadow: '0 0 0 2px rgba(255, 23, 68, 0.5)',
+                      border: isTarget ? '4px solid #00e676' : '3px solid #ff1744',
                       pointerEvents: 'none',
-                      boxSizing: 'border-box'
+                      boxSizing: 'border-box',
+                      zIndex: isTarget ? 2 : 1
                     }}
                   />
                 );
               })}
-            </Box>
-          )}
+              </>
+            )}
+          </Box>
 
           {/* Detection Info */}
           <CardContent sx={{ height: '30%', overflow: 'auto', backgroundColor: '#fff' }}>
             <Typography variant="h6" gutterBottom>
-              Erkennung #{currentIndex + 1}
+              Erkennung {displayPosition} von {displayTotal}
             </Typography>
             
             <Box display="flex" flexWrap="wrap" gap={1} mb={2}>

@@ -39,6 +39,8 @@ router.post('/detection', async (req, res) => {
       camera_position,
       shotFired,
       shot_fired,
+      shootActive,
+      shoot_active,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -87,6 +89,19 @@ router.post('/detection', async (req, res) => {
       } : undefined,
       shotFired: shotFired === true || shot_fired === true
     };
+
+    const active = shootActive || shoot_active;
+    if (active && typeof active === 'object') {
+      detectionData.shootActive = {
+        water: active.water === true,
+        laser: active.laser === true,
+        audio: active.audio === true
+      };
+    } else if (detectionData.shotFired) {
+      detectionData.shootActive = { water: true, laser: false, audio: false };
+    } else {
+      detectionData.shootActive = { water: false, laser: false, audio: false };
+    }
 
     if (target_bird && (target_bird.bbox || target_bird.position)) {
       detectionData.target_bird = target_bird;
