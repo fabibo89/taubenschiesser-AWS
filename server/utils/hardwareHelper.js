@@ -4,6 +4,14 @@ const logger = require('./logger');
 const awsIotHelper = require('./awsIotHelper');
 const rtspFrameManager = require('./rtspFrameManager');
 
+/** Post-move wait before capture during panorama scan (ms). */
+const PANORAMA_STABILIZE_MS = 2000;
+
+function getDeviceStabilizationMs(device) {
+  const ms = device?.taubenschiesser?.stabilizeTimeMs;
+  return Number.isFinite(ms) && ms >= 0 ? ms : 500;
+}
+
 class HardwareHelper {
   constructor() {
     this.mqttClients = new Map();
@@ -277,7 +285,7 @@ class HardwareHelper {
   /**
    * Capture frame from camera
    */
-  async captureFrame(device) {
+  async captureFrame(device, options = {}) {
     try {
       const camera = device.camera;
       
@@ -317,9 +325,15 @@ class HardwareHelper {
           if (pi.flip) {
             queryParams.push('flip=true');
           }
+          if (options.waitFocus) {
+            queryParams.push('wait_focus=true');
+          }
           url = queryParams.length > 0 
             ? `${baseUrl}?${queryParams.join('&')}`
             : baseUrl;
+        } else if (options.waitFocus) {
+          const sep = url.includes('?') ? '&' : '?';
+          url = `${url}${sep}wait_focus=true`;
         }
 
         logger.info(`Capturing frame from Raspberry Pi: ${url}`);
@@ -507,8 +521,10 @@ class HardwareHelper {
   /**
    * Update route image for a specific coordinate
    */
-  async updateRouteImage(device, coordinate, index) {
+  async updateRouteImage(device, coordinate, index, options = {}) {
     try {
+      const stabilizationMs = options.stabilizationMs ?? getDeviceStabilizationMs(device);
+      const waitFocus = Boolean(options.waitFocus);
       logger.info(`Starting route image update for device ${device._id}, coordinate ${index}`);
 
       // 1. Apply position inversion if enabled (same as position preview)
@@ -530,8 +546,8 @@ class HardwareHelper {
       const movementContext = await this.moveToPosition(device, finalRotation, finalTilt);
 
       // 3. Wait for movement to complete (MQTT feedback when available)
-      logger.info('Waiting for movement to complete...');
-      await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs: 1000 });
+      logger.info(`Waiting for movement to complete (${stabilizationMs}ms stabilization)...`);
+      await this.waitForMovementComplete(device, movementContext, { timeoutMs: 30000, stabilizationMs });
 
       // 4. Capture frame
       // For dual mode, use Tapo camera (same as route preview)
@@ -549,7 +565,7 @@ class HardwareHelper {
         };
         logger.info('Using Tapo camera for dual mode route image');
       }
-      let imageBase64 = await this.captureFrame(captureDevice);
+      let imageBase64 = await this.captureFrame(captureDevice, { waitFocus });
 
       // 5. Apply zoom if needed
       const zoomFactor = coordinate.zoom || 1.0;
@@ -592,4 +608,6 @@ process.on('exit', () => {
 });
 
 module.exports = hardwareHelper;
+module.exports.PANORAMA_STABILIZE_MS = PANORAMA_STABILIZE_MS;
+module.exports.getDeviceStabilizationMs = getDeviceStabilizationMs;
 

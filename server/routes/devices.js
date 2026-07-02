@@ -6,6 +6,7 @@ const Detection = require('../models/Detection');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const hardwareHelper = require('../utils/hardwareHelper');
+const { PANORAMA_STABILIZE_MS, getDeviceStabilizationMs } = hardwareHelper;
 const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
 const routeImages = require('../utils/routeImages');
 const panoramaScanImages = require('../utils/panoramaScanImages');
@@ -700,7 +701,10 @@ router.post('/:id/preview-route-coordinate', authenticateToken, async (req, res)
 
     logger.info(`📐 Preview coordinate -> rotation=${coordinate.rotation}, tilt=${coordinate.tilt}, zoom=${coordinate.zoom}`);
 
-    const result = await hardwareHelper.updateRouteImage(device, coordinate, -1);
+    const result = await hardwareHelper.updateRouteImage(device, coordinate, -1, {
+      stabilizationMs: PANORAMA_STABILIZE_MS,
+      waitFocus: true
+    });
 
     res.json({
       message: 'Preview captured successfully',
@@ -1192,8 +1196,8 @@ router.post('/:id/panorama-scan/stitch', authenticateToken, async (req, res) => 
     }
 
     const method = req.body?.method || 'opencv';
-    if (!['opencv', 'grid', 'hugin'].includes(method)) {
-      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    if (!['opencv', 'grid', 'hugin', 'cylindrical'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid, hugin oder cylindrical sein' });
     }
 
     const scanFrames = req.body?.frames?.length
@@ -1225,7 +1229,7 @@ router.post('/:id/panorama-scan/stitch', authenticateToken, async (req, res) => 
         timeout: 180000,
         headers: { 'Content-Type': 'application/json' }
       });
-    } else if (method === 'hugin') {
+    } else if (method === 'hugin' || method === 'cylindrical') {
       const useAsync = req.body?.async !== false;
       const huginPayload = {
         frames: scanFrames.map(f => ({
@@ -1236,7 +1240,8 @@ router.post('/:id/panorama-scan/stitch', authenticateToken, async (req, res) => 
         })),
         fov: getDeviceFov(device),
         max_dimension: 1280,
-        horizon_tilt: Number(req.body?.horizon_tilt ?? 90)
+        horizon_tilt: Number(req.body?.horizon_tilt ?? 90),
+        output_projection: method === 'cylindrical' ? 'cylindrical' : 'equirectangular'
       };
 
       if (useAsync) {
@@ -1248,7 +1253,7 @@ router.post('/:id/panorama-scan/stitch', authenticateToken, async (req, res) => 
           success: true,
           async: true,
           job_id: cvResponse.data.job_id,
-          method: 'hugin',
+          method,
           frame_count: scanFrames.length
         });
       }
@@ -1339,14 +1344,15 @@ router.get('/:id/panorama-scan/stitch/hugin/job/:jobId', authenticateToken, asyn
     const job = cvResponse.data;
 
     if (job.status === 'done' && job.result) {
-      logger.info(`Panorama-Scan Stitch (hugin) fertig für ${device.name}`);
+      const stitchMethod = job.result.method || 'hugin';
+      logger.info(`Panorama-Scan Stitch (${stitchMethod}) fertig für ${device.name}`);
       return res.json({
         success: true,
         status: 'done',
         progress: 100,
         step: job.step,
         step_label: job.step_label || 'Fertig',
-        result: buildStitchResponseFromCv('hugin', job.result)
+        result: buildStitchResponseFromCv(stitchMethod, job.result)
       });
     }
 
@@ -1395,8 +1401,8 @@ router.post('/:id/panorama-scan/result/save', authenticateToken, async (req, res
     }
 
     const { method, panorama_url, panorama_size, frames, statistics, grid_info, hugin_pto } = req.body || {};
-    if (!method || !['opencv', 'grid', 'hugin'].includes(method)) {
-      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    if (!method || !['opencv', 'grid', 'hugin', 'cylindrical'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid, hugin oder cylindrical sein' });
     }
     if (!panorama_url) {
       return res.status(400).json({ error: 'panorama_url fehlt' });
@@ -1420,7 +1426,7 @@ router.post('/:id/panorama-scan/result/save', authenticateToken, async (req, res
       frames: frames || [],
       statistics,
       grid_info,
-      hugin_pto: method === 'hugin' ? (hugin_pto || null) : null
+      hugin_pto: ['hugin', 'cylindrical'].includes(method) ? (hugin_pto || null) : null
     });
 
     logger.info(`Panorama-Scan Ergebnis (${method}) gespeichert für ${device.name}`);
@@ -1460,8 +1466,8 @@ router.get('/:id/panorama-scan/result/:method', authenticateToken, async (req, r
     }
 
     const method = req.params.method;
-    if (!['opencv', 'grid', 'hugin'].includes(method)) {
-      return res.status(400).json({ error: 'method muss opencv, grid oder hugin sein' });
+    if (!['opencv', 'grid', 'hugin', 'cylindrical'].includes(method)) {
+      return res.status(400).json({ error: 'method muss opencv, grid, hugin oder cylindrical sein' });
     }
 
     const result = await panoramaScanResults.getPanorama(device._id, method);
@@ -1525,7 +1531,7 @@ router.post('/:id/position-preview/move', authenticateToken, async (req, res) =>
     // Wait for movement to complete
     await hardwareHelper.waitForMovementComplete(device, movementContext, {
       timeoutMs: 30000,
-      stabilizationMs: 1000
+      stabilizationMs: getDeviceStabilizationMs(device)
     });
 
     res.json({

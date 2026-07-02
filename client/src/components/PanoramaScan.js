@@ -43,10 +43,13 @@ import {
 } from './panoramaMapping';
 import PanoramaGlobe from './PanoramaGlobe';
 
-const FOV_OVERLAP_DEG = 10;
+// Overlap between adjacent scan positions (degrees). ~50% of FoV (41°) → step 21°.
+const FOV_OVERLAP_DEG = 20;
+const HUGIN_ASYNC_METHODS = ['hugin', 'cylindrical'];
 const STITCH_METHODS = [
   { id: 'grid', label: 'Grid (Sphärisch)' },
-  { id: 'hugin', label: 'Hugin (Blending)' },
+  { id: 'hugin', label: 'Hugin (Equirect.)' },
+  { id: 'cylindrical', label: 'Hugin (Zylindrisch)' },
   { id: 'opencv', label: 'OpenCV (Feature-Matching)' }
 ];
 
@@ -83,18 +86,18 @@ function panoramaPixelToSphere(px, py, gridInfo) {
     const canvasH = gridInfo.hugin_canvas_height ?? gridInfo.canvas_height;
     if (!canvasW || !canvasH) return null;
     const horizonTilt = gridInfo.horizon_tilt ?? 90;
+    const yawOffset = gridInfo.yaw_offset ?? 0;
+    const pitchCenter = gridInfo.pitch_center ?? horizonTilt;
+    const hfov = gridInfo.output_hfov ?? 360;
+    const vfov = gridInfo.output_vfov ?? 180;
     const fullX = px + cropLeft;
     const fullY = py + cropTop;
-    // Equirectangular v360 canvas: yaw 0 sits at the horizontal center and equals
-    // the device rotation (we set Hugin yaw = rotation). Pitch 0 is the vertical
-    // center; device tilt = pitch + horizon_tilt.
-    let rotation = ((fullX - canvasW / 2) / canvasW) * 360;
-    const huginPitch = 90 - (fullY / canvasH) * 180;
-    return {
-      rotation,
-      tilt: huginPitch + horizonTilt
-    };
+    const rotation = ((fullX / canvasW) - 0.5) * hfov + yawOffset;
+    const tilt = pitchCenter + (0.5 - fullY / canvasH) * vfov;
+    return { rotation, tilt };
   }
+
+  // Cylindrical: mapping comes from pano_trafo frame outlines (anglePixelMapping).
 
   return null;
 }
@@ -583,7 +586,9 @@ const PanoramaScan = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [scanError, setScanError] = useState(null);
 
-  const [stitchResults, setStitchResults] = useState({ opencv: null, grid: null, hugin: null });
+  const [stitchResults, setStitchResults] = useState({
+    opencv: null, grid: null, hugin: null, cylindrical: null
+  });
   const [stitchingMethod, setStitchingMethod] = useState(null);
   const [huginProgress, setHuginProgress] = useState(null);
   const [savingResultMethod, setSavingResultMethod] = useState(null);
@@ -629,7 +634,7 @@ const PanoramaScan = () => {
       setSavedFrameCount(scanRes.data.count || 0);
 
       const loaded = {};
-      for (const method of ['opencv', 'grid', 'hugin']) {
+      for (const method of ['opencv', 'grid', 'hugin', 'cylindrical']) {
         if ((resultsRes.data.results || []).some(r => r.method === method)) {
           try {
             const r = await axios.get(`/api/devices/${deviceId}/panorama-scan/result/${method}`);
@@ -673,7 +678,7 @@ const PanoramaScan = () => {
       setCapturedFrames([]);
       setScanComplete(false);
       setSaved(false);
-      setStitchResults({ opencv: null, grid: null, hugin: null });
+      setStitchResults({ opencv: null, grid: null, hugin: null, cylindrical: null });
     } else {
       setDevice(null);
     }
@@ -698,7 +703,7 @@ const PanoramaScan = () => {
     setScanError(null);
     setCapturedFrames([]);
     setCurrentIndex(0);
-    setStitchResults({ opencv: null, grid: null, hugin: null });
+    setStitchResults({ opencv: null, grid: null, hugin: null, cylindrical: null });
 
     const frames = [];
 
@@ -747,8 +752,9 @@ const PanoramaScan = () => {
   const handleStitch = async (method) => {
     if (!canStitch) return;
     setStitchingMethod(method);
-    if (method === 'hugin') {
-      setHuginProgress({ progress: 0, step_label: 'Starte Hugin…' });
+    if (HUGIN_ASYNC_METHODS.includes(method)) {
+      const label = STITCH_METHODS.find((m) => m.id === method)?.label || method;
+      setHuginProgress({ progress: 0, step_label: `${label}…` });
     }
     try {
       const payload = { method };
@@ -756,7 +762,7 @@ const PanoramaScan = () => {
         payload.frames = capturedFrames;
       }
 
-      if (method === 'hugin') {
+      if (HUGIN_ASYNC_METHODS.includes(method)) {
         const startRes = await axios.post(
           `/api/devices/${selectedDeviceId}/panorama-scan/stitch`,
           { ...payload, async: true },
@@ -795,7 +801,7 @@ const PanoramaScan = () => {
 
         setStitchResults(prev => ({
           ...prev,
-          hugin: {
+          [method]: {
             panorama_url: result.panorama_url,
             panorama_size: result.panorama_size,
             frames: result.frames,
@@ -805,7 +811,8 @@ const PanoramaScan = () => {
             persisted: false
           }
         }));
-        toast.success('Stitching (hugin) erfolgreich');
+        const label = STITCH_METHODS.find((m) => m.id === method)?.label || method;
+        toast.success(`Stitching (${label}) erfolgreich`);
       } else {
         const res = await axios.post(
           `/api/devices/${selectedDeviceId}/panorama-scan/stitch`,
@@ -877,7 +884,7 @@ const PanoramaScan = () => {
       }));
       toast.success(`Panorama (${method}) gespeichert`);
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Speichern fehlgeschlagen');
+      toast.error(err.response?.data?.error || err.message || 'Speichern fehlgeschlagen');
     } finally {
       setSavingResultMethod(null);
     }
@@ -1053,6 +1060,7 @@ const PanoramaScan = () => {
           {STITCH_METHODS.map(({ id, label }) => {
             const result = stitchResults[id];
             if (!result) return null;
+            const supports3d = result.grid_info?.projection !== 'hugin_cylindrical';
             return (
               <Grid item xs={12} key={id}>
                 <Paper sx={{ p: 2 }}>
@@ -1065,7 +1073,7 @@ const PanoramaScan = () => {
                       )}
                     </Box>
                   </Box>
-                  {viewMode === '3d' ? (
+                  {viewMode === '3d' && supports3d ? (
                     <PanoramaGlobe
                       panoramaUrl={result.panorama_url}
                       frames={result.frames}
@@ -1073,20 +1081,29 @@ const PanoramaScan = () => {
                       fov={fovInfo.fov}
                     />
                   ) : (
-                    <PanoramaPreview
-                      panoramaUrl={result.panorama_url}
-                      frames={result.frames}
-                      gridInfo={result.grid_info}
-                      fov={fovInfo.fov}
-                      showBorders={showBorders}
-                      showCameraGrid={showCameraGrid}
-                      showGraticule={showGraticule}
-                    />
+                    <>
+                      {viewMode === '3d' && !supports3d && (
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                          3D-Ansicht nicht verfügbar für zylindrische Projektion.
+                        </Typography>
+                      )}
+                      <PanoramaPreview
+                        panoramaUrl={result.panorama_url}
+                        frames={result.frames}
+                        gridInfo={result.grid_info}
+                        fov={fovInfo.fov}
+                        showBorders={showBorders}
+                        showCameraGrid={showCameraGrid}
+                        showGraticule={showGraticule}
+                      />
+                    </>
                   )}
                   {result.grid_info && (
                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
                       {result.grid_info.projection === 'hugin_equirectangular'
-                        ? `Hugin, Mapping via pano_trafo${result.hugin_pto ? ', .pto gespeichert' : ''}`
+                        ? `Hugin Equirectangular${result.grid_info.position_optimized ? ', cpfind optimiert' : ''}, Mapping via pano_trafo${result.hugin_pto ? ', .pto gespeichert' : ''}`
+                        : result.grid_info.projection === 'hugin_cylindrical'
+                        ? `Hugin Zylindrisch${result.grid_info.position_optimized ? ', cpfind optimiert' : ''}, Mapping via pano_trafo${result.hugin_pto ? ', .pto gespeichert' : ''}`
                         : result.grid_info.projection === 'spherical_equirectangular'
                         ? `Sphärisch, FoV ${result.grid_info.fov}°`
                         : `Grid: H-FoV ${result.grid_info.horizontal_fov?.toFixed(1)}° / V-FoV ${result.grid_info.vertical_fov?.toFixed(1)}°`}

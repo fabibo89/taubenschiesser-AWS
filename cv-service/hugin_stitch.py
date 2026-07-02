@@ -6,8 +6,10 @@ optional). On macOS the Homebrew cask installs them spread across several .app
 bundles; on Linux use `apt install hugin-tools enblend enfuse`.
 
 Image positions (yaw/pitch/FoV) are written via pto_var --set from the known
-scan rotation/tilt, so no feature matching is required. Pixel mapping uses Hugin's pano_trafo on the final project file (source corners
-→ panorama pixel coordinates, crop-adjusted to match the stitched output).
+scan rotation/tilt. When cpfind/autooptimiser are available, control points in
+overlap regions refine y/p/r before stitching. Pixel mapping uses Hugin's
+pano_trafo on the final project file (source corners → panorama pixel
+coordinates, crop-adjusted to match the stitched output).
 """
 import glob
 import os
@@ -24,11 +26,32 @@ import numpy as np
 # enblend is optional: if missing or failing we composite nona tiles ourselves.
 REQUIRED_TOOLS = ('pto_gen', 'pto_var', 'pano_modify', 'nona')
 OPTIONAL_TOOLS = ('enblend',)
+OPTIONAL_OPTIMIZE_TOOLS = ('cpfind', 'cpclean', 'autooptimiser')
+
+# Dynamic canvas fitting: grow FOV/canvas when AUTO-crop touches an edge.
+FOV_MARGIN_START = 1.08
+FOV_MARGIN_STEP = 0.06
+CANVAS_PERCENT_START = 110
+CANVAS_PERCENT_STEP = 15
+MAX_CANVAS_FIT_ATTEMPTS = 3
+CROP_EDGE_TOLERANCE_PX = 15
+CROP_PAD_PX = 100
+
+# enblend multiband pyramid depth; None = enblend default (safest for equirectangular).
+ENBLEND_LEVELS: Optional[int] = None
+
+HUGIN_PROJECTION_CODES = {
+    'equirectangular': 2,
+    'cylindrical': 1,
+}
 
 HUGIN_STEP_LABELS = {
     'prepare': 'Bilder vorbereiten',
     'pto_gen': 'Projekt erzeugen',
     'pto_var': 'Positionen setzen',
+    'cpfind': 'Kontrollpunkte suchen',
+    'cpclean': 'Kontrollpunkte filtern',
+    'autooptimiser': 'Positionen optimieren',
     'pano_modify': 'Canvas berechnen',
     'nona': 'Bilder projizieren',
     'enblend': 'Überlappungen blenden',
@@ -88,7 +111,7 @@ def check_hugin_available() -> Dict[str, str]:
             f'Hugin-Tools nicht gefunden: {", ".join(missing)}. '
             'Installiere Hugin (macOS: brew install --cask hugin, Linux: apt install hugin-tools enblend enfuse).'
         )
-    for tool in OPTIONAL_TOOLS:
+    for tool in OPTIONAL_TOOLS + OPTIONAL_OPTIMIZE_TOOLS:
         path = find_hugin_tool(tool)
         if path:
             found[tool] = path
@@ -148,7 +171,10 @@ def _step_progress(step: str) -> int:
         'prepare': 5,
         'pto_gen': 15,
         'pto_var': 25,
-        'pano_modify': 35,
+        'cpfind': 28,
+        'cpclean': 30,
+        'autooptimiser': 32,
+        'pano_modify': 38,
         'nona': 60,
         'enblend': 85,
         'composite': 85,
@@ -170,19 +196,253 @@ def _compute_yaw_offset(meta: List[dict]) -> float:
     return (min(rots) + max(rots)) / 2.0
 
 
-def _build_var_set(meta: List[dict], fov: float, horizon_tilt: float = 90.0, yaw_offset: float = 0.0) -> str:
+def _compute_pitch_center(meta: List[dict], horizon_tilt: float = 90.0) -> float:
+    """
+    Center of the scanned tilt range, mapped to Hugin pitch 0 (equirectangular
+    equator). Vertically centers the scan on the canvas so top/bottom distortion
+    is balanced (analogous to yaw_offset for horizontal centering).
+    """
+    tilts = [float(m['tilt']) for m in meta if m.get('tilt') is not None]
+    if not tilts:
+        return float(horizon_tilt)
+    return (min(tilts) + max(tilts)) / 2.0
+
+
+def _compute_pano_fov(meta: List[dict], fov: float, margin: float = FOV_MARGIN_START) -> Tuple[float, float]:
+    """
+    Angular span of the scan (+ one frame FoV), with margin.
+    Used when pano_modify --fov=AUTO is not sufficient.
+    """
+    rots = [float(m['rotation']) for m in meta if m.get('rotation') is not None]
+    tilts = [float(m['tilt']) for m in meta if m.get('tilt') is not None]
+    if not rots or not tilts:
+        return 360.0, 180.0
+    h_span = max(rots) - min(rots) + float(fov)
+    v_span = max(tilts) - min(tilts) + float(fov)
+    return h_span * margin, v_span * margin
+
+
+def _parse_pto_image_angles(pto_path: str) -> Tuple[List[float], List[float]]:
+    """Read per-image yaw/pitch from i-lines (after pto_var / autooptimiser)."""
+    yaws: List[float] = []
+    pitches: List[float] = []
+    with open(pto_path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if not line.startswith('i '):
+                continue
+            ym = re.search(r'\by(-?[\d.]+)', line)
+            pm = re.search(r'\bp(-?[\d.]+)', line)
+            if ym and pm:
+                yaws.append(float(ym.group(1)))
+                pitches.append(float(pm.group(1)))
+    return yaws, pitches
+
+
+def _compute_pano_fov_from_pto(
+    pto_path: str,
+    meta: List[dict],
+    fov: float,
+    margin: float = FOV_MARGIN_START,
+) -> Tuple[float, float]:
+    """FOV from actual image y/p in the .pto (post-optimiser), else from scan meta."""
+    yaws, pitches = _parse_pto_image_angles(pto_path)
+    if yaws and pitches:
+        h_span = max(yaws) - min(yaws) + float(fov)
+        v_span = max(pitches) - min(pitches) + float(fov)
+        return h_span * margin, v_span * margin
+    return _compute_pano_fov(meta, fov, margin)
+
+
+def _read_pano_fov_from_pto(pto_path: str) -> Tuple[float, float]:
+    """Read the panorama HFOV/VFOV stored on the p-line after pano_modify."""
+    info = _parse_pto_p_line(pto_path)
+    with open(pto_path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if not line.startswith('p '):
+                continue
+            vm = re.search(r'\bv([\d.]+)', line)
+            if vm and info.get('width') and info.get('height'):
+                hfov = float(vm.group(1))
+                w, h = int(info['width']), int(info['height'])
+                vfov = hfov * h / w if w > 0 else 180.0
+                return hfov, vfov
+    return 360.0, 180.0
+
+
+def _crop_near_canvas_edge(pto_path: str, tolerance: int = CROP_EDGE_TOLERANCE_PX) -> List[str]:
+    """Return canvas edges where the crop rectangle sits flush (content may be clipped)."""
+    info = _parse_pto_p_line(pto_path)
+    crop = info.get('crop')
+    if not crop or not info.get('width') or not info.get('height'):
+        return []
+    cw, ch = int(info['width']), int(info['height'])
+    edges: List[str] = []
+    if int(crop['left']) <= tolerance:
+        edges.append('left')
+    if int(crop['right']) >= cw - tolerance:
+        edges.append('right')
+    if int(crop['top']) <= tolerance:
+        edges.append('top')
+    if int(crop['bottom']) >= ch - tolerance:
+        edges.append('bottom')
+    return edges
+
+
+def _fit_pano_canvas(
+    pto_path: str,
+    tools: Dict[str, str],
+    projection_code: int,
+    meta: List[dict],
+    fov: float,
+    timeout: int = 300,
+    on_progress: Optional[ProgressCallback] = None,
+) -> Tuple[float, float, List[str]]:
+    """
+    Size projection canvas to image content. First try Hugin AUTO; if the crop
+    touches a canvas edge, retry with explicit FOV from image angles + larger canvas.
+    """
+    fov_margin = FOV_MARGIN_START
+    canvas_pct = CANVAS_PERCENT_START
+    clipped_edges: List[str] = []
+
+    for attempt in range(MAX_CANVAS_FIT_ATTEMPTS):
+        if attempt == 0:
+            fov_arg = '--fov=AUTO'
+            canvas_arg = '--canvas=AUTO'
+        else:
+            hfov, vfov = _compute_pano_fov_from_pto(pto_path, meta, fov, fov_margin)
+            fov_arg = f'--fov={hfov:g}x{vfov:g}'
+            canvas_arg = f'--canvas={canvas_pct}%AUTO'
+
+        _run(
+            [
+                tools['pano_modify'],
+                f'--projection={projection_code}',
+                fov_arg,
+                canvas_arg,
+                '--crop=AUTO',
+                '-o',
+                pto_path,
+                pto_path,
+            ],
+            timeout=timeout,
+            on_progress=on_progress,
+            step='pano_modify',
+        )
+        _validate_pto_crop(pto_path)
+        clipped_edges = _crop_near_canvas_edge(pto_path)
+        if not clipped_edges:
+            break
+        msg = (
+            f'Crop am Canvas-Rand ({", ".join(clipped_edges)}), '
+            f'Vergrößerung ({attempt + 2}/{MAX_CANVAS_FIT_ATTEMPTS})'
+        )
+        print(f'Hugin: {msg}')
+        if on_progress:
+            _report(on_progress, 'pano_modify', _step_progress('pano_modify'), msg)
+        fov_margin += FOV_MARGIN_STEP
+        canvas_pct += CANVAS_PERCENT_STEP
+
+    hfov, vfov = _read_pano_fov_from_pto(pto_path)
+    return hfov, vfov, clipped_edges
+
+
+def _build_var_set(
+    meta: List[dict],
+    fov: float,
+    horizon_tilt: float = 90.0,
+    yaw_offset: float = 0.0,
+    pitch_center: Optional[float] = None,
+) -> str:
     """
     Device tilt convention: horizon_tilt = straight ahead (horizon), lower = down.
     Hugin pitch convention: 0 = horizon, positive = up, negative = down.
-    So pitch = tilt - horizon_tilt.
+    pitch = tilt - pitch_center (pitch_center defaults to scan tilt midpoint).
     Hugin yaw = device rotation - yaw_offset (keeps content centered on the canvas).
     """
+    if pitch_center is None:
+        pitch_center = _compute_pitch_center(meta, horizon_tilt)
     parts = [f'v={fov:g}']
     for i, m in enumerate(meta):
         parts.append(f'y{i}={float(m["rotation"]) - float(yaw_offset):g}')
-        parts.append(f'p{i}={float(m["tilt"]) - float(horizon_tilt):g}')
+        parts.append(f'p{i}={float(m["tilt"]) - float(pitch_center):g}')
         parts.append(f'r{i}=0')
     return ','.join(parts)
+
+
+def _build_roll_lock_var_set(image_count: int) -> str:
+    """Reset per-image roll to 0 after autooptimiser (avoids tilted panorama)."""
+    return ','.join(f'r{i}=0' for i in range(image_count))
+
+
+def _optimize_pto_positions(
+    pto_path: str,
+    tools: Dict[str, str],
+    fov: float,
+    image_count: int,
+    timeout: int = 300,
+    on_progress: Optional[ProgressCallback] = None,
+) -> bool:
+    """
+    Refine image y/p/r via control points in overlap regions.
+    Requires cpfind + autooptimiser; cpclean is used when available.
+    Falls back silently when tools are missing or optimisation fails.
+    """
+    if 'cpfind' not in tools or 'autooptimiser' not in tools:
+        msg = 'Positions-Optimierung übersprungen (cpfind/autooptimiser nicht gefunden)'
+        print(f'Hugin: {msg}')
+        if on_progress:
+            _report(on_progress, 'cpfind', _step_progress('cpfind'), msg)
+        return False
+
+    backup_path = pto_path + '.pre_optimize.bak'
+    shutil.copy2(pto_path, backup_path)
+    try:
+        # Only refine yaw/pitch; roll must stay at 0 for a gimbal-mounted scan camera.
+        _run(
+            [tools['pto_var'], '--opt=y,p', '-o', pto_path, pto_path],
+            timeout=timeout,
+            on_progress=on_progress,
+            step='pto_var',
+        )
+        _run(
+            [tools['cpfind'], '--prealigned', '-o', pto_path, pto_path],
+            timeout=timeout,
+            on_progress=on_progress,
+            step='cpfind',
+        )
+        if 'cpclean' in tools:
+            _run(
+                [tools['cpclean'], '-o', pto_path, pto_path],
+                timeout=timeout,
+                on_progress=on_progress,
+                step='cpclean',
+            )
+        _run(
+            [tools['autooptimiser'], '-a', '-l', '-o', pto_path, pto_path],
+            timeout=timeout,
+            on_progress=on_progress,
+            step='autooptimiser',
+        )
+        # Keep device FoV and zero roll; autooptimiser may have adjusted both.
+        lock_vars = f'v={fov:g},{_build_roll_lock_var_set(image_count)}'
+        _run(
+            [tools['pto_var'], '--set', lock_vars, '-o', pto_path, pto_path],
+            timeout=timeout,
+            on_progress=on_progress,
+            step='pto_var',
+        )
+        return True
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        msg = f'Positions-Optimierung fehlgeschlagen, nutze Gerätewinkel: {e}'
+        print(f'Hugin: {msg}')
+        if on_progress:
+            _report(on_progress, 'cpfind', _step_progress('cpfind'), msg)
+        shutil.copy2(backup_path, pto_path)
+        return False
+    finally:
+        if os.path.isfile(backup_path):
+            os.remove(backup_path)
 
 
 def _parse_pto_p_line(pto_path: str) -> Dict[str, object]:
@@ -203,10 +463,106 @@ def _parse_pto_p_line(pto_path: str) -> Dict[str, object]:
                 'crop': None,
             }
             if crop_m:
+                # Hugin p-line S crop: left, right, top, bottom (absolute canvas coords).
                 left, right, top, bottom = map(int, crop_m.groups())
+                if right <= left or bottom <= top:
+                    raise RuntimeError(
+                        f'Ungültiger Crop in p-Zeile: S{left},{right},{top},{bottom}'
+                    )
                 info['crop'] = {'left': left, 'right': right, 'top': top, 'bottom': bottom}
             return info
     raise RuntimeError('Keine p-Zeile in Hugin-Projekt gefunden')
+
+
+def _expand_pto_crop(pto_path: str, pad_px: int = CROP_PAD_PX) -> bool:
+    """Widen the panorama crop rectangle so AUTO-crop does not clip scan edges."""
+    with open(pto_path, 'r', encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+    changed = False
+    new_lines: List[str] = []
+    for line in lines:
+        if not line.startswith('p '):
+            new_lines.append(line)
+            continue
+        wm = re.search(r'\bw(\d+)', line)
+        hm = re.search(r'\bh(\d+)', line)
+        cm = re.search(r'\bS(\d+),(\d+),(\d+),(\d+)', line)
+        if not (wm and hm and cm):
+            new_lines.append(line)
+            continue
+        canvas_w = int(wm.group(1))
+        canvas_h = int(hm.group(1))
+        pad = max(pad_px, int(min(canvas_w, canvas_h) * 0.02))
+        left, right, top, bottom = map(int, cm.groups())
+        new_left = max(0, left - pad_px)
+        new_right = min(canvas_w, right + pad_px)
+        new_top = max(0, top - pad_px)
+        new_bottom = min(canvas_h, bottom + pad_px)
+        if (new_left, new_right, new_top, new_bottom) != (left, right, top, bottom):
+            line = re.sub(
+                r'\bS\d+,\d+,\d+,\d+',
+                f'S{new_left},{new_right},{new_top},{new_bottom}',
+                line,
+            )
+            changed = True
+        new_lines.append(line)
+    if changed:
+        with open(pto_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+    return changed
+
+
+def _validate_pto_crop(pto_path: str) -> None:
+    """Abort early when pano_modify produced an unusable crop rectangle."""
+    info = _parse_pto_p_line(pto_path)
+    crop = info.get('crop')
+    if not crop:
+        return
+    width = int(crop['right']) - int(crop['left'])
+    height = int(crop['bottom']) - int(crop['top'])
+    canvas_w = int(info.get('width') or 0)
+    canvas_h = int(info.get('height') or 0)
+    if width < 100 or height < 100:
+        raise RuntimeError(
+            f'Hugin-Crop ungültig ({width}x{height}px): '
+            f'S{crop["left"]},{crop["right"]},{crop["top"]},{crop["bottom"]}'
+        )
+    if canvas_w and width < canvas_w * 0.1:
+        raise RuntimeError(
+            f'Hugin-Crop zu schmal ({width}px von {canvas_w}px Canvas): '
+            f'S{crop["left"]},{crop["right"]},{crop["top"]},{crop["bottom"]}'
+        )
+    if canvas_w and width > canvas_w:
+        raise RuntimeError(f'Hugin-Crop breiter als Canvas ({width} > {canvas_w})')
+
+
+def _run_enblend(
+    tools: Dict[str, str],
+    tile_paths: List[str],
+    panorama_path: str,
+    timeout: int,
+    on_progress: Optional[ProgressCallback] = None,
+) -> None:
+    """Run enblend; retry without -l when a custom pyramid level fails."""
+    attempts: List[Optional[int]] = []
+    if ENBLEND_LEVELS is not None:
+        attempts.append(ENBLEND_LEVELS)
+    attempts.append(None)
+    last_error: Optional[Exception] = None
+    for levels in attempts:
+        cmd = [tools['enblend'], '-o', panorama_path] + tile_paths
+        if levels is not None:
+            cmd[1:1] = ['-l', str(levels)]
+        try:
+            _run(cmd, timeout=timeout, on_progress=on_progress, step='enblend')
+            return
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            last_error = e
+            if os.path.isfile(panorama_path):
+                os.remove(panorama_path)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError('enblend fehlgeschlagen')
 
 
 def _pano_trafo_points(
@@ -275,6 +631,8 @@ def build_hugin_mapping(
     on_progress: Optional[ProgressCallback] = None,
     horizon_tilt: float = 90.0,
     yaw_offset: float = 0.0,
+    pitch_center: Optional[float] = None,
+    output_projection: str = 'equirectangular',
 ) -> Tuple[Dict[str, object], List[List[List[float]]]]:
     """
     Build per-frame panorama outlines from Hugin's pano_trafo output.
@@ -305,11 +663,20 @@ def build_hugin_mapping(
         pano_w = int(p_info['width'] or 0)
         pano_h = int(p_info['height'] or 0)
 
+    if pitch_center is None:
+        pitch_center = horizon_tilt
+
+    projection_key = (
+        'hugin_cylindrical' if output_projection == 'cylindrical' else 'hugin_equirectangular'
+    )
+
     grid_info = {
-        'projection': 'hugin_equirectangular',
+        'projection': projection_key,
+        'hugin_output_projection': output_projection,
         'mapping_source': 'pano_trafo',
         'horizon_tilt': horizon_tilt,
         'yaw_offset': yaw_offset,
+        'pitch_center': pitch_center,
         'hugin_projection': p_info.get('projection'),
         'canvas_width': pano_w,
         'canvas_height': pano_h,
@@ -386,12 +753,16 @@ def stitch_with_hugin(
     timeout: int = 300,
     on_progress: Optional[ProgressCallback] = None,
     horizon_tilt: float = 90.0,
+    output_projection: str = 'equirectangular',
 ) -> Tuple[np.ndarray, dict, Dict[str, object]]:
     """
     Stitch images via Hugin CLI using known scan positions.
     Returns (panorama_bgr, stats, mapping) where mapping has grid_info + frame_corners.
     """
     tools = check_hugin_available()
+    if output_projection not in HUGIN_PROJECTION_CODES:
+        raise HuginStitchError(f'Unbekannte Hugin-Projektion: {output_projection}')
+    projection_code = HUGIN_PROJECTION_CODES[output_projection]
     _report(on_progress, 'prepare', 5, f'{len(images)} Bilder vorbereiten')
 
     with tempfile.TemporaryDirectory(prefix='hugin_stitch_') as tmpdir:
@@ -405,30 +776,53 @@ def stitch_with_hugin(
                 _report(on_progress, 'prepare', pct, f'Bild {i + 1}/{len(images)} gespeichert')
 
         yaw_offset = _compute_yaw_offset(meta)
+        pitch_center = _compute_pitch_center(meta, horizon_tilt)
 
         pto_path = os.path.join(tmpdir, 'project.pto')
         _run([tools['pto_gen'], '-o', pto_path] + image_paths, timeout=timeout, on_progress=on_progress, step='pto_gen')
         _run(
-            [tools['pto_var'], '--set', _build_var_set(meta, fov, horizon_tilt, yaw_offset), '-o', pto_path, pto_path],
+            [
+                tools['pto_var'],
+                '--set',
+                _build_var_set(meta, fov, horizon_tilt, yaw_offset, pitch_center),
+                '-o',
+                pto_path,
+                pto_path,
+            ],
             timeout=timeout,
             on_progress=on_progress,
             step='pto_var',
         )
-        _run(
-            [tools['pano_modify'], '--canvas=AUTO', '--crop=AUTO', '-o', pto_path, pto_path],
-            timeout=timeout,
-            on_progress=on_progress,
-            step='pano_modify',
+
+        position_optimized = _optimize_pto_positions(
+            pto_path, tools, fov, len(images), timeout=timeout, on_progress=on_progress
         )
 
+        # Do not use --center: it expands partial scans to a full 360x180 sphere.
+        output_hfov, output_vfov, canvas_clipped = _fit_pano_canvas(
+            pto_path, tools, projection_code, meta, fov,
+            timeout=timeout, on_progress=on_progress,
+        )
+        crop_padded = _expand_pto_crop(pto_path, CROP_PAD_PX)
+
         image_sizes = [{'width': img.shape[1], 'height': img.shape[0]} for img in images]
+
         hugin_pto = _read_pto_content(pto_path, len(images))
         grid_info, frame_corners = build_hugin_mapping(
             pto_path, image_sizes, tools, timeout=timeout, on_progress=on_progress,
-            horizon_tilt=horizon_tilt, yaw_offset=yaw_offset
+            horizon_tilt=horizon_tilt,
+            yaw_offset=yaw_offset,
+            pitch_center=pitch_center,
+            output_projection=output_projection,
         )
-
         _strip_crop_flag(pto_path)
+        grid_info['position_optimized'] = position_optimized
+        grid_info['crop_padded'] = crop_padded
+        grid_info['output_hfov'] = output_hfov
+        grid_info['output_vfov'] = output_vfov
+        grid_info['canvas_clipped'] = canvas_clipped
+        grid_info['pipeline_version'] = 5
+
         prefix = os.path.join(tmpdir, 'tile')
         _run([tools['nona'], '-m', 'TIFF_m', '-o', prefix, pto_path], timeout=timeout, on_progress=on_progress, step='nona')
 
@@ -442,11 +836,9 @@ def stitch_with_hugin(
         if 'enblend' in tools:
             try:
                 panorama_path = os.path.join(tmpdir, 'panorama.tif')
-                _run(
-                    [tools['enblend'], '-o', panorama_path] + tile_paths,
-                    timeout=timeout,
-                    on_progress=on_progress,
-                    step='enblend',
+                _run_enblend(
+                    tools, tile_paths, panorama_path,
+                    timeout=timeout, on_progress=on_progress,
                 )
                 panorama = cv2.imread(panorama_path, cv2.IMREAD_COLOR)
                 if panorama is not None:
@@ -459,7 +851,9 @@ def stitch_with_hugin(
 
         if panorama is None:
             panorama = _composite_tiles(tile_paths, on_progress=on_progress)
-            blend_mode = 'composite'
+            if panorama is not None:
+                blend_mode = 'composite'
+                print('Hugin: WARNUNG — Fallback-Komposit ohne enblend-Nahtoptimierung')
 
         if panorama is None:
             raise RuntimeError('Hugin-Panorama konnte nicht erzeugt werden')
@@ -472,6 +866,8 @@ def stitch_with_hugin(
             'total_failed': 0,
             'total_used': len(images),
             'blend_mode': blend_mode,
+            'hugin_output_projection': output_projection,
+            'position_optimized': position_optimized,
             'hugin_tools': tools,
         }
         mapping = {

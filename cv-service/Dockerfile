@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install system dependencies (minimal wie im funktionierenden Repo)
 # hugin-tools + enblend/enfuse liefern die CLI fürs Panorama-Stitching
-# (pto_gen, pano_modify, nona, enblend) für /stitch-panorama-hugin.
+# (pto_gen, pano_modify, nona, enblend, cpfind, autooptimiser) für /stitch-panorama-hugin.
 # Debian: Binärpakete heißen enblend/enfuse (nicht enblend-enfuse).
 RUN apt-get update && apt-get install -y \
     libgl1 \

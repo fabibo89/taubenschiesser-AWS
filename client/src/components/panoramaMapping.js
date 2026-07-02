@@ -66,6 +66,58 @@ function computeFrameBounds(frames, fov) {
   };
 }
 
+function buildCornerFitMapping(frames, scanBounds) {
+  const centers = (frames || [])
+    .filter((f) => f.panorama_corners?.length && f.rotation != null && f.tilt != null)
+    .map((f) => ({ ...f, ...framePanoramaCenter(f) }))
+    .filter((f) => Number.isFinite(f.cx) && Number.isFinite(f.cy) && !isWrapFrame(f, frames));
+
+  const byTilt = new Map();
+  for (const f of centers) {
+    if (!byTilt.has(f.tilt)) byTilt.set(f.tilt, []);
+    byTilt.get(f.tilt).push(f);
+  }
+
+  const candidateTilts = [...byTilt.keys()]
+    .filter((t) => byTilt.get(t).length >= 2)
+    .sort((a, b) => b - a);
+  const anchorTilt = candidateTilts.find((t) => byTilt.get(t).length >= 3)
+    ?? candidateTilts[0];
+
+  if (anchorTilt == null) return null;
+
+  const row = byTilt.get(anchorTilt);
+  const rowFit = linearFit(row, 'rotation', 'cx');
+  if (!rowFit || Math.abs(rowFit.slope) < 1e-6) return null;
+
+  const pxPerDeg = Math.abs(rowFit.slope);
+  const xAtRot0 = rowFit.intercept;
+  const yAnchor = row.reduce((s, p) => s + p.cy, 0) / row.length;
+  return {
+    bounds: scanBounds,
+    toPixel: (rotation, tilt) => ({
+      x: xAtRot0 + rotation * rowFit.slope,
+      y: yAnchor + (anchorTilt - tilt) * pxPerDeg
+    }),
+    fromPixel: (x, y) => ({
+      rotation: clamp(
+        (x - xAtRot0) / rowFit.slope,
+        scanBounds?.rotMin ?? 0,
+        scanBounds?.rotMax ?? 180
+      ),
+      tilt: clamp(
+        anchorTilt - (y - yAnchor) / pxPerDeg,
+        scanBounds?.tiltMin ?? 0,
+        scanBounds?.tiltMax ?? 90
+      )
+    }),
+    fromPixelRaw: (x, y) => ({
+      rotation: (x - xAtRot0) / rowFit.slope,
+      tilt: anchorTilt - (y - yAnchor) / pxPerDeg
+    })
+  };
+}
+
 // Build a pixel<->angle mapping for the panorama. Returns null when no reliable
 // mapping can be derived. `toPixel(rotation, tilt)` and `fromPixel(x, y)` /
 // `fromPixelRaw(x, y)` operate on the cropped panorama image pixels.
@@ -107,6 +159,11 @@ export function buildAnglePixelMapping(frames, gridInfo, fov) {
     // Hugin yaw = device rotation - yawOffset (panorama centered on the scan so
     // the full FoV stays within the +/-180 seam). Older results have no offset.
     const yawOffset = gridInfo.yaw_offset ?? 0;
+    // Hugin pitch = device tilt - pitchCenter (scan vertically centered on equator).
+    // Older results without pitch_center used horizon_tilt as the pitch reference.
+    const pitchCenter = gridInfo.pitch_center ?? horizonTilt;
+    const hfov = gridInfo.output_hfov ?? 360;
+    const vfov = gridInfo.output_vfov ?? 180;
     let fullW = gridInfo.hugin_canvas_width;
     let fullH = gridInfo.hugin_canvas_height;
 
@@ -122,78 +179,34 @@ export function buildAnglePixelMapping(frames, gridInfo, fov) {
       return {
         bounds: scanBounds,
         toPixel: (rotation, tilt) => ({
-          x: fullW * (0.5 + (rotation - yawOffset) / 360) - cropLeft,
-          y: fullH * (0.5 - (tilt - horizonTilt) / 180) - cropTop
+          x: fullW * (0.5 + (rotation - yawOffset) / hfov) - cropLeft,
+          y: fullH * (0.5 - (tilt - pitchCenter) / vfov) - cropTop
         }),
         fromPixel: (x, y) => ({
           rotation: clamp(
-            ((x + cropLeft) / fullW - 0.5) * 360 + yawOffset,
+            ((x + cropLeft) / fullW - 0.5) * hfov + yawOffset,
             scanBounds?.rotMin ?? 0,
             scanBounds?.rotMax ?? 180
           ),
           tilt: clamp(
-            horizonTilt + (0.5 - (y + cropTop) / fullH) * 180,
+            pitchCenter + (0.5 - (y + cropTop) / fullH) * vfov,
             scanBounds?.tiltMin ?? 0,
             scanBounds?.tiltMax ?? 90
           )
         }),
         fromPixelRaw: (x, y) => ({
-          rotation: ((x + cropLeft) / fullW - 0.5) * 360 + yawOffset,
-          tilt: horizonTilt + (0.5 - (y + cropTop) / fullH) * 180
+          rotation: ((x + cropLeft) / fullW - 0.5) * hfov + yawOffset,
+          tilt: pitchCenter + (0.5 - (y + cropTop) / fullH) * vfov
         })
       };
     }
 
     // Path B: derive px/deg from the most reliable (highest-tilt) frame row.
-    const centers = (frames || [])
-      .filter((f) => f.panorama_corners?.length && f.rotation != null && f.tilt != null)
-      .map((f) => ({ ...f, ...framePanoramaCenter(f) }))
-      .filter((f) => Number.isFinite(f.cx) && Number.isFinite(f.cy) && !isWrapFrame(f, frames));
+    return buildCornerFitMapping(frames, scanBounds);
+  }
 
-    const byTilt = new Map();
-    for (const f of centers) {
-      if (!byTilt.has(f.tilt)) byTilt.set(f.tilt, []);
-      byTilt.get(f.tilt).push(f);
-    }
-
-    const candidateTilts = [...byTilt.keys()]
-      .filter((t) => byTilt.get(t).length >= 2)
-      .sort((a, b) => b - a);
-    const anchorTilt = candidateTilts.find((t) => byTilt.get(t).length >= 3)
-      ?? candidateTilts[0];
-
-    if (anchorTilt != null) {
-      const row = byTilt.get(anchorTilt);
-      const rowFit = linearFit(row, 'rotation', 'cx');
-      if (rowFit && Math.abs(rowFit.slope) > 1e-6) {
-        const pxPerDeg = Math.abs(rowFit.slope);
-        const xAtRot0 = rowFit.intercept;
-        const yAnchor = row.reduce((s, p) => s + p.cy, 0) / row.length;
-        return {
-          bounds: scanBounds,
-          toPixel: (rotation, tilt) => ({
-            x: xAtRot0 + rotation * rowFit.slope,
-            y: yAnchor + (anchorTilt - tilt) * pxPerDeg
-          }),
-          fromPixel: (x, y) => ({
-            rotation: clamp(
-              (x - xAtRot0) / rowFit.slope,
-              scanBounds?.rotMin ?? 0,
-              scanBounds?.rotMax ?? 180
-            ),
-            tilt: clamp(
-              anchorTilt - (y - yAnchor) / pxPerDeg,
-              scanBounds?.tiltMin ?? 0,
-              scanBounds?.tiltMax ?? 90
-            )
-          }),
-          fromPixelRaw: (x, y) => ({
-            rotation: (x - xAtRot0) / rowFit.slope,
-            tilt: anchorTilt - (y - yAnchor) / pxPerDeg
-          })
-        };
-      }
-    }
+  if (gridInfo?.projection === 'hugin_cylindrical') {
+    return buildCornerFitMapping(frames, scanBounds);
   }
 
   return null;

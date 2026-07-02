@@ -21,7 +21,7 @@ const panoramaScanResultSchema = new mongoose.Schema({
   },
   method: {
     type: String,
-    enum: ['opencv', 'grid', 'hugin'],
+    enum: ['opencv', 'grid', 'hugin', 'cylindrical'],
     required: true
   },
   panorama: { type: String },

@@ -1573,6 +1573,8 @@ class StitchPanoramaGridRequest(BaseModel):
     max_dimension: Optional[int] = None
     # Device tilt value that corresponds to the horizon in Hugin pitch (default 90).
     horizon_tilt: float = 90.0
+    # Hugin output panorama projection: equirectangular (sphere) or cylindrical.
+    output_projection: str = 'equirectangular'
 
 
 def _decode_base64_image(base64_data: str) -> np.ndarray:
@@ -1857,10 +1859,14 @@ def _run_hugin_stitch(request: StitchPanoramaGridRequest, on_progress=None):
 
     fov = request.fov
     horizon_tilt = request.horizon_tilt
+    output_projection = request.output_projection or 'equirectangular'
+    if output_projection not in ('equirectangular', 'cylindrical'):
+        raise HuginStitchError(f'Unbekannte output_projection: {output_projection}')
     hugin_timeout = max(300, min(900, len(images) * 30))
     panorama, stats, mapping = stitch_with_hugin(
         images, meta, fov, request.max_dimension, timeout=hugin_timeout,
-        on_progress=on_progress, horizon_tilt=horizon_tilt
+        on_progress=on_progress, horizon_tilt=horizon_tilt,
+        output_projection=output_projection,
     )
 
     canvas_h, canvas_w = panorama.shape[:2]
@@ -1876,9 +1882,11 @@ def _run_hugin_stitch(request: StitchPanoramaGridRequest, on_progress=None):
 
     panorama_base64 = base64.b64encode(buffer).decode('utf-8')
 
+    stitch_method = 'cylindrical' if output_projection == 'cylindrical' else 'hugin'
+
     return {
         'success': True,
-        'method': 'hugin',
+        'method': stitch_method,
         'panorama_base64': panorama_base64,
         'panorama_size': {'width': canvas_w, 'height': canvas_h},
         'transformation_matrices': None,

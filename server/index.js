@@ -54,9 +54,10 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Body parsing middleware - erhöhtes Limit für Bildanalyse
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Body parsing middleware — Panorama-Scan speichert viele Base64-JPEGs in einem Request
+// (z. B. 28× ~2 MB ≈ 55 MB); 50 MB reicht da nicht.
+app.use(express.json({ limit: '128mb' }));
+app.use(express.urlencoded({ extended: true, limit: '128mb' }));
 
 // Routes
 app.use('/api/auth', authRoutes);
