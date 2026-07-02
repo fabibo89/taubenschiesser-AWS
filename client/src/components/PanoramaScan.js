@@ -240,6 +240,27 @@ function strokePolylineSegments(ctx, points, maxJump = 250) {
   }
 }
 
+function strokeFrameOutline(ctx, corners, width, height) {
+  const maxJump = Math.max(width, height) * 0.25;
+  const points = (corners || [])
+    .map(([x, y]) => ({ x, y }))
+    .filter((p) => (
+      Number.isFinite(p.x) && Number.isFinite(p.y)
+      && p.x > -width && p.x < width * 2
+      && p.y > -height && p.y < height * 2
+    ));
+  if (points.length < 2) return;
+  strokePolylineSegments(ctx, points, maxJump);
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (Math.hypot(first.x - last.x, first.y - last.y) <= maxJump) {
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(first.x, first.y);
+    ctx.stroke();
+  }
+}
+
 const GRATICULE_STEP_DEG = 10;
 const GRATICULE_SAMPLE_DEG = 1;
 
@@ -330,15 +351,7 @@ function drawCameraGrid(ctx, frames, width, height) {
   frames.forEach((frame) => {
     const corners = frame.panorama_corners;
     if (!corners?.length) return;
-
-    const points = corners
-      .map(([x, y]) => ({ x, y }))
-      .filter((p) => (
-        Number.isFinite(p.x) && Number.isFinite(p.y)
-        && p.x > -width && p.x < width * 2
-        && p.y > -height && p.y < height * 2
-      ));
-    strokePolylineSegments(ctx, points, Math.max(width, height) * 0.25);
+    strokeFrameOutline(ctx, corners, width, height);
   });
 
   ctx.restore();
@@ -493,11 +506,8 @@ const PanoramaPreview = ({ panoramaUrl, frames, gridInfo, fov, showBorders, show
 
           ctx.strokeStyle = colors[i % colors.length];
           ctx.lineWidth = 8;
-          ctx.beginPath();
-          ctx.moveTo(corners[0][0], corners[0][1]);
-          corners.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
-          ctx.closePath();
-          ctx.stroke();
+          ctx.setLineDash([]);
+          strokeFrameOutline(ctx, corners, canvas.width, canvas.height);
           const cx = corners.reduce((s, [x]) => s + x, 0) / corners.length;
           const cy = corners.reduce((s, [, y]) => s + y, 0) / corners.length;
           ctx.fillStyle = colors[i % colors.length];
