@@ -35,6 +35,52 @@ function formatTimeDiff(seconds, direction) {
   return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
 }
 
+/** YOLO stores pixels; Rekognition stores 0–1. Detect which and return pixel box. */
+function toPixelBBox({ left, top, width, height }, imgWidth, imgHeight) {
+  const looksNormalized =
+    Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    width <= 1.5 &&
+    height <= 1.5 &&
+    (left == null || left <= 1.5) &&
+    (top == null || top <= 1.5);
+  if (looksNormalized) {
+    return {
+      left: (left || 0) * imgWidth,
+      top: (top || 0) * imgHeight,
+      width: width * imgWidth,
+      height: height * imgHeight
+    };
+  }
+  return { left: left || 0, top: top || 0, width: width || 0, height: height || 0 };
+}
+
+function computeContainLayout(containerWidth, containerHeight, imgNaturalWidth, imgNaturalHeight) {
+  if (!containerWidth || !containerHeight || !imgNaturalWidth || !imgNaturalHeight) {
+    return { width: 0, height: 0, offsetX: 0, offsetY: 0 };
+  }
+  const containerAspect = containerWidth / containerHeight;
+  const imageAspect = imgNaturalWidth / imgNaturalHeight;
+  if (imageAspect > containerAspect) {
+    const renderedWidth = containerWidth;
+    const renderedHeight = containerWidth / imageAspect;
+    return {
+      width: renderedWidth,
+      height: renderedHeight,
+      offsetX: 0,
+      offsetY: (containerHeight - renderedHeight) / 2
+    };
+  }
+  const renderedHeight = containerHeight;
+  const renderedWidth = containerHeight * imageAspect;
+  return {
+    width: renderedWidth,
+    height: renderedHeight,
+    offsetX: (containerWidth - renderedWidth) / 2,
+    offsetY: 0
+  };
+}
+
 const TaubenTinder = () => {
   const [detections, setDetections] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -91,9 +137,8 @@ const TaubenTinder = () => {
     }
   }, [detections, currentIndex, loadImageForDetection]);
 
-  // Reset rendered image size and card position when detection changes
+  // Reset card position when detection changes (image layout recalculated separately)
   useEffect(() => {
-    setRenderedImageSize({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
     setOffset({ x: 0, y: 0 });
     setNearestAtPosition({ before: null, after: null });
   }, [currentIndex]);
@@ -116,50 +161,54 @@ const TaubenTinder = () => {
       .catch(() => setNearestAtPosition({ before: null, after: null }));
   }, [detections, currentIndex]);
 
-  // Recalculate image size on window resize
-  useEffect(() => {
-    const handleResize = () => {
-      if (imageRef.current && containerRef.current && detections.length > 0 && currentIndex < detections.length) {
-        const currentDet = detections[currentIndex];
-        const imageData = imageByDetectionId[currentDet._id];
-        const imgInfo = imageData?.zoomed_image?.url
-          ? imageData.image_info?.zoomed_size
-          : imageData?.image_info?.original_size;
-        
-        if (!imgInfo) return;
-        
-        const img = imageRef.current;
-        const container = containerRef.current;
-        
-        const containerWidth = container.clientWidth;
-        const containerHeight = container.clientHeight;
-        const imgNaturalWidth = imgInfo.width || img.naturalWidth;
-        const imgNaturalHeight = imgInfo.height || img.naturalHeight;
-        
-        const containerAspect = containerWidth / containerHeight;
-        const imageAspect = imgNaturalWidth / imgNaturalHeight;
-        
-        let renderedWidth, renderedHeight, offsetX, offsetY;
-        
-        if (imageAspect > containerAspect) {
-          renderedWidth = containerWidth;
-          renderedHeight = containerWidth / imageAspect;
-          offsetX = 0;
-          offsetY = (containerHeight - renderedHeight) / 2;
-        } else {
-          renderedWidth = containerHeight * imageAspect;
-          renderedHeight = containerHeight;
-          offsetX = (containerWidth - renderedWidth) / 2;
-          offsetY = 0;
-        }
-        
-        setRenderedImageSize({ width: renderedWidth, height: renderedHeight, offsetX, offsetY });
-      }
-    };
+  const resolveImageInfo = useCallback((detection, imageData) => {
+    const info = imageData?.image_info || detection?.image_info;
+    if (!info) return null;
+    const preferZoomed = Boolean(imageData?.zoomed_image?.url);
+    if (preferZoomed) {
+      return info.zoomed_size || info.original_size || null;
+    }
+    return info.original_size || info.zoomed_size || null;
+  }, []);
 
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [detections, currentIndex, imageByDetectionId]);
+  const currentDetectionId = detections[currentIndex]?._id;
+  const currentImageEntry = currentDetectionId != null
+    ? imageByDetectionId[currentDetectionId]
+    : undefined;
+
+  const updateRenderedImageSize = useCallback(() => {
+    const container = containerRef.current;
+    const img = imageRef.current;
+    if (!container || !img) return;
+
+    const detection = detections[currentIndex];
+    const imageData = detection ? imageByDetectionIdRef.current[detection._id] : null;
+    const info = resolveImageInfo(detection, imageData);
+    const imgNaturalWidth = info?.width || img.naturalWidth;
+    const imgNaturalHeight = info?.height || img.naturalHeight;
+    if (!imgNaturalWidth || !imgNaturalHeight) return;
+
+    setRenderedImageSize(
+      computeContainLayout(
+        container.clientWidth,
+        container.clientHeight,
+        imgNaturalWidth,
+        imgNaturalHeight
+      )
+    );
+  }, [detections, currentIndex, currentImageEntry, resolveImageInfo]);
+
+  // Recalculate layout when card/image changes (fixes missing boxes when onLoad does not re-fire)
+  useEffect(() => {
+    setRenderedImageSize({ width: 0, height: 0, offsetX: 0, offsetY: 0 });
+    const id = requestAnimationFrame(() => updateRenderedImageSize());
+    return () => cancelAnimationFrame(id);
+  }, [currentIndex, currentImageEntry, updateRenderedImageSize]);
+
+  useEffect(() => {
+    window.addEventListener('resize', updateRenderedImageSize);
+    return () => window.removeEventListener('resize', updateRenderedImageSize);
+  }, [updateRenderedImageSize]);
 
   const fetchUnclassifiedDetections = async ({ appendSession = false, previousBatchSize = 0 } = {}) => {
     try {
@@ -357,25 +406,33 @@ const TaubenTinder = () => {
     touchStartRef.current = null;
   };
 
-  // Mouse handlers for desktop (optional)
+  // Mouse: drag to swipe (left button) + click buttons (left/right/middle)
   const handleMouseDown = (e) => {
     if (flyAwayDirection || loadingNext) return;
+    if (e.button === 1) e.preventDefault(); // avoid autoscroll on middle-click
     mouseStartRef.current = {
       x: e.clientX,
       y: e.clientY,
-      time: Date.now()
+      time: Date.now(),
+      button: e.button,
+      moved: false,
+      onImage: Boolean(e.target.closest?.('[data-tinder-image]'))
     };
-    document.addEventListener('mousemove', handleMouseMove);
+    if (e.button === 0) {
+      document.addEventListener('mousemove', handleMouseMove);
+    }
     document.addEventListener('mouseup', handleMouseUp);
   };
 
   const handleMouseMove = (e) => {
     if (!mouseStartRef.current || flyAwayDirection || loadingNext) return;
+    if (mouseStartRef.current.button !== 0) return;
 
     const deltaX = e.clientX - mouseStartRef.current.x;
     const deltaY = e.clientY - mouseStartRef.current.y;
 
     if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
+      mouseStartRef.current.moved = true;
       setSwiping(true);
       setOffset({ x: deltaX, y: deltaY });
 
@@ -396,15 +453,35 @@ const TaubenTinder = () => {
       return;
     }
 
-    const deltaX = e.clientX - mouseStartRef.current.x;
-    const deltaY = e.clientY - mouseStartRef.current.y;
+    const start = mouseStartRef.current;
+    const deltaX = e.clientX - start.x;
+    const deltaY = e.clientY - start.y;
     const threshold = 100;
+    const isClick = !start.moved && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10;
 
     setSwiping(false);
 
+    // Mouse button clicks on the image (no drag): left = keine Taube, right = Taube, middle = löschen
+    if (isClick) {
+      mouseStartRef.current = null;
+      if (!start.onImage) {
+        setOffset({ x: 0, y: 0 });
+        setSwipeDirection(null);
+        return;
+      }
+      if (start.button === 0) handleSwipeAction('no_pigeon');
+      else if (start.button === 2) handleSwipeAction('confirm_pigeon');
+      else if (start.button === 1) handleSwipeAction('delete');
+      else {
+        setOffset({ x: 0, y: 0 });
+        setSwipeDirection(null);
+      }
+      return;
+    }
+
     const committed = Math.abs(deltaX) > threshold || deltaY < -threshold;
     let action = null;
-    if (committed) {
+    if (committed && start.button === 0) {
       if (deltaY < -threshold) action = 'delete';
       else if (deltaX > threshold) action = 'confirm_pigeon';
       else if (deltaX < -threshold) action = 'no_pigeon';
@@ -421,6 +498,10 @@ const TaubenTinder = () => {
       setSwipeDirection(null);
     }
     mouseStartRef.current = null;
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
   };
 
   const getRotation = () => {
@@ -463,9 +544,7 @@ const TaubenTinder = () => {
   const currentImageData = imageByDetectionId[currentDetection._id];
   const currentImageLoading = currentImageData === 'loading' || currentImageData === undefined;
   const displayImage = currentImageData?.zoomed_image?.url || currentImageData?.image?.url;
-  const imageInfo = currentImageData?.zoomed_image?.url
-    ? currentImageData.image_info?.zoomed_size
-    : currentImageData?.image_info?.original_size;
+  const imageInfo = resolveImageInfo(currentDetection, currentImageData);
 
   return (
     <Box>
@@ -473,7 +552,7 @@ const TaubenTinder = () => {
         Tauben-Tinder
       </Typography>
       <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 2 }}>
-        {displayPosition} / {displayTotal} unklassifiziert — Rechts: Taube ✓ | Links: Keine Taube ✗ | Hoch: Löschen ✗
+        {displayPosition} / {displayTotal} unklassifiziert — Links-Klick / Swipe links: Keine Taube ✗ · Rechts-Klick / Swipe rechts: Taube ✓ · Mittelklick / Swipe hoch: Löschen
       </Typography>
 
       <Box
@@ -525,6 +604,7 @@ const TaubenTinder = () => {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onMouseDown={handleMouseDown}
+          onContextMenu={handleContextMenu}
           onTransitionEnd={(e) => {
             if (e.propertyName === 'transform' && flyAwayDirection) {
               handleFlyAwayComplete();
@@ -534,6 +614,7 @@ const TaubenTinder = () => {
           {/* Image with bounding boxes */}
           <Box
             ref={containerRef}
+            data-tinder-image
             sx={{
               position: 'relative',
               width: '100%',
@@ -554,37 +635,8 @@ const TaubenTinder = () => {
                 component="img"
                 src={displayImage}
                 alt="Detection"
-                onLoad={(e) => {
-                  const img = e.target;
-                  const container = containerRef.current;
-                  if (!container || !imageInfo) return;
-                  
-                  const containerWidth = container.clientWidth;
-                  const containerHeight = container.clientHeight;
-                  const imgNaturalWidth = imageInfo.width || img.naturalWidth;
-                  const imgNaturalHeight = imageInfo.height || img.naturalHeight;
-                  
-                  // Calculate actual rendered size with objectFit: contain
-                  const containerAspect = containerWidth / containerHeight;
-                  const imageAspect = imgNaturalWidth / imgNaturalHeight;
-                  
-                  let renderedWidth, renderedHeight, offsetX, offsetY;
-                  
-                  if (imageAspect > containerAspect) {
-                    // Image is wider - fit to width
-                    renderedWidth = containerWidth;
-                    renderedHeight = containerWidth / imageAspect;
-                    offsetX = 0;
-                    offsetY = (containerHeight - renderedHeight) / 2;
-                  } else {
-                    // Image is taller - fit to height
-                    renderedWidth = containerHeight * imageAspect;
-                    renderedHeight = containerHeight;
-                    offsetX = (containerWidth - renderedWidth) / 2;
-                    offsetY = 0;
-                  }
-                  
-                  setRenderedImageSize({ width: renderedWidth, height: renderedHeight, offsetX, offsetY });
+                onLoad={() => {
+                  updateRenderedImageSize();
                 }}
                 sx={{
                   maxWidth: '100%',
@@ -603,23 +655,29 @@ const TaubenTinder = () => {
                 const imgWidth = imageInfo.width || 1;
                 const imgHeight = imageInfo.height || 1;
                 
-                let bboxLeft, bboxTop, bboxWidth, bboxHeight;
+                let rawLeft, rawTop, rawWidth, rawHeight;
                 
                 if (currentImageData?.zoomed_image?.url && detection.position) {
                   const { center_x, center_y, width, height } = detection.position;
-                  bboxLeft = center_x - width / 2;
-                  bboxTop = center_y - height / 2;
-                  bboxWidth = width;
-                  bboxHeight = height;
+                  rawLeft = center_x - width / 2;
+                  rawTop = center_y - height / 2;
+                  rawWidth = width;
+                  rawHeight = height;
                 } else if (detection.bbox) {
                   const { x, y, width, height } = detection.bbox;
-                  bboxLeft = x;
-                  bboxTop = y;
-                  bboxWidth = width;
-                  bboxHeight = height;
+                  rawLeft = x;
+                  rawTop = y;
+                  rawWidth = width;
+                  rawHeight = height;
                 } else {
                   return null;
                 }
+
+                const { left: bboxLeft, top: bboxTop, width: bboxWidth, height: bboxHeight } = toPixelBBox(
+                  { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight },
+                  imgWidth,
+                  imgHeight
+                );
                 
                 // Convert from image coordinates to rendered coordinates
                 const scaleX = renderedImageSize.width / imgWidth;
@@ -629,6 +687,8 @@ const TaubenTinder = () => {
                 const topPx = bboxTop * scaleY + renderedImageSize.offsetY;
                 const widthPx = bboxWidth * scaleX;
                 const heightPx = bboxHeight * scaleY;
+
+                if (widthPx < 1 || heightPx < 1) return null;
 
                 const isTarget = detection.is_target_bird === true;
 
@@ -761,7 +821,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('no_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Keine Taube (Links swipen)"
+            title="Keine Taube (Links-Klick / Links swipen)"
           >
             <CloseIcon fontSize="large" />
           </IconButton>
@@ -771,7 +831,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('delete')}
             sx={{ width: 64, height: 64 }}
-            title="Löschen (Hoch swipen)"
+            title="Löschen (Mittelklick / Hoch swipen)"
           >
             <DeleteIcon fontSize="large" />
           </IconButton>
@@ -781,7 +841,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('confirm_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Taube bestätigen (Rechts swipen)"
+            title="Taube bestätigen (Rechts-Klick / Rechts swipen)"
           >
             <FavoriteIcon fontSize="large" />
           </IconButton>
