@@ -277,6 +277,12 @@ const deviceSchema = new mongoose.Schema({
     lastWaitingData: mongoose.Schema.Types.Mixed,
     lastWaitingAt: Date
   },
+  // Last known servo angles from ESP MQTT (for dashboard on page load)
+  lastKnownPosition: {
+    rot: { type: Number },
+    tilt: { type: Number },
+    updatedAt: { type: Date }
+  },
   // Monitor scharf: bei Taubenerkennung schießen (true) oder nur Detection speichern (false)
   monitorArmed: {
     type: Boolean,

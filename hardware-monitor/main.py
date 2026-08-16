@@ -253,19 +253,30 @@ class HardwareMonitor:
             self.device_moving[device_ip] = is_moving
             self.device_last_seen[device_ip] = datetime.now()
             
-            # Send position update (event + log) only while moving, with coordinates; throttle to max 1/s
+            # Push position to API/UI:
+            # - while moving (throttled 1/s)
+            # - when movement ends (final settle angle)
+            # - first MQTT after monitor start / unknown device (so dashboard isn't empty)
             current_time = datetime.now()
             last_update = self.last_position_update.get(device_ip)
             should_send_position = False
             if is_moving:
-                if not was_moving and is_moving:
+                if not was_moving:
                     should_send_position = True  # movement just started
                 elif not last_update or (current_time - last_update).total_seconds() >= 1.0:
-                    should_send_position = True  # throttle to 1 update per second while moving
+                    should_send_position = True  # throttle while moving
+            elif was_moving and not is_moving:
+                should_send_position = True  # settled at final position
+            elif last_update is None:
+                should_send_position = True  # first known position after (re)start
             if should_send_position:
                 self.last_position_update[device_ip] = current_time
                 self.schedule_async(self.send_position_update(device_ip, payload.get('Rot', 0), payload.get('Tilt', 0)))
-                logger.info(f"📍 Device {device_ip} position (moving): Rot={payload.get('Rot')}, Tilt={payload.get('Tilt')}")
+                logger.info(
+                    f"📍 Device {device_ip} position "
+                    f"({'moving' if is_moving else 'idle'}): "
+                    f"Rot={payload.get('Rot')}, Tilt={payload.get('Tilt')}"
+                )
             
             # If device is no longer moving, clear the movement start time
             if not is_moving and device_ip in self.device_movement_start:

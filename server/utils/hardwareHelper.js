@@ -249,6 +249,56 @@ class HardwareHelper {
   }
 
   /**
+   * Drive servos back to ESP start/home position (MQTT type: resetPosition).
+   */
+  async resetPosition(device, speed = 1) {
+    try {
+      const deviceIp = device.taubenschiesser?.ip;
+      if (!deviceIp) {
+        throw new Error('Device IP not found');
+      }
+
+      const command = {
+        type: 'resetPosition',
+        speed: speed ? 1 : 0
+      };
+
+      if (this.useAwsIot && device.name) {
+        logger.info(`Sending resetPosition via AWS IoT to ${device.name}:`, command);
+        await awsIotHelper.publishCommand(device.name, command, 'commands');
+        return { transport: 'aws' };
+      }
+
+      const User = require('../models/User');
+      const user = await User.findById(device.owner);
+      if (!user) {
+        throw new Error('Device owner not found');
+      }
+
+      const mqttClient = await this.getMqttClient(device.owner, user.settings);
+      const topic = `taubenschiesser/${deviceIp}`;
+      await this.ensureDeviceSubscription(mqttClient, deviceIp);
+
+      logger.info(`Sending resetPosition via local MQTT to ${topic}:`, command);
+      await new Promise((resolve, reject) => {
+        mqttClient.publish(topic, JSON.stringify(command), (error) => {
+          if (error) {
+            logger.error('Failed to publish resetPosition MQTT message:', error);
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      return { transport: 'mqtt', deviceIp };
+    } catch (error) {
+      logger.error('Error resetting position:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Wait for device movement to complete
    */
   async waitForMovementComplete(device, movementContext = {}, options = {}) {

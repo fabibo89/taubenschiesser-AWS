@@ -249,6 +249,23 @@ router.post('/:id/pause', authenticateToken, async (req, res) => {
     device.lastSeen = new Date();
     await device.save();
 
+    // Return to ESP start/home position when pausing (app + Home Assistant)
+    let resetPosition = null;
+    if (device.taubenschiesser?.ip) {
+      try {
+        resetPosition = await hardwareHelper.resetPosition(device, 1);
+        logger.info(`resetPosition sent after pause for ${device.name}`, {
+          deviceId: device._id,
+          transport: resetPosition?.transport
+        });
+      } catch (resetError) {
+        logger.warn(`Failed to send resetPosition after pause for ${device.name}`, {
+          deviceId: device._id,
+          error: resetError?.message || String(resetError)
+        });
+      }
+    }
+
     // Emit Socket.IO Event für Echtzeit-Updates
     const io = req.app.get('io');
     if (io) {
@@ -267,7 +284,8 @@ router.post('/:id/pause', authenticateToken, async (req, res) => {
         id: device._id,
         name: device.name,
         monitorStatus: device.monitorStatus
-      }
+      },
+      resetPosition: Boolean(resetPosition)
     });
 
   } catch (error) {

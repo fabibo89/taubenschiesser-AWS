@@ -297,6 +297,20 @@ router.post('/monitor-event', async (req, res) => {
         device.hardwareMonitor.lastWaitingAt = new Date(timestamp || Date.now());
       }
 
+      // Persist servo angles so dashboard can show position immediately on reload
+      if (eventType === 'device_position' && data && typeof data === 'object') {
+        const rot = data.rotation ?? data.rot ?? data.position?.rot;
+        const tilt = data.tilt ?? data.position?.tilt;
+        if (typeof rot === 'number' || typeof tilt === 'number') {
+          const prev = device.lastKnownPosition || {};
+          device.lastKnownPosition = {
+            rot: typeof rot === 'number' ? rot : prev.rot,
+            tilt: typeof tilt === 'number' ? tilt : prev.tilt,
+            updatedAt: new Date(timestamp || Date.now())
+          };
+        }
+      }
+
       await device.save();
     } catch (persistError) {
       logger.warn('Failed to persist hardware monitor event on device', {

@@ -1233,6 +1233,7 @@ const Dashboard = () => {
 
       // Initialize waiting info from persisted hardwareMonitor (so it's not empty until next socket event)
       const waitingInit = {};
+      const positionsInit = {};
       devicesWithStatus.forEach(d => {
         const hm = d?.hardwareMonitor;
         const hmData = hm?.lastWaitingData || hm?.lastEventData;
@@ -1250,9 +1251,31 @@ const Dashboard = () => {
               : (hm?.lastEventAt ? new Date(hm.lastEventAt) : new Date())
           };
         }
+
+        const pos = d?.lastKnownPosition;
+        if (pos && (typeof pos.rot === 'number' || typeof pos.tilt === 'number')) {
+          positionsInit[d._id] = {
+            rot: typeof pos.rot === 'number' ? pos.rot : 0,
+            tilt: typeof pos.tilt === 'number' ? pos.tilt : 0
+          };
+        } else {
+          // Fallback: last monitor event may already carry angles
+          const ev = hm?.lastEventData;
+          const rot = ev?.rotation ?? ev?.rot ?? ev?.position?.rot;
+          const tilt = ev?.tilt ?? ev?.position?.tilt;
+          if (typeof rot === 'number' || typeof tilt === 'number') {
+            positionsInit[d._id] = {
+              rot: typeof rot === 'number' ? rot : 0,
+              tilt: typeof tilt === 'number' ? tilt : 0
+            };
+          }
+        }
       });
       if (Object.keys(waitingInit).length > 0) {
         setDeviceWaiting(prev => ({ ...prev, ...waitingInit }));
+      }
+      if (Object.keys(positionsInit).length > 0) {
+        setDevicePositions(prev => ({ ...positionsInit, ...prev }));
       }
 
       setDevices(devicesWithStatus);
