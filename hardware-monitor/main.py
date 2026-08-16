@@ -38,6 +38,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# YOLO model input size. Detection frames are prepared so that after route zoom
+# a target_size × target_size crop remains (working size ≈ target_size × zoom).
+DETECTION_INPUT_SIZE = 640
+
 
 def build_shoot_command(taubenschiesser: Optional[Dict] = None, overrides: Optional[Dict] = None) -> Dict:
     """Build ESP shoot MQTT payload from device taubenschiesser settings."""
@@ -1207,6 +1211,14 @@ class HardwareMonitor:
                     logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
                     resolved_ip = pi_ip
             
+            # Detection capture: pull square frame at 640×zoom so local zoom leaves 640.
+            # Panorama scan uses a separate full-res path and is unaffected.
+            zoom_factor = self.get_route_zoom_factor(device)
+            detection_side = max(
+                DETECTION_INPUT_SIZE,
+                int(round(DETECTION_INPUT_SIZE * zoom_factor))
+            )
+
             # Build URL with query parameters (flip, angle)
             base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
             query_params = []
@@ -1214,10 +1226,14 @@ class HardwareMonitor:
                 query_params.append("flip=true")
             if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
                 query_params.append(f"angle={pi_angle}")
-            if pi_square:
-                query_params.append("square=true")
-            if pi_resolution:
-                query_params.append(f"resolution={pi_resolution}")
+            # Always square for detection (matches YOLO 640×640 and equal H/V FoV).
+            query_params.append("square=true")
+            query_params.append(f"resolution={detection_side}")
+            if pi_square and pi_resolution and str(pi_resolution) != str(detection_side):
+                logger.debug(
+                    f"Pi detection overrides configured resolution={pi_resolution} "
+                    f"with {detection_side} (640×zoom={zoom_factor})"
+                )
             
             image_url = f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
             logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
@@ -1253,59 +1269,126 @@ class HardwareMonitor:
                 'camera': 'raspberry-pi'
             })
     
+    def get_route_zoom_factor(self, device: Dict) -> float:
+        """Current route zoom factor (1.0 if not in route mode / unavailable)."""
+        try:
+            actions = device.get('actions', {}) or {}
+            if actions.get('mode') != 'route':
+                return 1.0
+            route_coordinates = actions.get('route', {}).get('coordinates', []) or []
+            if not route_coordinates:
+                return 1.0
+            taubenschiesser_config = device.get('taubenschiesser', {})
+            device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            if route_index >= len(route_coordinates):
+                return 1.0
+            zoom = float(route_coordinates[route_index].get('zoom') or 1.0)
+            return max(1.0, zoom)
+        except (TypeError, ValueError):
+            return 1.0
+
+    @staticmethod
+    def _center_square_crop(frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        side = min(h, w)
+        x0 = (w - side) // 2
+        y0 = (h - side) // 2
+        return frame[y0:y0 + side, x0:x0 + side]
+
+    @staticmethod
+    def _resize_square(frame: np.ndarray, side: int) -> np.ndarray:
+        if side <= 0:
+            return frame
+        if frame.shape[0] == side and frame.shape[1] == side:
+            return frame
+        interp = cv2.INTER_AREA if min(frame.shape[0], frame.shape[1]) > side else cv2.INTER_LINEAR
+        return cv2.resize(frame, (side, side), interpolation=interp)
+
+    def prepare_detection_frames(
+        self,
+        frame: np.ndarray,
+        zoom_factor: float = 1.0,
+        target_size: int = DETECTION_INPUT_SIZE,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prepare detection images so YOLO always sees ~target_size after zoom.
+
+        working  = square center crop resized to (target_size × zoom)
+        zoomed   = center crop of working to target_size × target_size
+
+        Panorama / full-res capture paths are separate and must not use this.
+        """
+        zoom = max(1.0, float(zoom_factor) or 1.0)
+        working_side = max(target_size, int(round(target_size * zoom)))
+        square = self._center_square_crop(frame)
+        working = self._resize_square(square, working_side)
+        if working_side == target_size:
+            return working, working
+        start = (working_side - target_size) // 2
+        end = start + target_size
+        zoomed = working[start:end, start:end]
+        return working, zoomed
+
     async def process_single_camera(self, device: Dict, original_frame: np.ndarray, camera_source: str, camera_label: str = None):
-        """Process a single camera frame (Tapo or Raspberry Pi)"""
+        """Process a single camera frame (Tapo or Raspberry Pi) for detection."""
         try:
             height, width = original_frame.shape[:2]
             logger.info(f"✅ Frame captured successfully from {camera_source}: {width}x{height} pixels")
-            
-            # Send original image with camera label
-            _, buffer = cv2.imencode('.jpg', original_frame)
+
+            zoom_factor = self.get_route_zoom_factor(device)
+            detection_original, zoomed_frame = self.prepare_detection_frames(
+                original_frame, zoom_factor
+            )
+            det_h, det_w = detection_original.shape[:2]
+            zoom_h, zoom_w = zoomed_frame.shape[:2]
+            logger.info(
+                f"🎯 Detection prep ({camera_source}): capture {width}x{height} → "
+                f"working {det_w}x{det_h} (640×zoom={zoom_factor:g}) → zoomed {zoom_w}x{zoom_h}"
+            )
+
+            # Live monitor / DB use detection-sized frames (not full camera res)
+            _, buffer = cv2.imencode('.jpg', detection_original)
             original_image_base64 = base64.b64encode(buffer).decode('utf-8')
-            
+
             event_data = {
-                'width': width,
-                'height': height,
+                'width': det_w,
+                'height': det_h,
+                'capture_width': width,
+                'capture_height': height,
+                'zoom_factor': zoom_factor,
                 'image': f"data:image/jpeg;base64,{original_image_base64}",
                 'camera': camera_source
             }
             if camera_label:
                 event_data['camera_label'] = camera_label
-            
+
             await self.send_monitor_event(device, 'image_captured', event_data)
-            
-            # Apply zoom if in route mode (only for Tapo, Raspberry Pi handles zoom itself)
-            if camera_source == 'tapo':
-                zoomed_frame = await self.apply_zoom_to_frame(device, original_frame)
-            else:
-                # Raspberry Pi handles zoom itself via query parameters
-                zoomed_frame = original_frame
-            
-            # Send zoomed image if different
-            if zoomed_frame is not original_frame:
-                zoom_height, zoom_width = zoomed_frame.shape[:2]
+
+            if zoomed_frame is not detection_original:
                 _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
                 zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
-                
+
                 zoom_event_data = {
-                    'width': zoom_width,
-                    'height': zoom_height,
-                    'zoom_factor': round(width / zoom_width, 2) if zoom_width > 0 else 1,
+                    'width': zoom_w,
+                    'height': zoom_h,
+                    'zoom_factor': zoom_factor,
                     'image': f"data:image/jpeg;base64,{zoomed_image_base64}",
                     'camera': camera_source
                 }
                 if camera_label:
                     zoom_event_data['camera_label'] = camera_label
-                
+
                 await self.send_monitor_event(device, 'image_zoomed', zoom_event_data)
-            
-            # Analyze with CV service (using zoomed frame for better detection)
+
             await self.send_monitor_event(device, 'analyzing', {
                 'message': f'Analyzing image with CV service ({camera_source})',
                 'camera': camera_source
             })
-            await self.analyze_frame_for_birds(device, original_frame, zoomed_frame, camera_source)
-                
+            await self.analyze_frame_for_birds(
+                device, detection_original, zoomed_frame, camera_source
+            )
+
         except Exception as e:
             logger.error(f"Error processing camera {camera_source}: {e}")
             await self.send_monitor_event(device, 'error', {

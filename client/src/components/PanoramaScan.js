@@ -46,6 +46,7 @@ import PanoramaGlobe from './PanoramaGlobe';
 // Overlap between adjacent scan positions (degrees). ~50% of FoV (41°) → step 21°.
 const FOV_OVERLAP_DEG = 20;
 const HUGIN_ASYNC_METHODS = ['hugin', 'cylindrical'];
+const PANORAMA_SAVE_MAX_BASE64_BYTES = 6.5 * 1024 * 1024;
 const STITCH_METHODS = [
   { id: 'grid', label: 'Grid (Sphärisch)' },
   { id: 'hugin', label: 'Hugin (Equirect.)' },
@@ -392,6 +393,79 @@ function generateScanPositions(minRot, maxRot, minTilt, maxTilt, stepRot, stepTi
     }
   }
   return positions;
+}
+
+function panoramaDataUrlBase64Bytes(dataUrl) {
+  const idx = dataUrl.indexOf(',');
+  const base64 = idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+  return base64.length;
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function canvasToJpegDataUrl(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error('JPEG-Kodierung fehlgeschlagen'));
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      },
+      'image/jpeg',
+      quality
+    );
+  });
+}
+
+async function compressPanoramaForSave(dataUrl, maxBase64Bytes = PANORAMA_SAVE_MAX_BASE64_BYTES) {
+  if (!dataUrl?.startsWith('data:image') || panoramaDataUrlBase64Bytes(dataUrl) <= maxBase64Bytes) {
+    return dataUrl;
+  }
+
+  const img = await loadImageElement(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+
+  let quality = 0.88;
+  let compressed = dataUrl;
+  while (quality >= 0.4) {
+    compressed = await canvasToJpegDataUrl(canvas, quality);
+    if (panoramaDataUrlBase64Bytes(compressed) <= maxBase64Bytes) {
+      return compressed;
+    }
+    quality -= 0.08;
+  }
+
+  let scale = 0.85;
+  while (scale >= 0.5) {
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    compressed = await canvasToJpegDataUrl(canvas, 0.82);
+    if (panoramaDataUrlBase64Bytes(compressed) <= maxBase64Bytes) {
+      return compressed;
+    }
+    scale -= 0.1;
+  }
+
+  throw new Error(
+    `Panorama auch nach Kompression zu groß (${(panoramaDataUrlBase64Bytes(compressed) / 1024 / 1024).toFixed(2)} MB). Bitte als JPG herunterladen.`
+  );
 }
 
 const PanoramaPreview = ({ panoramaUrl, frames, gridInfo, fov, showBorders, showCameraGrid, showGraticule }) => {
@@ -879,10 +953,19 @@ const PanoramaScan = () => {
     if (!result) return;
     setSavingResultMethod(method);
     try {
+      const panoramaUrl = await compressPanoramaForSave(result.panorama_url);
+      const wasCompressed = panoramaUrl !== result.panorama_url;
+      const panoramaSize = wasCompressed
+        ? await loadImageElement(panoramaUrl).then((img) => ({
+          width: img.naturalWidth,
+          height: img.naturalHeight
+        }))
+        : result.panorama_size;
+
       await axios.post(`/api/devices/${selectedDeviceId}/panorama-scan/result/save`, {
         method,
-        panorama_url: result.panorama_url,
-        panorama_size: result.panorama_size,
+        panorama_url: panoramaUrl,
+        panorama_size: panoramaSize,
         frames: result.frames,
         statistics: result.statistics,
         grid_info: result.grid_info,
@@ -892,7 +975,11 @@ const PanoramaScan = () => {
         ...prev,
         [method]: { ...prev[method], persisted: true }
       }));
-      toast.success(`Panorama (${method}) gespeichert`);
+      toast.success(
+        wasCompressed
+          ? `Panorama (${method}) gespeichert (JPEG komprimiert)`
+          : `Panorama (${method}) gespeichert`
+      );
     } catch (err) {
       toast.error(err.response?.data?.error || err.message || 'Speichern fehlgeschlagen');
     } finally {

@@ -104,9 +104,12 @@ function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
         src={imageUrl}
         alt="Detection Thumbnail"
         sx={{
-          width: 80,
-          height: 60,
-          objectFit: 'cover',
+          width: 'auto',
+          height: 'auto',
+          maxWidth: 120,
+          maxHeight: 80,
+          objectFit: 'contain',
+          display: 'block',
           borderRadius: 1,
           border: '1px solid #e0e0e0',
           cursor: 'pointer'
