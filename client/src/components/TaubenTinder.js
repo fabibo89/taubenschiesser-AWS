@@ -304,6 +304,31 @@ const TaubenTinder = () => {
     actionPromiseRef.current = action === 'delete' ? 'pending_delete' : performSwipeAction(action);
   };
 
+  const handleSwipeActionRef = useRef(handleSwipeAction);
+  handleSwipeActionRef.current = handleSwipeAction;
+
+  // Arrow keys: ← keine Taube, → Taube, ↑ löschen
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (deleteConfirmOpen) return;
+      const tag = e.target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handleSwipeActionRef.current('no_pigeon');
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleSwipeActionRef.current('confirm_pigeon');
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        handleSwipeActionRef.current('delete');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [deleteConfirmOpen]);
+
   const getFlyAwayTarget = (direction) => {
     const el = cardRef.current;
     const w = el?.clientWidth ?? 600;
@@ -552,7 +577,7 @@ const TaubenTinder = () => {
         Tauben-Tinder
       </Typography>
       <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 2 }}>
-        {displayPosition} / {displayTotal} unklassifiziert — Links-Klick / Swipe links: Keine Taube ✗ · Rechts-Klick / Swipe rechts: Taube ✓ · Mittelklick / Swipe hoch: Löschen
+        {displayPosition} / {displayTotal} unklassifiziert — ← / Links-Klick: Keine Taube ✗ · → / Rechts-Klick: Taube ✓ · ↑ / Mittelklick: Löschen
       </Typography>
 
       <Box
@@ -821,7 +846,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('no_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Keine Taube (Links-Klick / Links swipen)"
+            title="Keine Taube (← / Links-Klick / Links swipen)"
           >
             <CloseIcon fontSize="large" />
           </IconButton>
@@ -831,7 +856,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('delete')}
             sx={{ width: 64, height: 64 }}
-            title="Löschen (Mittelklick / Hoch swipen)"
+            title="Löschen (↑ / Mittelklick / Hoch swipen)"
           >
             <DeleteIcon fontSize="large" />
           </IconButton>
@@ -841,7 +866,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('confirm_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Taube bestätigen (Rechts-Klick / Rechts swipen)"
+            title="Taube bestätigen (→ / Rechts-Klick / Rechts swipen)"
           >
             <FavoriteIcon fontSize="large" />
           </IconButton>
