@@ -6,6 +6,7 @@ const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const { findDuplicateGroups } = require('../utils/duplicateDetections');
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
 
 /** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
@@ -490,6 +491,94 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
       error: 'Server error',
       details: error.message
     });
+  }
+});
+
+// Preview duplicate bird detections (dry-run). Must be before /detections/:id
+router.get('/detections/duplicates/preview', authenticateToken, async (req, res) => {
+  try {
+    const windowMinutes = Math.min(60, Math.max(0.5, parseFloat(req.query.windowMinutes) || 5));
+    const windowMs = windowMinutes * 60 * 1000;
+    const deviceIdFilter = req.query.deviceId || null;
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id name');
+    let deviceIds = devices.map((d) => d._id);
+    if (deviceIdFilter) {
+      const allowed = deviceIds.some((id) => id.toString() === deviceIdFilter);
+      if (!allowed) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      deviceIds = deviceIds.filter((id) => id.toString() === deviceIdFilter);
+    }
+    if (deviceIds.length === 0) {
+      return res.json({ windowMinutes, groups: [], totalDuplicates: 0, scanned: 0 });
+    }
+
+    const deviceNameById = new Map(devices.map((d) => [d._id.toString(), d.name || 'Unbekannt']));
+
+    const docs = await Detection.find({
+      device: { $in: deviceIds },
+      'camera_position.rotation': { $exists: true, $ne: null },
+      'camera_position.tilt': { $exists: true, $ne: null }
+    })
+      .select('_id device processedAt camera_position detections target_bird classification_status shotFired zoom_factor image_info')
+      .populate('device', 'name')
+      .sort({ processedAt: 1 })
+      .lean();
+
+    const { groups, duplicateIds } = findDuplicateGroups(docs, windowMs);
+
+    const enriched = groups.map((g) => {
+      const deviceId = g.device?._id?.toString?.() || g.device?.toString?.() || '';
+      return {
+        ...g,
+        deviceId,
+        deviceName: g.device?.name || deviceNameById.get(deviceId) || 'Unbekannt'
+      };
+    });
+
+    res.json({
+      windowMinutes,
+      scanned: docs.length,
+      groups: enriched,
+      totalDuplicates: duplicateIds.length,
+      duplicateIds
+    });
+  } catch (error) {
+    logger.error('Duplicate preview error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
+  }
+});
+
+// Delete duplicate detections by id list (must belong to user's devices)
+router.post('/detections/duplicates/delete', authenticateToken, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    if (ids.length > 5000) {
+      return res.status(400).json({ error: 'Too many ids (max 5000)' });
+    }
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map((d) => d._id);
+    if (deviceIds.length === 0) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await Detection.deleteMany({
+      _id: { $in: ids },
+      device: { $in: deviceIds }
+    });
+
+    res.json({
+      deleted: result.deletedCount || 0,
+      requested: ids.length
+    });
+  } catch (error) {
+    logger.error('Duplicate delete error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 

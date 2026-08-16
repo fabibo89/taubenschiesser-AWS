@@ -21,7 +21,10 @@ import {
   DialogActions,
   IconButton,
   LinearProgress,
-  CircularProgress
+  CircularProgress,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -33,11 +36,116 @@ import {
   Cancel as CancelIcon,
   ArrowBack as ArrowBackIcon,
   ArrowForward as ArrowForwardIcon,
-  Thermostat as ThermostatIcon
+  Thermostat as ThermostatIcon,
+  DeleteSweep as DeleteSweepIcon,
+  ExpandMore as ExpandMoreIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+
+function formatDeltaSeconds(sec) {
+  const n = Math.max(0, Math.round(Number(sec) || 0));
+  if (n < 60) return `${n} Sek`;
+  const m = Math.floor(n / 60);
+  const s = n % 60;
+  return s ? `${m} Min ${s} Sek` : `${m} Min`;
+}
+
+function DuplicateThumb({ detectionId, birdBoxes, imageInfo, imageUrl, onLoadRequest, onOpen, caption, subcaption, borderColor }) {
+  const rootRef = useRef(null);
+  const requestedRef = useRef(false);
+
+  useEffect(() => {
+    if (!detectionId || imageUrl !== undefined || requestedRef.current) return;
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      requestedRef.current = true;
+      onLoadRequest(detectionId);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        if (requestedRef.current) return;
+        requestedRef.current = true;
+        onLoadRequest(detectionId);
+        obs.disconnect();
+      },
+      { root: null, rootMargin: '120px', threshold: 0.01 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [detectionId, imageUrl, onLoadRequest]);
+
+  const imgW = imageInfo?.zoomed_size?.width || imageInfo?.original_size?.width || 640;
+  const imgH = imageInfo?.zoomed_size?.height || imageInfo?.original_size?.height || 640;
+
+  return (
+    <Box ref={rootRef} sx={{ width: 160, flexShrink: 0 }}>
+      <Typography variant="caption" display="block" fontWeight={600} noWrap title={caption}>
+        {caption}
+      </Typography>
+      {subcaption && (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+          {subcaption}
+        </Typography>
+      )}
+      <Box
+        onClick={() => onOpen?.(detectionId)}
+        title="Große Ansicht öffnen"
+        sx={{
+          position: 'relative',
+          width: 160,
+          height: 160,
+          bgcolor: '#000',
+          borderRadius: 1,
+          border: `2px solid ${borderColor || '#90a4ae'}`,
+          overflow: 'hidden',
+          cursor: onOpen ? 'pointer' : 'default'
+        }}
+      >
+        {typeof imageUrl === 'string' && imageUrl ? (
+          <>
+            <Box
+              component="img"
+              src={imageUrl}
+              alt=""
+              sx={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+            />
+            {(birdBoxes || []).map((b, i) => {
+              const left = (b.x1 / imgW) * 100;
+              const top = (b.y1 / imgH) * 100;
+              const width = ((b.x2 - b.x1) / imgW) * 100;
+              const height = ((b.y2 - b.y1) / imgH) * 100;
+              return (
+                <Box
+                  key={i}
+                  sx={{
+                    position: 'absolute',
+                    left: `${left}%`,
+                    top: `${top}%`,
+                    width: `${width}%`,
+                    height: `${height}%`,
+                    border: '2px solid #ff1744',
+                    boxSizing: 'border-box',
+                    pointerEvents: 'none'
+                  }}
+                />
+              );
+            })}
+          </>
+        ) : (
+          <Box display="flex" alignItems="center" justifyContent="center" height="100%">
+            <Typography variant="caption" color="grey.400">
+              {imageUrl === null ? 'Kein Bild' : 'Lädt…'}
+            </Typography>
+          </Box>
+        )}
+      </Box>
+    </Box>
+  );
+}
 
 function formatTimeDiffAtPosition(seconds, direction) {
   if (seconds < 60) {
@@ -155,20 +263,51 @@ const Detections = () => {
   const imageByDetectionIdRef = useRef({});
   imageByDetectionIdRef.current = imageByDetectionId;
 
-  const loadImageForDetection = useCallback(async (id) => {
+  const [dupDialogOpen, setDupDialogOpen] = useState(false);
+  const [dupWindowMinutes, setDupWindowMinutes] = useState(5);
+  const [dupLoading, setDupLoading] = useState(false);
+  const [dupDeleting, setDupDeleting] = useState(false);
+  const [dupPreview, setDupPreview] = useState(null);
+  const imageLoadQueueRef = useRef({ pending: [], active: 0, maxConcurrent: 3 });
+
+  const loadImageForDetection = useCallback((id) => {
     const idStr = typeof id === 'string' ? id : id?.toString?.();
-    if (!idStr || imageByDetectionIdRef.current[idStr] !== undefined) return;
-    setImageByDetectionId(prev => {
-      if (prev[idStr] !== undefined) return prev;
-      return { ...prev, [idStr]: 'loading' };
-    });
-    try {
-      const response = await axios.get(`/api/cv/detections/${idStr}/image`);
-      const url = response.data.zoomed_image?.url || response.data.image?.url || null;
-      setImageByDetectionId(prev => ({ ...prev, [idStr]: url }));
-    } catch {
-      setImageByDetectionId(prev => ({ ...prev, [idStr]: null }));
-    }
+    if (!idStr) return;
+    if (imageByDetectionIdRef.current[idStr] !== undefined) return;
+
+    const q = imageLoadQueueRef.current;
+    if (q.pending.includes(idStr)) return;
+    q.pending.push(idStr);
+
+    const pump = () => {
+      while (q.active < q.maxConcurrent && q.pending.length > 0) {
+        const nextId = q.pending.shift();
+        if (!nextId) break;
+        if (imageByDetectionIdRef.current[nextId] !== undefined) continue;
+
+        q.active += 1;
+        setImageByDetectionId((prev) => {
+          if (prev[nextId] !== undefined) return prev;
+          return { ...prev, [nextId]: 'loading' };
+        });
+
+        axios
+          .get(`/api/cv/detections/${nextId}/image`)
+          .then((response) => {
+            const url = response.data.zoomed_image?.url || response.data.image?.url || null;
+            setImageByDetectionId((prev) => ({ ...prev, [nextId]: url }));
+          })
+          .catch(() => {
+            setImageByDetectionId((prev) => ({ ...prev, [nextId]: null }));
+          })
+          .finally(() => {
+            q.active = Math.max(0, q.active - 1);
+            pump();
+          });
+      }
+    };
+
+    pump();
   }, []);
 
   useEffect(() => {
@@ -406,6 +545,59 @@ const Detections = () => {
     } catch (error) {
       console.error('Error deleting detection:', error);
       alert('Fehler beim Löschen der Erkennung');
+    }
+  };
+
+  const handleOpenDupDialog = () => {
+    setDupPreview(null);
+    setDupDialogOpen(true);
+  };
+
+  const handleCloseDupDialog = () => {
+    if (dupDeleting) return;
+    setDupDialogOpen(false);
+  };
+
+  const handleScanDuplicates = async () => {
+    setDupLoading(true);
+    setDupPreview(null);
+    imageLoadQueueRef.current.pending = [];
+    try {
+      const params = new URLSearchParams();
+      params.set('windowMinutes', String(dupWindowMinutes || 5));
+      if (filters.deviceId) params.set('deviceId', filters.deviceId);
+      const res = await axios.get(`/api/cv/detections/duplicates/preview?${params}`);
+      setDupPreview(res.data);
+      if (!res.data.groups?.length) {
+        toast.info('Keine Duplikate gefunden');
+      }
+    } catch (error) {
+      console.error('Duplicate preview error:', error);
+      toast.error('Duplikat-Scan fehlgeschlagen');
+    } finally {
+      setDupLoading(false);
+    }
+  };
+
+  const handleDeleteDuplicates = async () => {
+    const ids = dupPreview?.duplicateIds || [];
+    if (!ids.length) return;
+    const ok = window.confirm(
+      `${ids.length} doppelte Erkennung(en) wirklich löschen? Die jeweils erste („führende“) bleibt erhalten.`
+    );
+    if (!ok) return;
+    setDupDeleting(true);
+    try {
+      const res = await axios.post('/api/cv/detections/duplicates/delete', { ids });
+      toast.success(`${res.data.deleted} Duplikate gelöscht`);
+      setDupDialogOpen(false);
+      setDupPreview(null);
+      await fetchDetections();
+    } catch (error) {
+      console.error('Duplicate delete error:', error);
+      toast.error('Löschen der Duplikate fehlgeschlagen');
+    } finally {
+      setDupDeleting(false);
     }
   };
 
@@ -770,6 +962,17 @@ const Detections = () => {
                 Filter anwenden
               </Button>
             </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <Button
+                variant="outlined"
+                color="warning"
+                startIcon={<DeleteSweepIcon />}
+                onClick={handleOpenDupDialog}
+                fullWidth
+              >
+                Duplikate prüfen
+              </Button>
+            </Grid>
             {/* Classification Status Filter Buttons */}
             <Grid item xs={12}>
               <Box display="flex" gap={1} flexWrap="wrap">
@@ -850,6 +1053,7 @@ const Detections = () => {
         onClose={handleCloseImageDialog}
         maxWidth="lg"
         fullWidth
+        sx={{ zIndex: (theme) => theme.zIndex.modal + 2 }}
       >
         <DialogTitle>
           <Box>
@@ -1323,6 +1527,131 @@ const Detections = () => {
               Erkennung löschen
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Duplicate cleanup dialog (dry-run + delete) */}
+      <Dialog
+        open={dupDialogOpen}
+        onClose={handleCloseDupDialog}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>Doppelte Erkennungen</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" paragraph>
+            Gleiche Position (Rot/Tilt), innerhalb des Zeitfensters, überlappende Vogel-Bounding-Box.
+            Die erste Erkennung bleibt; spätere werden als Duplikat vorgeschlagen.
+            {filters.deviceId ? ' Filter: aktuelles Gerät.' : ''}
+          </Typography>
+          <Box display="flex" gap={2} alignItems="center" flexWrap="wrap" mb={2}>
+            <TextField
+              label="Fenster (Minuten)"
+              type="number"
+              size="small"
+              value={dupWindowMinutes}
+              onChange={(e) => setDupWindowMinutes(Math.max(0.5, Number(e.target.value) || 5))}
+              inputProps={{ min: 0.5, max: 60, step: 0.5 }}
+              sx={{ width: 160 }}
+            />
+            <Button
+              variant="contained"
+              onClick={handleScanDuplicates}
+              disabled={dupLoading || dupDeleting}
+              startIcon={dupLoading ? <CircularProgress size={16} color="inherit" /> : <SearchIcon />}
+            >
+              Dry-Run starten
+            </Button>
+          </Box>
+
+          {dupPreview && (
+            <Box mb={2}>
+              <Typography variant="body2">
+                Gescannt: {dupPreview.scanned} · Gruppen: {dupPreview.groups?.length || 0} · zu löschen:{' '}
+                <strong>{dupPreview.totalDuplicates || 0}</strong>
+              </Typography>
+            </Box>
+          )}
+
+          {dupPreview?.groups?.length > 0 && (
+            <Box display="flex" flexDirection="column" gap={1}>
+              <Typography variant="caption" color="text.secondary">
+                Gruppen aufklappen, um Vorschaubilder zu laden (max. 3 parallel — vermeidet 429).
+              </Typography>
+              {dupPreview.groups.map((group, groupIndex) => {
+                const keepId = group.keep?._id?.toString?.() || group.keep?._id;
+                return (
+                  <Accordion
+                    key={keepId}
+                    disableGutters
+                    defaultExpanded={groupIndex < 2}
+                    TransitionProps={{ unmountOnExit: true }}
+                  >
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <Typography variant="subtitle2">
+                        {group.deviceName || 'Gerät'} · R: {group.rotation}° / T: {group.tilt}° ·{' '}
+                        {group.duplicates.length} Duplikat{group.duplicates.length === 1 ? '' : 'e'}
+                      </Typography>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Box display="flex" gap={2} flexWrap="wrap" alignItems="flex-start">
+                        <DuplicateThumb
+                          detectionId={keepId}
+                          birdBoxes={group.keep.birdBoxes}
+                          imageInfo={group.keep.image_info}
+                          imageUrl={imageByDetectionId[keepId]}
+                          onLoadRequest={loadImageForDetection}
+                          onOpen={(id) => handleOpenImageDialog({ _id: id })}
+                          caption="Behalten (führend)"
+                          subcaption={
+                            group.keep.processedAt
+                              ? new Date(group.keep.processedAt).toLocaleString()
+                              : ''
+                          }
+                          borderColor="#2e7d32"
+                        />
+                        {group.duplicates.map((dup) => {
+                          const dupId = dup._id?.toString?.() || dup._id;
+                          return (
+                            <DuplicateThumb
+                              key={dupId}
+                              detectionId={dupId}
+                              birdBoxes={dup.birdBoxes}
+                              imageInfo={dup.image_info}
+                              imageUrl={imageByDetectionId[dupId]}
+                              onLoadRequest={loadImageForDetection}
+                              onOpen={(id) => handleOpenImageDialog({ _id: id })}
+                              caption={`Löschen · Δt ${formatDeltaSeconds(dup.deltaSeconds)}`}
+                              subcaption={
+                                dup.processedAt
+                                  ? new Date(dup.processedAt).toLocaleString()
+                                  : ''
+                              }
+                              borderColor="#c62828"
+                            />
+                          );
+                        })}
+                      </Box>
+                    </AccordionDetails>
+                  </Accordion>
+                );
+              })}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDupDialog} disabled={dupDeleting}>
+            Schließen
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={!dupPreview?.duplicateIds?.length || dupLoading || dupDeleting}
+            onClick={handleDeleteDuplicates}
+            startIcon={dupDeleting ? <CircularProgress size={16} color="inherit" /> : <DeleteSweepIcon />}
+          >
+            {dupPreview?.totalDuplicates || 0} Duplikate löschen
+          </Button>
         </DialogActions>
       </Dialog>
 
