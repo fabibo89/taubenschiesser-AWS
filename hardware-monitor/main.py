@@ -109,7 +109,8 @@ class HardwareMonitor:
         # - when MAX is reached, we hold position and keep analyzing (no move) until birds are found
         self.device_dynamic_wait_threshold = {}
         self.device_watertank_reported = {}
-        self.movement_queue = {}    # Queue movements per device
+        self.movement_queue = {}    # Next route index to move to
+        self.device_route_at = {}   # Last arrived route index (physical position for detections)
         self.device_movement_start = {}  # Track when movement started
         self.last_position_update = {}  # Track last position update time for throttling
         
@@ -703,7 +704,24 @@ class HardwareMonitor:
                 tilt = 180 - tilt
         
         return rotation, tilt
-    
+
+    def get_arrived_route_index(self, device_ip: Optional[str], route_len: int = 0) -> int:
+        """Route index where the device last arrived (for zoom/save/shoot).
+
+        Prefer device_route_at over movement_queue: after a move cycle, movement_queue
+        already points at the *next* waypoint while the camera is still at the previous one
+        (e.g. hold re-analysis without moving).
+        """
+        if not device_ip:
+            return 0
+        if device_ip in self.device_route_at:
+            idx = int(self.device_route_at[device_ip])
+        else:
+            idx = int(self.movement_queue.get(device_ip, 0))
+        if route_len > 0:
+            return idx % route_len
+        return idx
+
     async def move_device_route(self, device: Dict, time_since_last_seen: float = None):
         """Move device along configured route"""
         device_ip = None
@@ -781,6 +799,8 @@ class HardwareMonitor:
             # Wait for movement to complete before analyzing
             await self.wait_for_movement_complete(device_ip)
             completed_move = True
+            # Remember physical route point before queue advances to the next waypoint
+            self.device_route_at[device_ip] = route_index
             
             # Send movement complete event
             await self.send_monitor_event(device, 'device_stopped', {
@@ -1291,7 +1311,7 @@ class HardwareMonitor:
                 return 1.0
             taubenschiesser_config = device.get('taubenschiesser', {})
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
-            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            route_index = self.get_arrived_route_index(device_ip, len(route_coordinates))
             if route_index >= len(route_coordinates):
                 return 1.0
             zoom = float(route_coordinates[route_index].get('zoom') or 1.0)
@@ -1430,8 +1450,8 @@ class HardwareMonitor:
                 logger.info(f"⏭️ No zoom for device {device_ip} - no route coordinates")
                 return frame
             
-            # Get current route position
-            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            # Get current route position (last arrived — not next move target)
+            route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
             
             if route_index >= len(route_coordinates):
                 logger.warning(f"⏭️ No zoom for device {device_ip} - route index {route_index} out of range")
@@ -1581,7 +1601,7 @@ class HardwareMonitor:
                                 actions = device.get('actions', {})
                                 if actions.get('mode') == 'route':
                                     route_coordinates = actions.get('route', {}).get('coordinates', [])
-                                    route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                                    route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
                                     if route_index < len(route_coordinates):
                                         current_rotation = float(route_coordinates[route_index].get('rotation') or 0)
                                         current_tilt = float(route_coordinates[route_index].get('tilt') or 0)
@@ -1590,7 +1610,7 @@ class HardwareMonitor:
                             actions = device.get('actions', {})
                             if actions.get('mode') == 'route' and device_ip:
                                 route_coordinates = actions.get('route', {}).get('coordinates', [])
-                                route_index = self.movement_queue.get(device_ip, 0)
+                                route_index = self.get_arrived_route_index(device_ip, len(route_coordinates))
                                 if route_index < len(route_coordinates):
                                     zoom_factor = float(route_coordinates[route_index].get('zoom') or 1.0)
                             self._enrich_detections_esp_angles(
@@ -1741,7 +1761,7 @@ class HardwareMonitor:
             zoom_factor = 1.0
             actions = device.get('actions', {})
             route_coordinates = actions.get('route', {}).get('coordinates', []) if actions.get('mode') == 'route' else []
-            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
             if actions.get('mode') == 'route' and route_index < len(route_coordinates):
                 zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
 
@@ -1904,7 +1924,7 @@ class HardwareMonitor:
                 route_coordinates = actions.get('route', {}).get('coordinates', [])
                 taubenschiesser_config = device.get('taubenschiesser', {})
                 device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
-                route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
                 if route_index < len(route_coordinates):
                     zoom_factor = route_coordinates[route_index].get('zoom', 1.0)
             
@@ -1945,9 +1965,9 @@ class HardwareMonitor:
             camera_position = None
             actions = device.get('actions', {})
             route_coordinates = actions.get('route', {}).get('coordinates', [])
-            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
             if actions.get('mode') == 'route' and route_coordinates and route_index < len(route_coordinates):
-                # Use the route target position we just drove to (avoids wrong position from MQTT timing)
+                # Use the route point we last arrived at (not movement_queue next-target)
                 original_rotation = route_coordinates[route_index].get('rotation', 0)
                 original_tilt = route_coordinates[route_index].get('tilt', 0)
                 rot, tilt = self.apply_position_inversion(device, int(original_rotation), int(original_tilt))
@@ -2194,7 +2214,7 @@ class HardwareMonitor:
                 actions = device.get('actions', {})
                 if actions.get('mode') == 'route':
                     route_coordinates = actions.get('route', {}).get('coordinates', [])
-                    route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+                    route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
                     if route_index < len(route_coordinates):
                         current_pos = route_coordinates[route_index]
                         original_rotation = current_pos.get('rotation', 0)
@@ -2309,7 +2329,7 @@ class HardwareMonitor:
             actions = device.get('actions', {})
             mode = actions.get('mode', 'unknown')
             route_coords = actions.get('route', {}).get('coordinates', [])
-            route_index = self.movement_queue.get(device_ip, 0) if device_ip else 0
+            route_index = self.get_arrived_route_index(device_ip, len(route_coords)) if device_ip else 0
             has_target = bool(target_bird)
             has_bbox = bool(target_bird and target_bird.get('bbox')) if target_bird else False
             image_info = getattr(self, 'last_image_info', None)
