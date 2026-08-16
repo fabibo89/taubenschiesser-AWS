@@ -330,11 +330,10 @@ const Detections = () => {
     }
   };
 
-  const loadDetectionByIndex = async (index) => {
+  const loadDetectionByIndex = useCallback(async (index) => {
     if (index < 0 || index >= detections.length) return;
     const lean = detections[index];
     setSelectedDetectionLoading(true);
-    setSelectedDetection(null);
     try {
       const response = await axios.get(`/api/cv/detections/${lean._id}`);
       setSelectedDetection(response.data);
@@ -344,23 +343,43 @@ const Detections = () => {
     } finally {
       setSelectedDetectionLoading(false);
     }
-  };
+  }, [detections]);
 
-  const handlePreviousDetection = () => {
-    if (!selectedDetection || detections.length === 0) return;
-    const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
+  const handlePreviousDetection = useCallback(() => {
+    if (!selectedDetection || detections.length === 0 || selectedDetectionLoading) return;
+    const currentIndex = detections.findIndex((d) => d._id === selectedDetection._id);
     if (currentIndex > 0) {
       loadDetectionByIndex(currentIndex - 1);
     }
-  };
+  }, [selectedDetection, detections, selectedDetectionLoading, loadDetectionByIndex]);
 
-  const handleNextDetection = () => {
-    if (!selectedDetection || detections.length === 0) return;
-    const currentIndex = detections.findIndex(d => d._id === selectedDetection._id);
-    if (currentIndex < detections.length - 1) {
+  const handleNextDetection = useCallback(() => {
+    if (!selectedDetection || detections.length === 0 || selectedDetectionLoading) return;
+    const currentIndex = detections.findIndex((d) => d._id === selectedDetection._id);
+    if (currentIndex >= 0 && currentIndex < detections.length - 1) {
       loadDetectionByIndex(currentIndex + 1);
     }
-  };
+  }, [selectedDetection, detections, selectedDetectionLoading, loadDetectionByIndex]);
+
+  useEffect(() => {
+    if (!imageDialogOpen) return undefined;
+
+    const onKeyDown = (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || e.target?.isContentEditable) return;
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handlePreviousDetection();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNextDetection();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [imageDialogOpen, handlePreviousDetection, handleNextDetection]);
 
   const currentDetectionIndex = selectedDetection 
     ? detections.findIndex(d => d._id === selectedDetection._id)
@@ -872,10 +891,12 @@ const Detections = () => {
               <CircularProgress />
             </Box>
           ) : selectedDetection && (
-            <Grid container spacing={2}>
-              {/* Original Image mit Bounding-Boxen (bei Zoom = 1 nur dieses eine Bild; bei Zoom > 1 daneben Gezoomtes) */}
+            <Grid container spacing={2} alignItems="flex-start">
+              {/* Left: images */}
+              <Grid item xs={12} md={7}>
+                <Box display="flex" flexDirection="column" gap={2}>
+              {/* Original Image mit Bounding-Boxen (bei Zoom = 1 nur dieses eine Bild; bei Zoom > 1 darunter Gezoomtes) */}
               {selectedDetection.image?.url && (
-                <Grid item xs={12} md={selectedDetection.zoomed_image?.url && ((Number(selectedDetection.zoom_factor) || 1) > 1) ? 6 : 12}>
                   <Card>
                     <CardContent>
                       <Typography variant="subtitle1" gutterBottom>
@@ -886,7 +907,7 @@ const Detections = () => {
                         sx={{
                           position: 'relative',
                           display: 'inline-block',
-                          maxWidth: '50%',
+                          maxWidth: '100%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
                           overflow: 'visible',
@@ -966,12 +987,10 @@ const Detections = () => {
                       )}
                     </CardContent>
                   </Card>
-                </Grid>
               )}
 
               {/* Zoomed Image nur anzeigen wenn Zoom > 1 (sonst nur 1 Bild) */}
               {selectedDetection.zoomed_image?.url && ((Number(selectedDetection.zoom_factor) || 1) > 1) && (
-                <Grid item xs={12} md={selectedDetection.image?.url ? 6 : 12}>
                   <Card>
                     <CardContent>
                       <Typography variant="subtitle1" gutterBottom>
@@ -982,7 +1001,7 @@ const Detections = () => {
                         sx={{
                           position: 'relative',
                           display: 'inline-block',
-                          maxWidth: '50%',
+                          maxWidth: '100%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
                           overflow: 'visible',
@@ -1053,46 +1072,47 @@ const Detections = () => {
                       )}
                     </CardContent>
                   </Card>
-                </Grid>
               )}
+                </Box>
+              </Grid>
 
-              {/* Detection Details */}
-              <Grid item xs={12}>
-                <Card>
+              {/* Right: Detection Details */}
+              <Grid item xs={12} md={5}>
+                <Card sx={{ position: { md: 'sticky' }, top: { md: 8 } }}>
                   <CardContent>
                     <Typography variant="subtitle1" gutterBottom>
                       Erkennungs-Details
                     </Typography>
                     <Grid container spacing={2}>
-                      <Grid item xs={12} sm={6}>
+                      <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary">
                           Gerät: <strong>{selectedDetection.device?.name || 'Unbekannt'}</strong>
                         </Typography>
                       </Grid>
-                      <Grid item xs={12} sm={6}>
+                      <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary">
                           Zeitstempel: <strong>{new Date(selectedDetection.processedAt).toLocaleString()}</strong>
                         </Typography>
                       </Grid>
-                      <Grid item xs={12} sm={6}>
+                      <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary">
                           Verarbeitungszeit: <strong>{selectedDetection.processingTime != null && selectedDetection.processingTime !== '' ? `${(Number(selectedDetection.processingTime) / 1000).toFixed(2)} s` : 'N/A'}</strong>
                         </Typography>
                       </Grid>
-                      <Grid item xs={12} sm={6}>
+                      <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary">
                           Modell: <strong>{selectedDetection.model?.name || 'N/A'}</strong>
                         </Typography>
                       </Grid>
                       {selectedDetection.temperature !== null && selectedDetection.temperature !== undefined && (
-                        <Grid item xs={12} sm={6}>
+                        <Grid item xs={12}>
                           <Typography variant="body2" color="text.secondary">
                             Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
                           </Typography>
                         </Grid>
                       )}
                       {resolveShootActive(selectedDetection).known && (
-                        <Grid item xs={12} sm={6}>
+                        <Grid item xs={12}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                             Schuss-Aktionen
                           </Typography>
@@ -1124,7 +1144,7 @@ const Detections = () => {
                         </Grid>
                       )}
                       {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
-                        <Grid item xs={12} sm={6}>
+                        <Grid item xs={12}>
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                             Kamera-Position (Routenpunkt, Zoom)
                           </Typography>
@@ -1253,28 +1273,28 @@ const Detections = () => {
                                   </Grid>
                                 )}
                                 {detection.bbox && (
-                                  <Grid item xs={12} sm={6}>
+                                  <Grid item xs={12}>
                                     <Typography variant="caption" color="text.secondary">
                                       Position (BBox): x={detection.bbox.x}, y={detection.bbox.y}
                                     </Typography>
                                   </Grid>
                                 )}
                                 {detection.bbox && (
-                                  <Grid item xs={12} sm={6}>
+                                  <Grid item xs={12}>
                                     <Typography variant="caption" color="text.secondary">
                                       Größe (BBox): {detection.bbox.width} × {detection.bbox.height} px
                                     </Typography>
                                   </Grid>
                                 )}
                                 {detection.position && (
-                                  <Grid item xs={12} sm={6}>
+                                  <Grid item xs={12}>
                                     <Typography variant="caption" color="text.secondary">
                                       Zentrum: ({detection.position.center_x?.toFixed(1)}, {detection.position.center_y?.toFixed(1)})
                                     </Typography>
                                   </Grid>
                                 )}
                                 {detection.position && (
-                                  <Grid item xs={12} sm={6}>
+                                  <Grid item xs={12}>
                                     <Typography variant="caption" color="text.secondary">
                                       Rel. Größe: {(detection.position.width * 100)?.toFixed(1)}% × {(detection.position.height * 100)?.toFixed(1)}%
                                     </Typography>
