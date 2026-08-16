@@ -104,10 +104,8 @@ function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
         src={imageUrl}
         alt="Detection Thumbnail"
         sx={{
-          width: 'auto',
-          height: 'auto',
-          maxWidth: 120,
-          maxHeight: 80,
+          width: 80,
+          height: 80,
           objectFit: 'contain',
           display: 'block',
           borderRadius: 1,
@@ -457,7 +455,7 @@ const Detections = () => {
     {
       field: 'image',
       headerName: 'Bild',
-      width: 120,
+      width: 100,
       sortable: false,
       renderCell: (params) => {
         const idKey = params.row._id == null ? '' : (typeof params.row._id === 'string' ? params.row._id : params.row._id.toString?.() ?? String(params.row._id));
@@ -821,6 +819,7 @@ const Detections = () => {
             columns={columns}
             loading={loading}
             getRowId={(row) => row._id}
+            rowHeight={96}
             pageSizeOptions={[10, 20, 50]}
             paginationModel={{
               page: pagination.page,
