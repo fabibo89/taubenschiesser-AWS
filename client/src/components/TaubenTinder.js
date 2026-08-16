@@ -431,33 +431,25 @@ const TaubenTinder = () => {
     touchStartRef.current = null;
   };
 
-  // Mouse: drag to swipe (left button) + click buttons (left/right/middle)
+  // Mouse drag to swipe (left button only)
   const handleMouseDown = (e) => {
-    if (flyAwayDirection || loadingNext) return;
-    if (e.button === 1) e.preventDefault(); // avoid autoscroll on middle-click
+    if (flyAwayDirection || loadingNext || e.button !== 0) return;
     mouseStartRef.current = {
       x: e.clientX,
       y: e.clientY,
-      time: Date.now(),
-      button: e.button,
-      moved: false,
-      onImage: Boolean(e.target.closest?.('[data-tinder-image]'))
+      time: Date.now()
     };
-    if (e.button === 0) {
-      document.addEventListener('mousemove', handleMouseMove);
-    }
+    document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
   };
 
   const handleMouseMove = (e) => {
     if (!mouseStartRef.current || flyAwayDirection || loadingNext) return;
-    if (mouseStartRef.current.button !== 0) return;
 
     const deltaX = e.clientX - mouseStartRef.current.x;
     const deltaY = e.clientY - mouseStartRef.current.y;
 
     if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
-      mouseStartRef.current.moved = true;
       setSwiping(true);
       setOffset({ x: deltaX, y: deltaY });
 
@@ -478,35 +470,15 @@ const TaubenTinder = () => {
       return;
     }
 
-    const start = mouseStartRef.current;
-    const deltaX = e.clientX - start.x;
-    const deltaY = e.clientY - start.y;
+    const deltaX = e.clientX - mouseStartRef.current.x;
+    const deltaY = e.clientY - mouseStartRef.current.y;
     const threshold = 100;
-    const isClick = !start.moved && Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10;
 
     setSwiping(false);
 
-    // Mouse button clicks on the image (no drag): left = keine Taube, right = Taube, middle = löschen
-    if (isClick) {
-      mouseStartRef.current = null;
-      if (!start.onImage) {
-        setOffset({ x: 0, y: 0 });
-        setSwipeDirection(null);
-        return;
-      }
-      if (start.button === 0) handleSwipeAction('no_pigeon');
-      else if (start.button === 2) handleSwipeAction('confirm_pigeon');
-      else if (start.button === 1) handleSwipeAction('delete');
-      else {
-        setOffset({ x: 0, y: 0 });
-        setSwipeDirection(null);
-      }
-      return;
-    }
-
     const committed = Math.abs(deltaX) > threshold || deltaY < -threshold;
     let action = null;
-    if (committed && start.button === 0) {
+    if (committed) {
       if (deltaY < -threshold) action = 'delete';
       else if (deltaX > threshold) action = 'confirm_pigeon';
       else if (deltaX < -threshold) action = 'no_pigeon';
@@ -523,10 +495,6 @@ const TaubenTinder = () => {
       setSwipeDirection(null);
     }
     mouseStartRef.current = null;
-  };
-
-  const handleContextMenu = (e) => {
-    e.preventDefault();
   };
 
   const getRotation = () => {
@@ -577,7 +545,7 @@ const TaubenTinder = () => {
         Tauben-Tinder
       </Typography>
       <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 2 }}>
-        {displayPosition} / {displayTotal} unklassifiziert — ← / Links-Klick: Keine Taube ✗ · → / Rechts-Klick: Taube ✓ · ↑ / Mittelklick: Löschen
+        {displayPosition} / {displayTotal} unklassifiziert — ← Keine Taube ✗ · → Taube ✓ · ↑ Löschen · oder swipen
       </Typography>
 
       <Box
@@ -629,7 +597,6 @@ const TaubenTinder = () => {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onMouseDown={handleMouseDown}
-          onContextMenu={handleContextMenu}
           onTransitionEnd={(e) => {
             if (e.propertyName === 'transform' && flyAwayDirection) {
               handleFlyAwayComplete();
@@ -639,7 +606,6 @@ const TaubenTinder = () => {
           {/* Image with bounding boxes */}
           <Box
             ref={containerRef}
-            data-tinder-image
             sx={{
               position: 'relative',
               width: '100%',
@@ -846,7 +812,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('no_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Keine Taube (← / Links-Klick / Links swipen)"
+            title="Keine Taube (← / Links swipen)"
           >
             <CloseIcon fontSize="large" />
           </IconButton>
@@ -856,7 +822,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('delete')}
             sx={{ width: 64, height: 64 }}
-            title="Löschen (↑ / Mittelklick / Hoch swipen)"
+            title="Löschen (↑ / Hoch swipen)"
           >
             <DeleteIcon fontSize="large" />
           </IconButton>
@@ -866,7 +832,7 @@ const TaubenTinder = () => {
             disabled={loadingNext}
             onClick={() => handleSwipeAction('confirm_pigeon')}
             sx={{ width: 64, height: 64 }}
-            title="Taube bestätigen (→ / Rechts-Klick / Rechts swipen)"
+            title="Taube bestätigen (→ / Rechts swipen)"
           >
             <FavoriteIcon fontSize="large" />
           </IconButton>
