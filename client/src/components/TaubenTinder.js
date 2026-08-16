@@ -196,7 +196,7 @@ const TaubenTinder = () => {
         imgNaturalHeight
       )
     );
-  }, [detections, currentIndex, currentImageEntry, resolveImageInfo]);
+  }, [detections, currentIndex, resolveImageInfo]);
 
   // Recalculate layout when card/image changes (fixes missing boxes when onLoad does not re-fire)
   useEffect(() => {
