@@ -37,9 +37,16 @@ router.get('/:deviceId', async (req, res) => {
 
     const format = (req.query.format === 'json') ? 'json' : 'jpeg';
 
+    const sourceParam = typeof req.query.source === 'string' ? req.query.source.trim() : '';
+    const cameraSource = (sourceParam === 'raspberry-pi' || sourceParam === 'tapo')
+      ? sourceParam
+      : undefined;
+
     // 1) Preferred: use centralized helper (supports raspberry-pi + rtsp/tapo/dual)
     try {
-      const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(device, zoom);
+      const { original, zoomed } = await hardwareHelper.captureFrameWithZoom(device, zoom, {
+        cameraSource
+      });
       const imageBase64 = variant === 'zoomed' ? zoomed : original;
 
       if (format === 'json') {
@@ -47,6 +54,7 @@ router.get('/:deviceId', async (req, res) => {
           deviceId,
           variant,
           zoom,
+          source: cameraSource || device.camera?.type || null,
           contentType: 'image/jpeg',
           timestamp: new Date().toISOString(),
           imageBase64

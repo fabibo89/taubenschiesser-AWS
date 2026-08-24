@@ -12,6 +12,42 @@ function getDeviceStabilizationMs(device) {
   return Number.isFinite(ms) && ms >= 0 ? ms : 500;
 }
 
+/**
+ * Build Raspberry Pi still-image URL with device Bild-Einstellungen
+ * (flip, angle, square, resolution) plus optional zoom / wait_focus.
+ */
+function buildRaspberryPiImageUrl(pi, options = {}) {
+  if (!pi?.ip) return null;
+  const port = pi.port || 8080;
+  const endpoint = pi.endpoint || '/image.jpg';
+  const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
+  const params = [];
+
+  if (pi.flip) params.push('flip=true');
+  if (typeof pi.angle === 'number' && pi.angle !== 0) {
+    params.push(`angle=${pi.angle}`);
+  }
+  if (pi.square) params.push('square=true');
+  if (pi.resolution) {
+    params.push(`resolution=${encodeURIComponent(String(pi.resolution))}`);
+  }
+
+  const zoom = Number(options.zoom);
+  if (Number.isFinite(zoom) && zoom > 1.0) {
+    params.push(`zoom=${zoom.toFixed(3)}`);
+  }
+  if (options.waitFocus) params.push('wait_focus=true');
+
+  return params.length ? `${baseUrl}?${params.join('&')}` : baseUrl;
+}
+
+function shouldUseRaspberryPiCapture(camera, cameraSource) {
+  if (!camera?.raspberryPi?.ip) return false;
+  if (cameraSource === 'raspberry-pi') return true;
+  if (cameraSource === 'tapo') return false;
+  return camera.type === 'raspberry-pi';
+}
+
 class HardwareHelper {
   constructor() {
     this.mqttClients = new Map();
@@ -359,31 +395,17 @@ class HardwareHelper {
           throw new Error('Raspberry Pi camera IP not configured');
         }
 
-        // Prefer Device model helper to include flip, angle, square crop & resolution
-        let url = null;
+        let url = buildRaspberryPiImageUrl(pi, { waitFocus: options.waitFocus });
+        // Prefer Device model helper when available (same settings)
         if (device.getImageUrl && typeof device.getImageUrl === 'function') {
-          url = device.getImageUrl();
-        }
-
-        // Fallback: basic URL with optional flip parameter
-        if (!url) {
-          const port = pi.port || 8080;
-          const endpoint = pi.endpoint || '/image.jpg';
-          const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
-          
-          const queryParams = [];
-          if (pi.flip) {
-            queryParams.push('flip=true');
+          const helperUrl = device.getImageUrl();
+          if (helperUrl) {
+            url = helperUrl;
+            if (options.waitFocus) {
+              const sep = url.includes('?') ? '&' : '?';
+              url = `${url}${sep}wait_focus=true`;
+            }
           }
-          if (options.waitFocus) {
-            queryParams.push('wait_focus=true');
-          }
-          url = queryParams.length > 0 
-            ? `${baseUrl}?${queryParams.join('&')}`
-            : baseUrl;
-        } else if (options.waitFocus) {
-          const sep = url.includes('?') ? '&' : '?';
-          url = `${url}${sep}wait_focus=true`;
         }
 
         logger.info(`Capturing frame from Raspberry Pi: ${url}`);
@@ -481,8 +503,9 @@ class HardwareHelper {
   /**
    * Capture frame with zoom - returns both original and zoomed images
    * This centralizes the logic from hardware monitor
+   * @param {object} options.cameraSource - 'raspberry-pi' | 'tapo' to force source on dual devices
    */
-  async captureFrameWithZoom(device, zoomFactor = 1.0) {
+  async captureFrameWithZoom(device, zoomFactor = 1.0, options = {}) {
     try {
       const camera = device.camera;
       
@@ -490,29 +513,16 @@ class HardwareHelper {
         throw new Error('No camera configured for device');
       }
 
-      // Handle Raspberry Pi camera (HTTP GET)
-      if (camera.type === 'raspberry-pi') {
+      // Raspberry Pi (or dual forced to Pi): apply Geräte Bild-Einstellungen
+      if (shouldUseRaspberryPiCapture(camera, options.cameraSource)) {
         const pi = camera.raspberryPi;
         if (!pi || !pi.ip) {
           throw new Error('Raspberry Pi camera IP not configured');
         }
 
-        const port = pi.port || 8080;
-        const endpoint = pi.endpoint || '/image.jpg';
-        const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
-        
-        // Build base query params (flip)
-        const baseQueryParams = [];
-        if (pi.flip) {
-          baseQueryParams.push('flip=true');
-        }
-        const baseUrlWithFlip = baseQueryParams.length > 0 
-          ? `${baseUrl}?${baseQueryParams.join('&')}`
-          : baseUrl;
-        
-        // Always get original image first (without zoom)
-        logger.info(`Capturing original frame from Raspberry Pi: ${baseUrlWithFlip}`);
-        const originalResponse = await axios.get(baseUrlWithFlip, {
+        const originalUrl = buildRaspberryPiImageUrl(pi, { waitFocus: options.waitFocus });
+        logger.info(`Capturing original frame from Raspberry Pi: ${originalUrl}`);
+        const originalResponse = await axios.get(originalUrl, {
           responseType: 'arraybuffer',
           timeout: 20000
         });
@@ -523,12 +533,12 @@ class HardwareHelper {
         
         const originalBase64 = Buffer.from(originalResponse.data, 'binary').toString('base64');
         
-        // Get zoomed image if zoom > 1.0
         let zoomedBase64 = originalBase64;
         if (zoomFactor > 1.0) {
-          const zoomQueryParams = [...baseQueryParams];
-          zoomQueryParams.push(`zoom=${zoomFactor.toFixed(3)}`);
-          const zoomedUrl = `${baseUrl}?${zoomQueryParams.join('&')}`;
+          const zoomedUrl = buildRaspberryPiImageUrl(pi, {
+            zoom: zoomFactor,
+            waitFocus: options.waitFocus
+          });
           
           logger.info(`Capturing zoomed frame from Raspberry Pi: ${zoomedUrl}`);
           const zoomedResponse = await axios.get(zoomedUrl, {

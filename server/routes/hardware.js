@@ -41,6 +41,7 @@ router.post('/detection', async (req, res) => {
       shot_fired,
       shootActive,
       shoot_active,
+      watertank,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -101,6 +102,11 @@ router.post('/detection', async (req, res) => {
       detectionData.shootActive = { water: true, laser: false, audio: false };
     } else {
       detectionData.shootActive = { water: false, laser: false, audio: false };
+    }
+
+    // Tank state when water shoot was intended (true=OK, false=empty)
+    if (detectionData.shootActive.water && typeof watertank === 'boolean') {
+      detectionData.watertank = watertank;
     }
 
     if (target_bird && (target_bird.bbox || target_bird.position)) {

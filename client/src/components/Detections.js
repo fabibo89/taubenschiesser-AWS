@@ -24,7 +24,8 @@ import {
   CircularProgress,
   Accordion,
   AccordionSummary,
-  AccordionDetails
+  AccordionDetails,
+  Tooltip
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -38,7 +39,11 @@ import {
   ArrowForward as ArrowForwardIcon,
   Thermostat as ThermostatIcon,
   DeleteSweep as DeleteSweepIcon,
-  ExpandMore as ExpandMoreIcon
+  ExpandMore as ExpandMoreIcon,
+  WaterDrop as WaterDropIcon,
+  FlashOn as FlashOnIcon,
+  VolumeUp as VolumeUpIcon,
+  Block as BlockIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
@@ -177,24 +182,55 @@ function resolveShootActive(detection) {
   return { water: false, laser: false, audio: false, known: false };
 }
 
-function ShootActiveLabels({ detection, sx }) {
+/** Compact icons for water / laser / audio (or „kein Schuss“). */
+function ShootActiveIcons({ detection, size = 'small', sx }) {
   const flags = resolveShootActive(detection);
-  if (!flags.known) return null;
+  if (!flags.known) {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={sx}>—</Typography>
+    );
+  }
 
+  const fontSize = size === 'small' ? 'small' : 'medium';
   const anyActive = flags.water || flags.laser || flags.audio;
   if (!anyActive) {
     return (
-      <Box display="flex" flexWrap="wrap" gap={0.5} sx={sx}>
-        <Chip label="Kein Schuss" size="small" variant="outlined" />
+      <Box display="flex" alignItems="center" gap={0.25} sx={sx}>
+        <Tooltip title="Kein Schuss">
+          <BlockIcon fontSize={fontSize} color="disabled" />
+        </Tooltip>
       </Box>
     );
   }
 
+  const tankEmpty = flags.water && detection?.watertank === false;
+  const waterTitle = tankEmpty
+    ? 'Wasser geplant — Wassertank war leer'
+    : detection?.watertank === true
+      ? 'Wasser (Tank OK)'
+      : 'Wasser';
+
   return (
-    <Box display="flex" flexWrap="wrap" gap={0.5} sx={sx}>
-      {flags.water && <Chip label="Wasser" size="small" color="info" variant="outlined" />}
-      {flags.laser && <Chip label="Laser" size="small" color="success" variant="outlined" />}
-      {flags.audio && <Chip label="Audio" size="small" color="primary" variant="outlined" />}
+    <Box display="flex" alignItems="center" gap={0.25} sx={sx}>
+      {flags.water && (
+        <Tooltip title={waterTitle}>
+          <WaterDropIcon
+            fontSize={fontSize}
+            color={tankEmpty ? 'error' : 'info'}
+            sx={tankEmpty ? { opacity: 0.95 } : undefined}
+          />
+        </Tooltip>
+      )}
+      {flags.laser && (
+        <Tooltip title="Laser">
+          <FlashOnIcon fontSize={fontSize} color="success" />
+        </Tooltip>
+      )}
+      {flags.audio && (
+        <Tooltip title="Audio">
+          <VolumeUpIcon fontSize={fontSize} color="primary" />
+        </Tooltip>
+      )}
     </Box>
   );
 }
@@ -674,6 +710,15 @@ const Detections = () => {
       )
     },
     {
+      field: 'shootActive',
+      headerName: 'Schuss',
+      width: 100,
+      sortable: false,
+      renderCell: (params) => (
+        <ShootActiveIcons detection={params.row} />
+      )
+    },
+    {
       field: 'detections',
       headerName: 'Erkannte Objekte',
       width: 200,
@@ -1084,7 +1129,7 @@ const Detections = () => {
               </IconButton>
             </Box>
             {selectedDetection && !selectedDetectionLoading && (
-              <ShootActiveLabels detection={selectedDetection} sx={{ mt: 1 }} />
+              <ShootActiveIcons detection={selectedDetection} size="medium" sx={{ mt: 1 }} />
             )}
           </Box>
         </DialogTitle>
@@ -1319,7 +1364,17 @@ const Detections = () => {
                           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                             Schuss-Aktionen
                           </Typography>
-                          <ShootActiveLabels detection={selectedDetection} />
+                          <ShootActiveIcons detection={selectedDetection} size="medium" />
+                          {selectedDetection.shootActive?.water && selectedDetection.watertank === false && (
+                            <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
+                              Wassertank war leer — Wasser-Schuss vermutlich wirkungslos
+                            </Typography>
+                          )}
+                          {selectedDetection.shootActive?.water && selectedDetection.watertank === true && (
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                              Wassertank OK
+                            </Typography>
+                          )}
                         </Grid>
                       )}
                       {(nearestAtPosition.before || nearestAtPosition.after) && (

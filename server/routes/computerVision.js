@@ -314,7 +314,7 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)
@@ -472,7 +472,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
     // while keeping the query index-friendly.
     const [detections, total] = await Promise.all([
       Detection.find(filter)
-        .select('_id device image_info detections target_bird processedAt processingTime camera_position')
+        .select('_id device image_info detections target_bird processedAt processingTime camera_position shotFired shootActive watertank')
         .sort({ processedAt: -1 })
         .limit(limitNum)
         .populate('device', 'name deviceId type')

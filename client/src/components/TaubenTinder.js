@@ -12,14 +12,19 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  Button
+  Button,
+  Tooltip
 } from '@mui/material';
 import {
   Favorite as FavoriteIcon,
   Close as CloseIcon,
   Delete as DeleteIcon,
   ArrowBack as ArrowBackIcon,
-  ArrowForward as ArrowForwardIcon
+  ArrowForward as ArrowForwardIcon,
+  WaterDrop as WaterDropIcon,
+  FlashOn as FlashOnIcon,
+  VolumeUp as VolumeUpIcon,
+  Block as BlockIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
@@ -33,6 +38,59 @@ function formatTimeDiff(seconds, direction) {
   const secs = seconds % 60;
   const text = secs > 0 ? `${minutes} Min ${secs} Sek` : `${minutes} Min`;
   return direction === 'before' ? `Vor ${text} an dieser Position erkannt` : `${text} danach erkannt`;
+}
+
+function resolveShootActive(detection) {
+  const active = detection?.shootActive;
+  if (active && typeof active === 'object') {
+    return {
+      water: active.water === true,
+      laser: active.laser === true,
+      audio: active.audio === true,
+      known: true
+    };
+  }
+  if (detection?.shotFired === true) {
+    return { water: true, laser: false, audio: false, known: true };
+  }
+  if (detection?.shotFired === false) {
+    return { water: false, laser: false, audio: false, known: true };
+  }
+  return { water: false, laser: false, audio: false, known: false };
+}
+
+function ShootActiveIcons({ detection }) {
+  const flags = resolveShootActive(detection);
+  if (!flags.known) return null;
+  const any = flags.water || flags.laser || flags.audio;
+  if (!any) {
+    return (
+      <Tooltip title="Kein Schuss">
+        <BlockIcon fontSize="small" color="disabled" />
+      </Tooltip>
+    );
+  }
+  const tankEmpty = flags.water && detection?.watertank === false;
+  const waterTitle = tankEmpty
+    ? 'Wasser geplant — Wassertank war leer'
+    : detection?.watertank === true
+      ? 'Wasser (Tank OK)'
+      : 'Wasser';
+  return (
+    <Box display="inline-flex" alignItems="center" gap={0.25}>
+      {flags.water && (
+        <Tooltip title={waterTitle}>
+          <WaterDropIcon fontSize="small" color={tankEmpty ? 'error' : 'info'} />
+        </Tooltip>
+      )}
+      {flags.laser && (
+        <Tooltip title="Laser"><FlashOnIcon fontSize="small" color="success" /></Tooltip>
+      )}
+      {flags.audio && (
+        <Tooltip title="Audio"><VolumeUpIcon fontSize="small" color="primary" /></Tooltip>
+      )}
+    </Box>
+  );
 }
 
 /** YOLO stores pixels; Rekognition stores 0–1. Detect which and return pixel box. */
@@ -710,7 +768,7 @@ const TaubenTinder = () => {
               Erkennung {displayPosition} von {displayTotal}
             </Typography>
             
-            <Box display="flex" flexWrap="wrap" gap={1} mb={2}>
+            <Box display="flex" flexWrap="wrap" gap={1} mb={2} alignItems="center">
               <Chip
                 label={`Gerät: ${currentDetection.device?.name || 'Unbekannt'}`}
                 size="small"
@@ -727,6 +785,7 @@ const TaubenTinder = () => {
                 variant="outlined"
                 color="primary"
               />
+              <ShootActiveIcons detection={currentDetection} />
               {(nearestAtPosition.before || nearestAtPosition.after) && (
                 <>
                   {nearestAtPosition.before && (

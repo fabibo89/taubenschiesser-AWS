@@ -72,7 +72,11 @@ def build_shoot_command(taubenschiesser: Optional[Dict] = None, overrides: Optio
         "duration": duration_ms,
         "useLaser": bool(use_laser),
         "useAudio": use_audio,
+        "useWater": True,
     }
+
+    if isinstance(overrides.get("useWater"), bool):
+        payload["useWater"] = overrides["useWater"]
 
     laser_blink = overrides.get("laserBlink") if isinstance(overrides.get("laserBlink"), bool) else config.get("shootLaserBlink")
     if use_laser and laser_blink:
@@ -1828,6 +1832,15 @@ class HardwareMonitor:
                 "shootActive": shoot_active,
                 "timestamp": datetime.now().isoformat()
             }
+
+            if shoot_active.get("water") and device_ip:
+                tank = self.device_watertank_reported.get(device_ip)
+                if isinstance(tank, bool):
+                    detection_data["watertank"] = tank
+                    if tank is False:
+                        logger.warning(
+                            f"💧 Water shoot planned but watertank EMPTY for device {device_ip}"
+                        )
             
             # Add Tapo images if available
             if tapo_original_frame is not None:
@@ -2019,6 +2032,15 @@ class HardwareMonitor:
                 "shootActive": shoot_active,
                 "timestamp": datetime.now().isoformat()
             }
+
+            if shoot_active.get("water") and device_ip:
+                tank = self.device_watertank_reported.get(device_ip)
+                if isinstance(tank, bool):
+                    detection_data["watertank"] = tank
+                    if tank is False:
+                        logger.warning(
+                            f"💧 Water shoot planned but watertank EMPTY for device {device_ip}"
+                        )
             
             # Send to internal API endpoint for hardware monitor
             headers = {'Authorization': f'Bearer {self.service_token}'}

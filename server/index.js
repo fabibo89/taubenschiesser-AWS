@@ -62,6 +62,7 @@ app.use(express.urlencoded({ extended: true, limit: '128mb' }));
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', deviceRoutes);
+app.use('/api/devices/:id/shoot-test', require('./routes/shootTest'));
 app.use('/api/device-control', require('./routes/deviceControl'));
 app.use('/api/device-image', require('./routes/deviceImage'));
 app.use('/api/stream', require('./routes/stream'));

@@ -28,7 +28,8 @@ import {
   Monitor as MonitorIcon,
   Preview as PreviewIcon,
   Route as RouteIcon,
-  Panorama as PanoramaIcon
+  Panorama as PanoramaIcon,
+  GpsFixed as ShootTestIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -68,6 +69,7 @@ const Layout = ({ children }) => {
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
     { text: 'Tauben auf der Route', icon: <RouteIcon />, path: '/route-detections' },
     { text: 'Panorama', icon: <PanoramaIcon />, path: '/panorama' },
+    { text: 'Shoot-Test', icon: <ShootTestIcon />, path: '/shoot-test' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 
