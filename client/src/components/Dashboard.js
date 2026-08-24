@@ -27,7 +27,8 @@ import {
   Settings as SettingsIcon,
   Refresh as RefreshIcon,
   PlayCircleOutline as StartIcon,
-  PauseCircleOutline as PauseIcon2
+  PauseCircleOutline as PauseIcon2,
+  WaterDrop as WaterDropIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../contexts/SocketContext';
@@ -384,6 +385,17 @@ const DeviceCard = React.memo(({
                     sx={{ fontSize: '0.75rem' }}
                   />
                 </Tooltip>
+                {device.liveTelemetry?.watertank === false && (
+                  <Tooltip title="Wassertank-Sensor meldet leer — Wasser-Schuss wirkungslos">
+                    <Chip
+                      icon={<WaterDropIcon />}
+                      label="Wassertank leer"
+                      size="small"
+                      color="error"
+                      sx={{ fontSize: '0.75rem' }}
+                    />
+                  </Tooltip>
+                )}
               </Box>
             </Box>
           </Box>
@@ -400,6 +412,12 @@ const DeviceCard = React.memo(({
             </Tooltip>
           </Box>
         </Box>
+
+        {device.liveTelemetry?.watertank === false && (
+          <Alert severity="error" sx={{ mb: 2, py: 0.5 }}>
+            Status: Wassertank leer — bitte nachfüllen
+          </Alert>
+        )}
 
         {isDualCamera ? (
           <Box sx={{ mb: 2 }}>
@@ -587,11 +605,6 @@ const DeviceCard = React.memo(({
             />
           ) : (
             <Chip label="Kein Status verfügbar" color="default" size="small" sx={{ fontSize: '0.7rem' }} />
-          )}
-          {device.liveTelemetry?.watertank === false && (
-            <Alert severity="warning" sx={{ mt: 1, py: 0, fontSize: '0.75rem' }}>
-              Wassertank leer
-            </Alert>
           )}
         </Box>
 
