@@ -144,6 +144,48 @@ const detectionSchema = new mongoose.Schema({
   watertank: {
     type: Boolean,
     default: undefined
+  },
+  // FOV-Kalibrierung (Shoot-Test): ein Sample pro Detection/Bild
+  fovCalibration: {
+    at: Date,
+    converged: Boolean,
+    error: String,
+    scanPose: {
+      rotation: Number,
+      tilt: Number
+    },
+    autoAimPose: {
+      rotation: Number,
+      tilt: Number
+    },
+    finalPose: {
+      rotation: Number,
+      tilt: Number
+    },
+    offsetPx: {
+      x: Number,
+      y: Number
+    },
+    zoomFactor: Number,
+    fovH: Number,
+    fovV: Number,
+    fovSollH: Number,
+    fovSollV: Number,
+    residualPx: {
+      x: Number,
+      y: Number
+    },
+    method: String,
+    confidence: Number,
+    iterations: Number,
+    waypointNumber: Number,
+    // true = manuell ausgerichtet (Steuerkreuz / Nachklicken), false/absent = Auto
+    manual: Boolean,
+    // Herkunft: auto | manual | post_shot
+    source: String,
+    // Manuell aus Statistik/Median ausgeschlossen (Shoot-Test Batch)
+    excluded: Boolean,
+    excludedAt: Date
   }
 }, {
   timestamps: true

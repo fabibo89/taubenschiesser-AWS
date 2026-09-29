@@ -8,54 +8,34 @@ const { buildShootCommand } = require('../utils/shootCommand');
 
 // MQTT-Steuerungsbefehle für Taubenschiesser
 // Format entspricht dem ESP32-Code (verwendet "type" statt "action")
+// Directional impulses: rot/tilt sign; magnitude from req.body.degrees (default 10)
+const DIRECTIONAL_DELTAS = {
+  rotate_left: { rot: -1, tilt: 0 },
+  rotate_right: { rot: 1, tilt: 0 },
+  move_up: { rot: 0, tilt: 1 },
+  move_down: { rot: 0, tilt: -1 }
+};
+
+function buildImpulseMessage(rotSign, tiltSign, degrees) {
+  return JSON.stringify({
+    type: 'impulse',
+    speed: 1,
+    bounce: 0,
+    position: {
+      rot: rotSign * degrees,
+      tilt: tiltSign * degrees
+    }
+  });
+}
+
 const MQTT_COMMANDS = {
-  rotate_left: {
-    message: JSON.stringify({ 
-      type: 'impulse',
-      speed: 1,
-      bounce: 0,
-      position: {
-        rot: -10,  // 10 Grad nach links
-        tilt: 0
-      }
-    })
-  },
-  rotate_right: {
-    message: JSON.stringify({ 
-      type: 'impulse',
-      speed: 1,
-      bounce: 0,
-      position: {
-        rot: 10,   // 10 Grad nach rechts
-        tilt: 0
-      }
-    })
-  },
-  move_up: {
-    message: JSON.stringify({ 
-      type: 'impulse',
-      speed: 1,
-      bounce: 0,
-      position: {
-        rot: 0,
-        tilt: 10   // 10 Grad nach oben
-      }
-    })
-  },
-  move_down: {
-    message: JSON.stringify({ 
-      type: 'impulse',
-      speed: 1,
-      bounce: 0,
-      position: {
-        rot: 0,
-        tilt: -10  // 10 Grad nach unten
-      }
-    })
-  },
+  rotate_left: { impulse: true },
+  rotate_right: { impulse: true },
+  move_up: { impulse: true },
+  move_down: { impulse: true },
   shoot: { dynamic: true },  // Message aus device.taubenschiesser.shootingTimeMs oder req.body.durationMs
   reset: {
-    message: JSON.stringify({ 
+    message: JSON.stringify({
       type: 'reset'
     })
   }
@@ -97,6 +77,11 @@ router.post('/:id/control', authenticateToken, async (req, res) => {
         useWater: typeof req.body.useWater === 'boolean' ? req.body.useWater : undefined
       });
       message = JSON.stringify(shootPayload);
+    } else if (MQTT_COMMANDS[action].impulse && DIRECTIONAL_DELTAS[action]) {
+      const raw = Number(req.body.degrees);
+      const degrees = Number.isFinite(raw) ? Math.min(90, Math.max(1, Math.round(Math.abs(raw)))) : 10;
+      const d = DIRECTIONAL_DELTAS[action];
+      message = buildImpulseMessage(d.rot, d.tilt, degrees);
     } else {
       const command = MQTT_COMMANDS[action];
       message = command.message;

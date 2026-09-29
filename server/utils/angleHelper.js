@@ -1,5 +1,5 @@
 /**
- * Diagonal FOV → aim angle offsets (same formula as cv-service/angle_helper.py).
+ * Diagonal FOV → per-axis FOV (non-square frames).
  */
 function diagonalFovToHorizontalVertical(diagonalFovDeg, imageWidth, imageHeight) {
   if (imageWidth <= 0 || imageHeight <= 0 || diagonalFovDeg <= 0) {
@@ -16,11 +16,58 @@ function diagonalFovToHorizontalVertical(diagonalFovDeg, imageWidth, imageHeight
   };
 }
 
+function isSquareFrame(imageWidth, imageHeight) {
+  const w = Number(imageWidth) || 0;
+  const h = Number(imageHeight) || 0;
+  if (w <= 0 || h <= 0) return false;
+  return Math.abs(w - h) / Math.max(w, h) < 0.02;
+}
+
 /**
+ * Resolve horizontal/vertical FOV for aiming.
+ * Prefer explicit fovH/fovV; for square frames treat `fov` as per-axis
+ * (square crop → equal H/V, no diagonal decomposition).
+ */
+function resolveAxisFov(cameraConfig, cameraSource, imageWidth, imageHeight) {
+  const pi = cameraConfig?.raspberryPi || {};
+  const tapo = cameraConfig?.tapo || {};
+  const fromPi = cameraSource === 'raspberry-pi' || cameraSource === 'raspberry_pi';
+
+  const fovH = fromPi ? pi.fovH : (tapo.fovH ?? pi.fovH);
+  const fovV = fromPi ? pi.fovV : (tapo.fovV ?? pi.fovV);
+  if (Number(fovH) > 0 && Number(fovV) > 0) {
+    return { horizontal: Number(fovH), vertical: Number(fovV), mode: 'explicit' };
+  }
+
+  let fov = fromPi ? pi.fov : null;
+  if (fov == null || fov <= 0) fov = tapo.fov;
+  if (fov == null || fov <= 0) fov = pi.fov;
+  if (fov == null || fov <= 0) {
+    return { horizontal: 0, vertical: 0, mode: 'none' };
+  }
+
+  if (isSquareFrame(imageWidth, imageHeight) || (fromPi && pi.square)) {
+    return { horizontal: Number(fov), vertical: Number(fov), mode: 'square-per-axis' };
+  }
+
+  const hv = diagonalFovToHorizontalVertical(Number(fov), imageWidth, imageHeight);
+  return { ...hv, mode: 'diagonal' };
+}
+
+/**
+ * @param {{ horizontal?: number, vertical?: number }} [fovOverrides]
  * @returns {{ rotationAdjustment: number, tiltAdjustment: number }}
  */
-function calculateAngleAdjustment(bbox, imageWidth, imageHeight, zoomFactor = 1, cameraConfig = null, cameraSource = null) {
-  if (!bbox || !cameraConfig || !imageWidth || !imageHeight) {
+function calculateAngleAdjustment(
+  bbox,
+  imageWidth,
+  imageHeight,
+  zoomFactor = 1,
+  cameraConfig = null,
+  cameraSource = null,
+  fovOverrides = null
+) {
+  if (!bbox || !imageWidth || !imageHeight) {
     return { rotationAdjustment: 0, tiltAdjustment: 0 };
   }
 
@@ -29,18 +76,23 @@ function calculateAngleAdjustment(bbox, imageWidth, imageHeight, zoomFactor = 1,
   const offsetX = bboxCenterX - imageWidth / 2;
   const offsetY = bboxCenterY - imageHeight / 2;
 
-  let diagonalFov = null;
-  if (cameraSource === 'raspberry-pi') {
-    diagonalFov = cameraConfig.raspberryPi?.fov;
+  let horizontal;
+  let vertical;
+  if (fovOverrides && Number(fovOverrides.horizontal) > 0 && Number(fovOverrides.vertical) > 0) {
+    horizontal = Number(fovOverrides.horizontal);
+    vertical = Number(fovOverrides.vertical);
+  } else if (!cameraConfig) {
+    return { rotationAdjustment: 0, tiltAdjustment: 0 };
+  } else {
+    const resolved = resolveAxisFov(cameraConfig, cameraSource, imageWidth, imageHeight);
+    horizontal = resolved.horizontal;
+    vertical = resolved.vertical;
   }
-  if (diagonalFov == null) {
-    diagonalFov = cameraConfig.tapo?.fov;
-  }
-  if (diagonalFov == null || diagonalFov <= 0) {
+
+  if (!(horizontal > 0) || !(vertical > 0)) {
     return { rotationAdjustment: 0, tiltAdjustment: 0 };
   }
 
-  let { horizontal, vertical } = diagonalFovToHorizontalVertical(diagonalFov, imageWidth, imageHeight);
   const zoom = Math.max(0.1, Number(zoomFactor) || 1);
   horizontal /= zoom;
   vertical /= zoom;
@@ -51,4 +103,9 @@ function calculateAngleAdjustment(bbox, imageWidth, imageHeight, zoomFactor = 1,
   };
 }
 
-module.exports = { calculateAngleAdjustment, diagonalFovToHorizontalVertical };
+module.exports = {
+  calculateAngleAdjustment,
+  diagonalFovToHorizontalVertical,
+  resolveAxisFov,
+  isSquareFrame
+};

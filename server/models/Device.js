@@ -94,6 +94,11 @@ const deviceSchema = new mongoose.Schema({
     shootUseAudio: {
       type: Boolean,
       default: false
+    },
+    // Nach Schuss: FOV-Sample per Bildabgleich auf Detection speichern (kein Gerät-FOV-Write)
+    postShotFovCalibrate: {
+      type: Boolean,
+      default: false
     }
   },
   // Camera Configuration
@@ -139,7 +144,13 @@ const deviceSchema = new mongoose.Schema({
       },
       fov: {
         type: Number,
-        default: 75  // Default diagonal FOV in degrees for Raspberry Pi Camera Module 3
+        default: 75  // Per-axis FOV when square; else diagonal FOV (degrees)
+      },
+      fovH: {
+        type: Number  // Optional calibrated horizontal FOV (degrees)
+      },
+      fovV: {
+        type: Number  // Optional calibrated vertical FOV (degrees)
       },
       angle: {
         type: Number,

@@ -1,5 +1,5 @@
 """
-ESP angle computation: same logic as hardware-monitor calculate_angle_adjustment.
+ESP angle computation: same logic as server/utils/angleHelper.js.
 Used by POST /compute-esp-angles so the UI uses the exact same formula as the shoot.
 """
 import math
@@ -22,6 +22,50 @@ def _diagonal_fov_to_horizontal_vertical(
     return horizontal_fov_deg, vertical_fov_deg
 
 
+def _is_square_frame(image_width: int, image_height: int) -> bool:
+    w = float(image_width or 0)
+    h = float(image_height or 0)
+    if w <= 0 or h <= 0:
+        return False
+    return abs(w - h) / max(w, h) < 0.02
+
+
+def _resolve_axis_fov(
+    camera_config: Dict,
+    camera_source: Optional[str],
+    image_width: int,
+    image_height: int,
+) -> Tuple[float, float]:
+    pi = camera_config.get('raspberryPi') or {}
+    tapo = camera_config.get('tapo') or {}
+    from_pi = camera_source in ('raspberry-pi', 'raspberry_pi')
+
+    fov_h = pi.get('fovH') if from_pi else (tapo.get('fovH') if tapo.get('fovH') is not None else pi.get('fovH'))
+    fov_v = pi.get('fovV') if from_pi else (tapo.get('fovV') if tapo.get('fovV') is not None else pi.get('fovV'))
+    try:
+        if fov_h is not None and fov_v is not None and float(fov_h) > 0 and float(fov_v) > 0:
+            return float(fov_h), float(fov_v)
+    except (TypeError, ValueError):
+        pass
+
+    fov = pi.get('fov') if from_pi else None
+    if fov is None or fov <= 0:
+        fov = tapo.get('fov')
+    if fov is None or fov <= 0:
+        fov = pi.get('fov')
+    try:
+        fov = float(fov)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    if fov <= 0:
+        return 0.0, 0.0
+
+    if _is_square_frame(image_width, image_height) or (from_pi and pi.get('square')):
+        return fov, fov
+
+    return _diagonal_fov_to_horizontal_vertical(fov, image_width, image_height)
+
+
 def calculate_angle_adjustment(
     bbox: Dict,
     image_width: int,
@@ -31,7 +75,7 @@ def calculate_angle_adjustment(
     camera_source: Optional[str] = None,
 ) -> Tuple[float, float]:
     """
-    Same logic as hardware-monitor HardwareMonitor.calculate_angle_adjustment.
+    Same logic as server calculateAngleAdjustment.
     Returns (rotation_adjustment, tilt_adjustment) in degrees.
     """
     if not bbox or not camera_config:
@@ -43,17 +87,12 @@ def calculate_angle_adjustment(
     offset_x = bbox_center_x - image_center_x
     offset_y = bbox_center_y - image_center_y
 
-    diagonal_fov_deg = None
-    if camera_source == 'raspberry-pi':
-        diagonal_fov_deg = (camera_config.get('raspberryPi') or {}).get('fov')
-    if diagonal_fov_deg is None:
-        diagonal_fov_deg = (camera_config.get('tapo') or {}).get('fov')
-    if diagonal_fov_deg is None or diagonal_fov_deg <= 0:
+    horizontal_fov, vertical_fov = _resolve_axis_fov(
+        camera_config, camera_source, image_width, image_height
+    )
+    if horizontal_fov <= 0 or vertical_fov <= 0:
         return 0.0, 0.0
 
-    horizontal_fov, vertical_fov = _diagonal_fov_to_horizontal_vertical(
-        diagonal_fov_deg, image_width, image_height
-    )
     zoom = max(0.1, float(zoom_factor) or 1.0)
     horizontal_fov = horizontal_fov / zoom
     vertical_fov = vertical_fov / zoom

@@ -1709,11 +1709,15 @@ class HardwareMonitor:
                             await self._emit_device_waiting_snapshot(device)
                             
                             # Save detection to database (with shotFired=monitor_armed)
-                            target_bird = await self.save_detection_to_db(device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed)
+                            target_bird, detection_id = await self.save_detection_to_db(
+                                device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed
+                            )
                             
                             # Trigger shoot only when monitor is armed
                             if monitor_armed:
-                                await self.trigger_shoot(device, target_bird=target_bird)
+                                await self.trigger_shoot(
+                                    device, target_bird=target_bird, detection_id=detection_id
+                                )
                         else:
                             await self._emit_device_waiting_snapshot(device)
                     else:
@@ -1906,17 +1910,18 @@ class HardwareMonitor:
                         result = await response.json()
                         logger.info(f"Combined detection saved for device {device_ip}: {len(all_detections)} objects from both cameras")
                         await self.update_device_last_detection(device_id)
+                        return target_bird, result.get('detection_id')
                     else:
                         logger.error(f"Failed to save combined detection for device {device_ip}: {response.status}")
             
-            return target_bird
+            return target_bird, None
                         
         except Exception as e:
             logger.error(f"Error saving combined detection: {e}")
-            return None
+            return None, None
     
     async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict, camera_source: str = 'unknown', shot_fired: bool = False):
-        """Save detection to database via API with both images and detailed detection info. shot_fired: whether monitor was armed (shot fired for this detection)."""
+        """Save detection to database via API. Returns (target_bird, detection_id)."""
         try:
             device_id = device.get('_id') or device.get('deviceId')
             # Get IP from taubenschiesser.ip (nested structure)
@@ -2059,16 +2064,17 @@ class HardwareMonitor:
                         
                         # Update device last detection time
                         await self.update_device_last_detection(device_id)
+                        return target_bird, result.get('detection_id')
                         
                     else:
                         error_text = await response.text()
                         logger.error(f"❌ Failed to save detection to database for device {device_ip} ({camera_source}): {response.status} - {error_text}")
             
-            return target_bird
+            return target_bird, None
                         
         except Exception as e:
             logger.error(f"Error saving detection to database ({camera_source}): {e}")
-            return None
+            return None, None
     
     async def get_temperature_for_device(self, device: Dict) -> Optional[float]:
         """Holt die aktuelle Temperatur für ein Gerät basierend auf User-Settings"""
@@ -2212,8 +2218,10 @@ class HardwareMonitor:
             raspberry_pi_image_info,
         )
 
-    async def trigger_shoot(self, device: Dict, target_bird: Dict = None):
-        """Trigger shoot on device, optionally aiming at target bird first"""
+    async def trigger_shoot(self, device: Dict, target_bird: Dict = None, detection_id: str = None):
+        """Trigger shoot on device, optionally aiming at target bird first.
+        If postShotFovCalibrate is enabled, run image-match FOV sample onto Detection after shoot.
+        """
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -2226,6 +2234,10 @@ class HardwareMonitor:
                 return
             
             topic = f"taubenschiesser/{device_ip}"
+            post_shot_cal = bool(
+                isinstance(taubenschiesser_config, dict)
+                and taubenschiesser_config.get('postShotFovCalibrate')
+            )
             
             # If we have a target bird, aim at it first
             if target_bird and target_bird.get('bbox'):
@@ -2328,21 +2340,30 @@ class HardwareMonitor:
                         logger.info(f"📤 MQTT shoot: topic={topic} payload={mqtt_payload}")
                         
                         await asyncio.sleep(1.5)  # Wait for shoot to complete
-                        
-                        # Return to original position
-                        return_command = {
-                            "type": "move",
-                            "position": {
-                                "rot": int(current_rotation),
-                                "tilt": int(current_tilt)
-                            },
-                            "speed": 1
-                        }
-                        mqtt_client.publish(topic, json.dumps(return_command))
-                        self.device_moving[device_ip] = True
-                        logger.info(f"🔄 Returning to original position ({current_rotation}°, {current_tilt}°)")
-                        
-                        await self.wait_for_movement_complete(device_ip, timeout=10)
+
+                        # Optional: FOV sample via image match while still near aim (no device FOV write).
+                        # returnToScan is handled by the API; on failure we fall back to MQTT return.
+                        if post_shot_cal and detection_id:
+                            await self.run_post_shot_fov_calibrate(device, detection_id)
+                        else:
+                            if post_shot_cal and not detection_id:
+                                logger.warning(
+                                    "postShotFovCalibrate enabled but no detection_id — skipping calibrate"
+                                )
+                            # Return to original position
+                            return_command = {
+                                "type": "move",
+                                "position": {
+                                    "rot": int(current_rotation),
+                                    "tilt": int(current_tilt)
+                                },
+                                "speed": 1
+                            }
+                            mqtt_client.publish(topic, json.dumps(return_command))
+                            self.device_moving[device_ip] = True
+                            logger.info(f"🔄 Returning to original position ({current_rotation}°, {current_tilt}°)")
+                            
+                            await self.wait_for_movement_complete(device_ip, timeout=10)
                         return
 
             # No shoot: we only shoot when we can aim at a target bird
@@ -2367,6 +2388,81 @@ class HardwareMonitor:
 
         except Exception as e:
             logger.error(f"Error triggering shoot: {e}")
+
+    async def run_post_shot_fov_calibrate(self, device: Dict, detection_id: str):
+        """Call server calibrate-auto after shoot: persist fovCalibration on Detection, return to scan."""
+        device_id = device.get('_id') or device.get('deviceId')
+        if not device_id or not detection_id:
+            logger.warning("post-shot FOV calibrate skipped: missing device_id or detection_id")
+            return
+        headers = {'Authorization': f'Bearer {self.service_token}'}
+        payload = {
+            'detectionId': str(detection_id),
+            'saveFov': False,
+            'directAim': True,
+            'returnToScan': True,
+            'source': 'post_shot',
+            'maxIterations': 6,
+            'pixelThreshold': 8,
+        }
+        try:
+            logger.info(
+                f"📐 Post-shot FOV calibrate starting for detection {detection_id} (device {device_id})"
+            )
+            timeout = aiohttp.ClientTimeout(total=180)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.api_url}/api/devices/{device_id}/shoot-test/calibrate-auto",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    body = await response.text()
+                    if response.status == 200:
+                        try:
+                            data = json.loads(body) if body else {}
+                        except Exception:
+                            data = {}
+                        logger.info(
+                            f"✅ Post-shot FOV sample saved on detection {detection_id}: "
+                            f"converged={data.get('converged')} "
+                            f"fovH={data.get('fov', {}).get('fovH')} "
+                            f"fovV={data.get('fov', {}).get('fovV')}"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ Post-shot FOV calibrate failed ({response.status}): {body[:400]}"
+                        )
+                        # API may have left the gun at aim — return to waypoint
+                        raise RuntimeError(f"calibrate-auto HTTP {response.status}")
+        except Exception as e:
+            logger.error(f"Post-shot FOV calibrate error: {e}")
+            # Best-effort: try to return to waypoint via MQTT if API left gun mid-aim
+            try:
+                taub = device.get('taubenschiesser') or {}
+                device_ip = taub.get('ip') if isinstance(taub, dict) else None
+                actions = device.get('actions') or {}
+                coords = actions.get('route', {}).get('coordinates', []) if actions.get('mode') == 'route' else []
+                route_index = self.get_arrived_route_index(device_ip, len(coords)) if device_ip else 0
+                if device_ip and route_index < len(coords):
+                    pos = coords[route_index]
+                    rot, tilt = self.apply_position_inversion(
+                        device, pos.get('rotation', 0), pos.get('tilt', 0)
+                    )
+                    owner_id = device.get('owner')
+                    mqtt_client = await self.get_mqtt_client_for_user(owner_id)
+                    if mqtt_client:
+                        mqtt_client.publish(
+                            f"taubenschiesser/{device_ip}",
+                            json.dumps({
+                                "type": "move",
+                                "position": {"rot": int(rot), "tilt": int(tilt)},
+                                "speed": 1,
+                            }),
+                        )
+                        self.device_moving[device_ip] = True
+                        await self.wait_for_movement_complete(device_ip, timeout=10)
+            except Exception as ret_err:
+                logger.warning(f"Post-shot return-to-scan fallback failed: {ret_err}")
     
     async def monitor_devices(self):
         """Monitor hardware devices and send status updates"""

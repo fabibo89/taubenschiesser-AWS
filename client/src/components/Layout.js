@@ -69,7 +69,7 @@ const Layout = ({ children }) => {
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
     { text: 'Tauben auf der Route', icon: <RouteIcon />, path: '/route-detections' },
     { text: 'Panorama', icon: <PanoramaIcon />, path: '/panorama' },
-    { text: 'Shoot-Test', icon: <ShootTestIcon />, path: '/shoot-test' },
+    { text: 'Shoot-Test / FOV', icon: <ShootTestIcon />, path: '/shoot-test' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
 

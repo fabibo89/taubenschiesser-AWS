@@ -49,7 +49,7 @@ const Devices = () => {
   const [formData, setFormData] = useState({
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100 },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
     camera: { 
       type: 'tapo',
       directUrl: '',
@@ -138,7 +138,8 @@ const Devices = () => {
           shootLaserBlink: device.taubenschiesser?.shootLaserBlink ?? false,
           shootLaserBlinkMs: device.taubenschiesser?.shootLaserBlinkMs ?? 100,
           shootUseLaser: device.taubenschiesser?.shootUseLaser !== false,
-          shootUseAudio: device.taubenschiesser?.shootUseAudio ?? false
+          shootUseAudio: device.taubenschiesser?.shootUseAudio ?? false,
+          postShotFovCalibrate: !!device.taubenschiesser?.postShotFovCalibrate
         },
         camera: device.camera || { 
           type: 'tapo',
@@ -165,7 +166,7 @@ const Devices = () => {
       setFormData({
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100 },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
         camera: {
           type: 'tapo',
           directUrl: '',
@@ -614,6 +615,28 @@ const Devices = () => {
                 }
                 label="Akustische Signale"
               />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={!!formData.taubenschiesser.postShotFovCalibrate}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: {
+                        ...formData.taubenschiesser,
+                        postShotFovCalibrate: e.target.checked
+                      }
+                    })}
+                  />
+                }
+                label="FOV nach Schuss kalibrieren"
+              />
+            </Box>
+            {!!formData.taubenschiesser.postShotFovCalibrate && (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, mb: 0.5 }}>
+                Nach dem Schuss: Bildabgleich und FOV-Sample nur auf die Detection schreiben (kein FOV ins Gerät).
+              </Typography>
+            )}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
               <FormControlLabel
                 control={
                   <Switch

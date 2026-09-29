@@ -1966,6 +1966,148 @@ async def compute_esp_angles(request: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+def _decode_b64_image(image_b64: str) -> Optional[np.ndarray]:
+    if not image_b64:
+        return None
+    raw = image_b64
+    if "," in raw and raw.strip().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw)
+        arr = np.frombuffer(data, np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def _locate_point_orb(ref: np.ndarray, live: np.ndarray, px: float, py: float):
+    """Map a point from reference image into live via ORB + affine/homography."""
+    gray_r = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
+    gray_l = cv2.cvtColor(live, cv2.COLOR_BGR2GRAY)
+    orb = cv2.ORB_create(2500)
+    kp1, des1 = orb.detectAndCompute(gray_r, None)
+    kp2, des2 = orb.detectAndCompute(gray_l, None)
+    if des1 is None or des2 is None or len(kp1) < 12 or len(kp2) < 12:
+        return None
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    knn = bf.knnMatch(des1, des2, k=2)
+    good = []
+    for pair in knn:
+        if len(pair) != 2:
+            continue
+        m, n = pair
+        if m.distance < 0.75 * n.distance:
+            good.append(m)
+    if len(good) < 12:
+        return None
+    src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    aff, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+    if aff is None:
+        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+        if H is None:
+            return None
+        pt = cv2.perspectiveTransform(np.float32([[[px, py]]]), H)[0][0]
+        inl = int(np.sum(mask)) if mask is not None else 0
+        conf = float(inl / max(1, len(good)))
+        return float(pt[0]), float(pt[1]), conf, "orb-homography", len(good)
+    pt = aff @ np.array([px, py, 1.0], dtype=np.float64)
+    inl = int(np.sum(inliers)) if inliers is not None else 0
+    conf = float(inl / max(1, len(good)))
+    return float(pt[0]), float(pt[1]), conf, "orb-affine", len(good)
+
+
+def _locate_point_template(ref: np.ndarray, live: np.ndarray, px: float, py: float):
+    """Match a context patch around the point (works after the bird has left)."""
+    h, w = ref.shape[:2]
+    lh, lw = live.shape[:2]
+    side = int(min(w, h, 220))
+    side = max(64, side)
+    half = side // 2
+    cx, cy = int(round(px)), int(round(py))
+    x0 = max(0, min(w - side, cx - half))
+    y0 = max(0, min(h - side, cy - half))
+    patch = ref[y0:y0 + side, x0:x0 + side]
+    if patch.size == 0 or live.shape[0] < side or live.shape[1] < side:
+        return None
+    if (lh, lw) != (h, w):
+        live_r = cv2.resize(live, (w, h), interpolation=cv2.INTER_AREA)
+    else:
+        live_r = live
+    res = cv2.matchTemplate(
+        cv2.cvtColor(live_r, cv2.COLOR_BGR2GRAY),
+        cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY),
+        cv2.TM_CCOEFF_NORMED,
+    )
+    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+    local_x = cx - x0
+    local_y = cy - y0
+    live_x = max_loc[0] + local_x
+    live_y = max_loc[1] + local_y
+    if (lh, lw) != (h, w):
+        live_x *= lw / w
+        live_y *= lh / h
+    return float(live_x), float(live_y), float(max_val), "template", 1
+
+
+@app.post("/locate_point")
+async def locate_point(request: Dict[str, Any]):
+    """
+    Find where a reference-image point appears in a live frame (scene matching).
+    Body: referenceImage, liveImage (base64), point: {x,y} in reference pixels.
+    """
+    try:
+        ref = _decode_b64_image(request.get("referenceImage") or request.get("reference_image") or "")
+        live = _decode_b64_image(request.get("liveImage") or request.get("live_image") or "")
+        point = request.get("point") or {}
+        px = float(point.get("x"))
+        py = float(point.get("y"))
+        if ref is None or live is None:
+            raise HTTPException(status_code=400, detail="referenceImage und liveImage erforderlich")
+        rh, rw = ref.shape[:2]
+        lh, lw = live.shape[:2]
+        if px < 0 or py < 0 or px > rw or py > rh:
+            raise HTTPException(status_code=400, detail="point außerhalb des Referenzbildes")
+
+        live_for_orb = live if (lh, lw) == (rh, rw) else cv2.resize(live, (rw, rh), interpolation=cv2.INTER_AREA)
+        result = _locate_point_orb(ref, live_for_orb, px, py)
+        if result is None or result[2] < 0.25:
+            tmpl = _locate_point_template(ref, live, px, py)
+            if tmpl is not None and (result is None or tmpl[2] > result[2]):
+                result = tmpl
+
+        if result is None:
+            return {"success": False, "error": "Kein zuverlässiger Bildabgleich", "confidence": 0}
+
+        live_x, live_y, conf, method, match_count = result
+        if method.startswith("orb") and (lh, lw) != (rh, rw):
+            live_x *= lw / rw
+            live_y *= lh / rh
+
+        live_x = float(np.clip(live_x, 0, lw - 1))
+        live_y = float(np.clip(live_y, 0, lh - 1))
+        cx, cy = lw / 2.0, lh / 2.0
+        return {
+            "success": True,
+            "method": method,
+            "confidence": conf,
+            "matchCount": match_count,
+            "referencePoint": {"x": px, "y": py},
+            "livePoint": {"x": live_x, "y": live_y},
+            "liveSize": {"width": lw, "height": lh},
+            "referenceSize": {"width": rw, "height": rh},
+            "residualPx": {"x": live_x - cx, "y": live_y - cy},
+            "residualNorm": {"x": (live_x - cx) / lw, "y": (live_y - cy) / lh},
+            "normLive": {"x": live_x / lw, "y": live_y / lh},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("locate_point error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
