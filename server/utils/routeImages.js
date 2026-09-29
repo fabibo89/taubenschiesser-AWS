@@ -106,6 +106,11 @@ function stripCoordinateImagesFromDoc(device) {
   });
 }
 
+async function clearAll(deviceId) {
+  const result = await RouteImage.deleteMany({ device: deviceId });
+  return result.deletedCount;
+}
+
 module.exports = {
   loadRouteImageMap,
   attachRouteImages,
@@ -113,5 +118,6 @@ module.exports = {
   setRouteImage,
   getRouteImage,
   persistAndStripCoordinateImages,
-  stripCoordinateImagesFromDoc
+  stripCoordinateImagesFromDoc,
+  clearAll
 };

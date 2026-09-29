@@ -276,7 +276,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Delete device
+// Delete device (soft-delete) and permanently remove related images/detections
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const device = await Device.findOneAndUpdate(
@@ -284,12 +284,36 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       { isActive: false },
       { new: true }
     );
-    
+
     if (!device) {
       return res.status(404).json({ error: 'Device not found' });
     }
-    
-    res.json({ message: 'Device deleted successfully' });
+
+    const deviceId = device._id;
+    const [detections, routeImgs, panoramaImgs, panoramaResults] = await Promise.all([
+      Detection.deleteMany({ device: deviceId }),
+      routeImages.clearAll(deviceId),
+      panoramaScanImages.clear(deviceId),
+      panoramaScanResults.clear(deviceId)
+    ]);
+
+    logger.info('Device deleted with related data', {
+      deviceId: String(deviceId),
+      detections: detections.deletedCount,
+      routeImages: routeImgs,
+      panoramaScanImages: panoramaImgs,
+      panoramaScanResults: panoramaResults
+    });
+
+    res.json({
+      message: 'Device deleted successfully',
+      deleted: {
+        detections: detections.deletedCount,
+        routeImages: routeImgs,
+        panoramaScanImages: panoramaImgs,
+        panoramaScanResults: panoramaResults
+      }
+    });
   } catch (error) {
     logger.error('Delete device error:', error);
     res.status(500).json({ error: 'Server error' });

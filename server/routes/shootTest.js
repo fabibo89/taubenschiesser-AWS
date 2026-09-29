@@ -763,25 +763,35 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
 });
 
 /**
- * Save calibrated fovH/fovV (and average fov) onto the device camera config.
+ * Save calibrated FOV onto the device camera config.
+ * Prefer single `fov` (square camera → H=V=fov). Falls back to fovH/fovV.
  */
 router.post('/calibrate-save-fov', authenticateToken, async (req, res) => {
   try {
     const device = await loadOwnedDevice(req);
     if (!device) return res.status(404).json({ error: 'Gerät nicht gefunden' });
 
-    const fovH = Number(req.body?.fovH);
-    const fovV = Number(req.body?.fovV);
-    if (!(fovH > 0) || !(fovV > 0) || fovH > 180 || fovV > 180) {
-      return res.status(400).json({ error: 'fovH und fovV müssen zwischen 0 und 180 liegen' });
+    let fov = Number(req.body?.fov);
+    let fovH = Number(req.body?.fovH);
+    let fovV = Number(req.body?.fovV);
+    if (Number.isFinite(fov) && fov > 0 && fov <= 180) {
+      fovH = fov;
+      fovV = fov;
+    } else if (Number.isFinite(fovH) && Number.isFinite(fovV) && fovH > 0 && fovV > 0
+      && fovH <= 180 && fovV <= 180) {
+      // Square default: store one combined value on all three fields
+      fov = Math.round(((fovH + fovV) / 2) * 100) / 100;
+      fovH = fov;
+      fovV = fov;
+    } else {
+      return res.status(400).json({ error: 'fov (oder fovH/fovV) muss zwischen 0 und 180 liegen' });
     }
 
     if (!device.camera) device.camera = {};
     if (!device.camera.raspberryPi) device.camera.raspberryPi = {};
+    device.camera.raspberryPi.fov = Math.round(fov * 100) / 100;
     device.camera.raspberryPi.fovH = Math.round(fovH * 100) / 100;
     device.camera.raspberryPi.fovV = Math.round(fovV * 100) / 100;
-    // Keep single fov as mean for square / legacy callers
-    device.camera.raspberryPi.fov = Math.round(((fovH + fovV) / 2) * 100) / 100;
     device.markModified('camera');
     await device.save();
 
@@ -997,17 +1007,22 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
     let fovV = fovComputed.fovV;
     if (fovH == null && fovV != null) fovH = fovV;
     if (fovV == null && fovH != null) fovV = fovH;
+    // Square camera: one FOV for device write (per-sample H/V stay as measured)
+    const fovCombined = (fovH != null && fovV != null)
+      ? (fovH + fovV) / 2
+      : (fovH ?? fovV);
 
     let saved = null;
     // Post-shot never writes device FOV — samples only on Detection
     const allowSaveFov = saveFov === true && source !== 'post_shot';
-    if (allowSaveFov && fovH != null && fovV != null
-      && fovH > 5 && fovH < 170 && fovV > 5 && fovV < 170) {
+    if (allowSaveFov && fovCombined != null
+      && fovCombined > 5 && fovCombined < 170) {
       if (!device.camera) device.camera = {};
       if (!device.camera.raspberryPi) device.camera.raspberryPi = {};
-      device.camera.raspberryPi.fovH = Math.round(fovH * 100) / 100;
-      device.camera.raspberryPi.fovV = Math.round(fovV * 100) / 100;
-      device.camera.raspberryPi.fov = Math.round(((fovH + fovV) / 2) * 100) / 100;
+      const rounded = Math.round(fovCombined * 100) / 100;
+      device.camera.raspberryPi.fovH = rounded;
+      device.camera.raspberryPi.fovV = rounded;
+      device.camera.raspberryPi.fov = rounded;
       device.markModified('camera');
       await device.save();
       saved = {
@@ -1434,17 +1449,11 @@ router.get('/route-thumbs', authenticateToken, async (req, res) => {
 /**
  * List recent detections at a waypoint suitable for FOV batch calibration.
  * Query: waypointNumber (1-based) or rotation+tilt,
- *        limit (default 10, max 30),
+ *        OR allPositions=true + calibratedOnly — alle Pos mit gespeicherter Kalibrierung
+ *        limit (default 10, max 30; calibratedOnly max 100; allPositions max 300),
  *        priorMode: overwrite | skip | append
- *          overwrite — neueste N (auch mit bestehender Kalibrierung)
- *          skip — unter den neuesten N nur ohne Kalibrierung (kann < N sein)
- *          append — ohne Kalibrierung, weiter zurückgreifen bis N voll
  *        birdFilter: pigeon_and_unknown | confirmed_only | all
- *          pigeon_and_unknown — Taube erkannt + unbekannt (default, kein no_pigeon)
- *          confirmed_only — nur classification_status confirmed_pigeon
- *          all — alle Bilder an dieser Pos (auch ohne Taube)
  *        calibratedOnly: true — nur Detections mit gespeicherter fovCalibration
- *          (ignoriert birdFilter; für Batch-Liste / gespeicherte Messungen)
  */
 router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
   try {
@@ -1454,9 +1463,14 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
     const calibratedOnly = req.query.calibratedOnly === '1'
       || req.query.calibratedOnly === 'true'
       || req.query.calibratedOnly === true;
+    const allPositions = req.query.allPositions === '1'
+      || req.query.allPositions === 'true'
+      || req.query.allPositions === true;
     const limit = Math.min(
-      calibratedOnly ? 100 : 30,
-      Math.max(1, Number(req.query.limit) || (calibratedOnly ? 50 : 10))
+      allPositions && calibratedOnly ? 300 : (calibratedOnly ? 100 : 30),
+      Math.max(1, Number(req.query.limit) || (
+        allPositions && calibratedOnly ? 200 : (calibratedOnly ? 50 : 10)
+      ))
     );
     const priorMode = ['overwrite', 'skip', 'append'].includes(String(req.query.priorMode || ''))
       ? String(req.query.priorMode)
@@ -1469,28 +1483,52 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
     let waypointNumber = req.query.waypointNumber != null ? Number(req.query.waypointNumber) : null;
 
     const coords = device.actions?.route?.coordinates || [];
-    if (waypointNumber != null && Number.isFinite(waypointNumber) && waypointNumber >= 1 && waypointNumber <= coords.length) {
-      const c = coords[waypointNumber - 1];
-      rotation = Number(c.rotation);
-      tilt = Number(c.tilt);
-    }
-    if (rotation == null || tilt == null || Number.isNaN(rotation) || Number.isNaN(tilt)) {
-      return res.status(400).json({ error: 'waypointNumber oder rotation+tilt erforderlich' });
+
+    const resolveWpFromPose = (camPos) => {
+      if (!camPos || camPos.rotation == null || camPos.tilt == null) return null;
+      const r = Math.round(Number(camPos.rotation));
+      const t = Math.round(Number(camPos.tilt));
+      for (let i = 0; i < coords.length; i++) {
+        const c = coords[i];
+        const cr = Math.round(Number(c.rotation));
+        const ct = Math.round(Number(c.tilt));
+        const inv = applyInversion(device, c.rotation, c.tilt);
+        if ((cr === r && ct === t) || (inv.rotation === r && inv.tilt === t)) {
+          return i + 1;
+        }
+      }
+      return null;
+    };
+
+    if (!(allPositions && calibratedOnly)) {
+      if (waypointNumber != null && Number.isFinite(waypointNumber) && waypointNumber >= 1 && waypointNumber <= coords.length) {
+        const c = coords[waypointNumber - 1];
+        rotation = Number(c.rotation);
+        tilt = Number(c.tilt);
+      }
+      if (rotation == null || tilt == null || Number.isNaN(rotation) || Number.isNaN(tilt)) {
+        return res.status(400).json({ error: 'waypointNumber oder rotation+tilt erforderlich (oder allPositions+calibratedOnly)' });
+      }
     }
 
-    const inv = applyInversion(device, rotation, tilt);
-    const poseOr = [
-      { 'camera_position.rotation': Math.round(rotation), 'camera_position.tilt': Math.round(tilt) },
-      { 'camera_position.rotation': inv.rotation, 'camera_position.tilt': inv.tilt }
-    ];
+    let poseOr = null;
+    if (!(allPositions && calibratedOnly)) {
+      const inv = applyInversion(device, rotation, tilt);
+      poseOr = [
+        { 'camera_position.rotation': Math.round(rotation), 'camera_position.tilt': Math.round(tilt) },
+        { 'camera_position.rotation': inv.rotation, 'camera_position.tilt': inv.tilt }
+      ];
+    }
 
-    const fetchCap = calibratedOnly
-      ? Math.min(200, Math.max(limit * 2, 50))
-      : priorMode === 'append'
-        ? Math.min(200, Math.max(limit * 10, 50))
-        : priorMode === 'skip'
-          ? Math.min(120, Math.max(limit * 4, 30))
-          : Math.min(90, limit * 3);
+    const fetchCap = allPositions && calibratedOnly
+      ? Math.min(500, Math.max(limit * 2, 100))
+      : calibratedOnly
+        ? Math.min(200, Math.max(limit * 2, 50))
+        : priorMode === 'append'
+          ? Math.min(200, Math.max(limit * 10, 50))
+          : priorMode === 'skip'
+            ? Math.min(120, Math.max(limit * 4, 30))
+            : Math.min(90, limit * 3);
 
     const birdQuery = (() => {
       if (calibratedOnly) return {};
@@ -1503,7 +1541,6 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
       if (birdFilter === 'all') {
         return {};
       }
-      // pigeon_and_unknown: CV-Taube, aber nicht als „keine Taube“ klassifiziert
       return {
         'target_bird.bbox.width': { $gt: 0 },
         classification_status: { $ne: 'no_pigeon' }
@@ -1512,9 +1549,9 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
 
     const findQuery = {
       device: device._id,
-      $or: poseOr,
       ...birdQuery
     };
+    if (poseOr) findQuery.$or = poseOr;
     if (calibratedOnly) {
       findQuery.$and = [
         {
@@ -1535,22 +1572,26 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
       .limit(fetchCap)
       .lean();
 
-    const ids = docs.map((d) => d._id);
-    const imaged = await Detection.find({ _id: { $in: ids } })
-      .select('_id zoomed_image.url image.url raspberry_pi_zoomed_image.url raspberry_pi_image.url tapo_zoomed_image.url tapo_image.url')
-      .lean();
-    const hasImg = new Set(
-      imaged
-        .filter((d) => pickDetectionImageBase64(d))
-        .map((d) => String(d._id))
-    );
-
-    const withImage = docs.filter((d) => hasImg.has(String(d._id)));
     const hasCal = (d) => !!(d.fovCalibration && (
       d.fovCalibration.at
       || d.fovCalibration.fovH != null
       || d.fovCalibration.finalPose?.rotation != null
     ));
+
+    let withImage = docs;
+    // Per-Pos batch list still requires an image; global analysis only needs calibration numbers
+    if (!(allPositions && calibratedOnly)) {
+      const ids = docs.map((d) => d._id);
+      const imaged = await Detection.find({ _id: { $in: ids } })
+        .select('_id zoomed_image.url image.url raspberry_pi_zoomed_image.url raspberry_pi_image.url tapo_zoomed_image.url tapo_image.url')
+        .lean();
+      const hasImg = new Set(
+        imaged
+          .filter((d) => pickDetectionImageBase64(d))
+          .map((d) => String(d._id))
+      );
+      withImage = docs.filter((d) => hasImg.has(String(d._id)));
+    }
 
     let selectedDocs = [];
     if (calibratedOnly) {
@@ -1571,6 +1612,11 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
         dRot = Number(cal.finalPose.rotation) - Number(cal.scanPose.rotation);
         dTilt = Number(cal.finalPose.tilt) - Number(cal.scanPose.tilt);
       }
+      const wpFromPose = resolveWpFromPose(d.camera_position);
+      // Prefer pose match over stored cal.waypointNumber (can be stale after reassignment)
+      const wp = wpFromPose != null
+        ? wpFromPose
+        : (cal?.waypointNumber != null ? Number(cal.waypointNumber) : null);
       return {
         detectionId: d._id,
         processedAt: d.processedAt,
@@ -1579,6 +1625,7 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
         targetBird: d.target_bird || null,
         imageInfo: d.image_info || null,
         hasPriorCalibration: hasCal(d),
+        waypointNumber: Number.isFinite(wp) ? wp : null,
         priorFov: cal?.fovH != null
           ? { h: cal.fovH, v: cal.fovV, converged: cal.converged }
           : null,
@@ -1596,7 +1643,7 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
             autoAimPose: cal.autoAimPose || null,
             finalPose: cal.finalPose || null,
             zoomFactor: cal.zoomFactor,
-            waypointNumber: cal.waypointNumber,
+            waypointNumber: Number.isFinite(wp) ? wp : (cal.waypointNumber || null),
             dRot,
             dTilt,
             excluded: !!cal.excluded,
@@ -1609,9 +1656,10 @@ router.get('/calibrate-candidates', authenticateToken, async (req, res) => {
     });
 
     res.json({
-      waypointNumber: waypointNumber || null,
-      rotation: Math.round(rotation),
-      tilt: Math.round(tilt),
+      waypointNumber: allPositions ? null : (waypointNumber || null),
+      allPositions: !!(allPositions && calibratedOnly),
+      rotation: rotation != null && !Number.isNaN(rotation) ? Math.round(rotation) : null,
+      tilt: tilt != null && !Number.isNaN(tilt) ? Math.round(tilt) : null,
       priorMode,
       birdFilter,
       calibratedOnly: !!calibratedOnly,

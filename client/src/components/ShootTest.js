@@ -27,7 +27,9 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Slider,
+  Stack
 } from '@mui/material';
 import {
   GpsFixed as CrosshairIcon,
@@ -48,9 +50,31 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  ReferenceLine
+  ReferenceLine,
+  BarChart,
+  Bar,
+  Cell
 } from 'recharts';
 import { hasActiveLaserZone, normalizeLaserZone } from '../utils/laserZone';
+
+const POS_COLORS = [
+  '#1976d2', '#ed6c02', '#2e7d32', '#9c27b0',
+  '#d32f2f', '#00838f', '#f9a825', '#5d4037',
+  '#c2185b', '#455a64'
+];
+
+function posColor(wp) {
+  const n = Number(wp);
+  if (!Number.isFinite(n) || n < 1) return '#757575';
+  return POS_COLORS[(n - 1) % POS_COLORS.length];
+}
+
+function residualMag(r) {
+  const rx = Number(r?.residualPx?.x);
+  const ry = Number(r?.residualPx?.y);
+  if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
+  return Math.hypot(rx, ry);
+}
 
 /** Map full-frame normalized polygon points into the digital-zoom crop view. */
 function mapPolygonToZoomedView(points, zoomFactor = 1) {
@@ -405,23 +429,34 @@ function validBatchRows(items) {
 
 function medianFovFromBatchRows(rows) {
   const valid = validBatchRows(rows);
-  return {
-    count: valid.length,
-    h: medianFinite(valid.map((r) => r.fovH)),
-    v: medianFinite(valid.map((r) => r.fovV))
-  };
+  const hVals = valid.map((r) => r.fovH);
+  const vVals = valid.map((r) => r.fovV);
+  const h = medianFinite(hVals);
+  const v = medianFinite(vVals);
+  // Square camera: one FOV = median over all H and V axis samples
+  const fov = medianFinite([...hVals, ...vVals])
+    ?? (h != null && v != null ? (h + v) / 2 : (h ?? v ?? null));
+  return { count: valid.length, h, v, fov };
 }
 
 function buildReportFovFromBatchRows(rows, soll) {
-  const { h: medH, v: medV } = medianFovFromBatchRows(rows);
-  if (medH == null && medV == null) return null;
+  const { h: medH, v: medV, fov } = medianFovFromBatchRows(rows);
+  if (fov == null && medH == null && medV == null) return null;
+  const istVal = fov ?? medH ?? medV;
+  const sollH = soll?.h != null ? Number(soll.h) : (soll?.horizontal != null ? Number(soll.horizontal) : null);
+  const sollV = soll?.v != null ? Number(soll.v) : (soll?.vertical != null ? Number(soll.vertical) : null);
+  const sollCombined = (sollH != null && sollV != null)
+    ? (sollH + sollV) / 2
+    : (sollH ?? sollV ?? null);
   return {
-    soll,
-    ist: { h: medH, v: medV },
+    soll: { h: sollH, v: sollV, combined: sollCombined },
+    ist: { h: istVal, v: istVal },
     delta: {
-      h: medH != null && soll?.h != null ? medH - soll.h : null,
-      v: medV != null && soll?.v != null ? medV - soll.v : null
-    }
+      h: istVal != null && sollCombined != null ? istVal - sollCombined : null,
+      v: istVal != null && sollCombined != null ? istVal - sollCombined : null
+    },
+    fov: istVal,
+    axis: { h: medH, v: medV }
   };
 }
 
@@ -588,6 +623,7 @@ function batchRowFromCandidate(c, index) {
       scanPose: cal.scanPose || null,
       zoomFactor: cal.zoomFactor || c.zoom_factor || null,
       cameraPosition: c.camera_position || null,
+      waypointNumber: cal.waypointNumber ?? c.waypointNumber ?? null,
       manual: !!cal.manual || cal.method === 'manual',
       calSource: cal.source || (cal.manual || cal.method === 'manual' ? 'manual' : 'auto'),
       error: null
@@ -619,6 +655,7 @@ function batchRowFromCandidate(c, index) {
     scanPose: null,
     zoomFactor: c.zoom_factor || null,
     cameraPosition: c.camera_position || null,
+    waypointNumber: c.waypointNumber ?? null,
     manual: false,
     calSource: null,
     error: null
@@ -736,18 +773,109 @@ function StatsRow({ label, stats, digits = 1, unit = '°' }) {
   );
 }
 
+/** Ordinary least-squares y = slope·x + intercept for scatter points {x,y}. */
+function linearFit(points) {
+  const pts = (points || []).filter(
+    (p) => Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))
+  );
+  const n = pts.length;
+  if (n < 2) return null;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXX = 0;
+  let sumXY = 0;
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  for (const p of pts) {
+    const x = Number(p.x);
+    const y = Number(p.y);
+    sumX += x;
+    sumY += y;
+    sumXX += x * x;
+    sumXY += x * y;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+  }
+  const denom = n * sumXX - sumX * sumX;
+  if (!Number.isFinite(denom) || Math.abs(denom) < 1e-12) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  if (!Number.isFinite(slope) || !Number.isFinite(intercept)) return null;
+  const meanY = sumY / n;
+  let ssTot = 0;
+  let ssRes = 0;
+  for (const p of pts) {
+    const y = Number(p.y);
+    const pred = slope * Number(p.x) + intercept;
+    ssTot += (y - meanY) ** 2;
+    ssRes += (y - pred) ** 2;
+  }
+  const r2 = ssTot > 1e-12 ? 1 - ssRes / ssTot : 1;
+  if (!(xMax > xMin)) {
+    xMin -= 1;
+    xMax += 1;
+  }
+  return {
+    slope,
+    intercept,
+    r2,
+    n,
+    segment: [
+      { x: xMin, y: slope * xMin + intercept },
+      { x: xMax, y: slope * xMax + intercept }
+    ]
+  };
+}
+
+function fmtLinearFitLabel(name, fit) {
+  if (!fit) return `${name}: —`;
+  const sign = fit.intercept >= 0 ? '+' : '−';
+  const absInt = Math.abs(fit.intercept);
+  return `${name}: y = ${fmtNum(fit.slope, 4, true)}·x ${sign} ${fmtNum(absInt, 2)}  (R²=${fmtNum(fit.r2, 2)}, n=${fit.n})`;
+}
+
 /** Post-batch: measurement overview + deviation vs bird pixel position */
-function BatchAnalysisPanel({ items, fromPrior = false }) {
+function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
   const okAll = (items || []).filter((r) => r.status === 'ok');
   const ok = okAll.filter((r) => !r.excluded);
   const excludedCount = okAll.length - ok.length;
+
+  const dataRadiusMax = (() => {
+    let maxR = 0;
+    ok.forEach((r) => {
+      const ox = Number(r.offsetPx?.x);
+      const oy = Number(r.offsetPx?.y);
+      if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
+      maxR = Math.max(maxR, Math.hypot(ox, oy));
+    });
+    return Math.max(50, Math.ceil(maxR / 25) * 25 || 400);
+  })();
+  const dataDeltaAbsMax = (() => {
+    let maxD = 0;
+    ok.forEach((r) => {
+      const dH = Number(r.report?.fov?.delta?.h);
+      const dV = Number(r.report?.fov?.delta?.v);
+      if (Number.isFinite(dH)) maxD = Math.max(maxD, Math.abs(dH));
+      if (Number.isFinite(dV)) maxD = Math.max(maxD, Math.abs(dV));
+    });
+    return Math.max(5, Math.ceil(maxD / 5) * 5 || 40);
+  })();
+
+  const [radiusRange, setRadiusRange] = useState([0, 400]);
+  const [deltaAbsMax, setDeltaAbsMax] = useState(40);
+
+  useEffect(() => {
+    setRadiusRange([0, dataRadiusMax]);
+    setDeltaAbsMax(dataDeltaAbsMax);
+  }, [dataRadiusMax, dataDeltaAbsMax, global, ok.length]);
+
   if (!okAll.length) return null;
   if (!ok.length) {
     return (
       <Card sx={{ mt: 2 }}>
         <CardContent>
           <Typography variant="subtitle1" gutterBottom>
-            Auswertung
+            {global ? 'Auswertung alle Positionen' : 'Auswertung'}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Alle {okAll.length} ok-Messungen sind manuell als ungültig markiert — Statistik ausgeblendet.
@@ -763,27 +891,52 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
   const dTiltStats = statsFinite(ok.map((r) => r.dTilt));
   const deltaHStats = statsFinite(ok.map((r) => r.report?.fov?.delta?.h));
   const deltaVStats = statsFinite(ok.map((r) => r.report?.fov?.delta?.v));
-  const residualMagStats = statsFinite(ok.map((r) => {
-    const rx = Number(r.residualPx?.x);
-    const ry = Number(r.residualPx?.y);
-    if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
-    return Math.hypot(rx, ry);
-  }));
+  const residualMagStats = statsFinite(ok.map((r) => residualMag(r)));
+
+  // Speichern-Wahrheit: alle gültigen Samples (unabhängig vom Fokus-Regler)
+  const fovTruth = medianFovFromBatchRows(ok);
+  const empFovAll = fovTruth.fov;
+  const sollMedAll = medianFinite(
+    ok.flatMap((r) => [r.report?.fov?.soll?.h, r.report?.fov?.soll?.v, r.report?.fov?.soll?.combined]),
+    1,
+    179
+  );
+  const medDeltaAll = (empFovAll != null && sollMedAll != null)
+    ? empFovAll - sollMedAll
+    : null;
+
+  const posSampleById = new Map();
+  {
+    const ctr = {};
+    ok.forEach((r) => {
+      const key = String(r.waypointNumber ?? '_');
+      ctr[key] = (ctr[key] || 0) + 1;
+      if (r.detectionId != null) posSampleById.set(String(r.detectionId), ctr[key]);
+    });
+  }
 
   const rotVsOffsetX = ok
     .filter((r) => Number.isFinite(Number(r.offsetPx?.x)) && Number.isFinite(Number(r.dRot)))
     .map((r) => ({
       x: Number(r.offsetPx.x),
       y: Number(r.dRot),
-      index: r.index
+      index: r.index,
+      pos: r.waypointNumber ?? '?',
+      posSample: posSampleById.get(String(r.detectionId)) ?? r.index,
+      detectionId: r.detectionId ? String(r.detectionId) : null
     }));
   const tiltVsOffsetY = ok
     .filter((r) => Number.isFinite(Number(r.offsetPx?.y)) && Number.isFinite(Number(r.dTilt)))
     .map((r) => ({
       x: Number(r.offsetPx.y),
       y: Number(r.dTilt),
-      index: r.index
+      index: r.index,
+      pos: r.waypointNumber ?? '?',
+      posSample: posSampleById.get(String(r.detectionId)) ?? r.index,
+      detectionId: r.detectionId ? String(r.detectionId) : null
     }));
+  const rotFit = linearFit(rotVsOffsetX);
+  const tiltFit = linearFit(tiltVsOffsetY);
   const fovDeltaVsRadius = ok
     .map((r) => {
       const ox = Number(r.offsetPx?.x);
@@ -796,16 +949,140 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
         radius,
         deltaH: Number.isFinite(Number(dH)) ? Number(dH) : null,
         deltaV: Number.isFinite(Number(dV)) ? Number(dV) : null,
-        index: r.index
+        index: r.index,
+        pos: r.waypointNumber ?? '?',
+        posSample: posSampleById.get(String(r.detectionId)) ?? r.index,
+        detectionId: r.detectionId ? String(r.detectionId) : null
       };
     })
     .filter(Boolean);
   const deltaHPoints = fovDeltaVsRadius
     .filter((p) => p.deltaH != null)
-    .map((p) => ({ x: p.radius, y: p.deltaH, index: p.index }));
+    .map((p) => ({
+      x: p.radius,
+      y: p.deltaH,
+      index: p.index,
+      pos: p.pos,
+      posSample: p.posSample,
+      detectionId: p.detectionId
+    }));
   const deltaVPoints = fovDeltaVsRadius
     .filter((p) => p.deltaV != null)
-    .map((p) => ({ x: p.radius, y: p.deltaV, index: p.index }));
+    .map((p) => ({
+      x: p.radius,
+      y: p.deltaV,
+      index: p.index,
+      pos: p.pos,
+      posSample: p.posSample,
+      detectionId: p.detectionId
+    }));
+
+  const rMin = Math.min(radiusRange[0], radiusRange[1]);
+  const rMax = Math.max(radiusRange[0], radiusRange[1]);
+  const dAbs = Math.max(1, Number(deltaAbsMax) || dataDeltaAbsMax);
+  const fovPointInFocus = (p) => (
+    Number.isFinite(p.x) && Number.isFinite(p.y)
+    && p.x >= rMin && p.x <= rMax
+    && Math.abs(p.y) <= dAbs
+  );
+  const deltaHFocus = deltaHPoints.filter(fovPointInFocus);
+  const deltaVFocus = deltaVPoints.filter(fovPointInFocus);
+  const fovFocusCount = deltaHFocus.length + deltaVFocus.length;
+  const fovTotalCount = deltaHPoints.length + deltaVPoints.length;
+  const fovFocusActive = rMin > 0 || rMax < dataRadiusMax || dAbs < dataDeltaAbsMax;
+
+  // Empfohlen-FOV-Zeile + Empf.-Δ-Linie: neu aus Fokus-Regler
+  const focusH = [];
+  const focusV = [];
+  const focusSoll = [];
+  ok.forEach((r) => {
+    const ox = Number(r.offsetPx?.x);
+    const oy = Number(r.offsetPx?.y);
+    if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
+    const radius = Math.hypot(ox, oy);
+    if (radius < rMin || radius > rMax) return;
+    const dH = Number(r.report?.fov?.delta?.h);
+    const dV = Number(r.report?.fov?.delta?.v);
+    const h = Number(r.fovH);
+    const v = Number(r.fovV);
+    if (Number.isFinite(h) && (!Number.isFinite(dH) || Math.abs(dH) <= dAbs)) {
+      focusH.push(h);
+      const sh = Number(r.report?.fov?.soll?.h ?? r.report?.fov?.soll?.combined);
+      if (Number.isFinite(sh)) focusSoll.push(sh);
+    }
+    if (Number.isFinite(v) && (!Number.isFinite(dV) || Math.abs(dV) <= dAbs)) {
+      focusV.push(v);
+      const sv = Number(r.report?.fov?.soll?.v ?? r.report?.fov?.soll?.combined);
+      if (Number.isFinite(sv)) focusSoll.push(sv);
+    }
+  });
+  const empFov = medianFinite([...focusH, ...focusV]);
+  const empFovH = medianFinite(focusH);
+  const empFovV = medianFinite(focusV);
+  const sollMed = medianFinite(focusSoll, 1, 179);
+  const medDeltaCombined = (empFov != null && sollMed != null) ? empFov - sollMed : null;
+  const medDeltaH = statsFinite(deltaHFocus.map((p) => p.y)).median;
+  const medDeltaV = statsFinite(deltaVFocus.map((p) => p.y)).median;
+
+  const fovYDomain = (() => {
+    const ys = [...deltaHFocus, ...deltaVFocus].map((p) => p.y).filter(Number.isFinite);
+    if (!ys.length) return [-dAbs, dAbs];
+    let yMin = Math.min(...ys);
+    let yMax = Math.max(...ys);
+    yMin = Math.min(yMin, 0);
+    yMax = Math.max(yMax, 0);
+    if (medDeltaCombined != null && Math.abs(medDeltaCombined) <= dAbs) {
+      yMin = Math.min(yMin, medDeltaCombined);
+      yMax = Math.max(yMax, medDeltaCombined);
+    }
+    if (medDeltaH != null && Math.abs(medDeltaH) <= dAbs) {
+      yMin = Math.min(yMin, medDeltaH);
+      yMax = Math.max(yMax, medDeltaH);
+    }
+    if (medDeltaV != null && Math.abs(medDeltaV) <= dAbs) {
+      yMin = Math.min(yMin, medDeltaV);
+      yMax = Math.max(yMax, medDeltaV);
+    }
+    const span = Math.max(yMax - yMin, 1);
+    const pad = Math.max(span * 0.08, 0.5);
+    yMin -= pad;
+    yMax += pad;
+    yMin = Math.max(yMin, -dAbs);
+    yMax = Math.min(yMax, dAbs);
+    if (!(yMax > yMin)) return [-dAbs, dAbs];
+    return [Number(yMin.toFixed(2)), Number(yMax.toFixed(2))];
+  })();
+
+  const posKeys = [...new Set(ok.map((r) => r.waypointNumber).filter((n) => n != null))]
+    .map(Number)
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+
+  const perPosRows = posKeys.map((wp) => {
+    const rows = ok.filter((r) => Number(r.waypointNumber) === wp);
+    const { fov: fovMed, h: fovHMed, v: fovVMed } = medianFovFromBatchRows(rows);
+    const dH = statsFinite(rows.map((r) => r.report?.fov?.delta?.h));
+    const dV = statsFinite(rows.map((r) => r.report?.fov?.delta?.v));
+    const res = statsFinite(rows.map((r) => residualMag(r)));
+    const soll = medianFinite(
+      rows.flatMap((r) => [r.report?.fov?.soll?.h, r.report?.fov?.soll?.v, r.report?.fov?.soll?.combined]),
+      1,
+      179
+    );
+    const deltaMed = (fovMed != null && soll != null) ? fovMed - soll : null;
+    return {
+      pos: wp,
+      label: `Pos ${wp}`,
+      n: rows.length,
+      fov: fovMed,
+      fovH: fovHMed,
+      fovV: fovVMed,
+      delta: deltaMed,
+      deltaH: dH.median,
+      deltaV: dV.median,
+      residual: res.median
+    };
+  });
 
   const tip = ({ active, payload }) => {
     if (!active || !payload?.length) return null;
@@ -813,10 +1090,37 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
     if (!p) return null;
     return (
       <Paper sx={{ p: 1 }} elevation={2}>
-        <Typography variant="caption" display="block">#{p.index}</Typography>
         <Typography variant="caption" display="block">
-          x={fmtNum(p.x, 1)} · y={fmtNum(p.y, 2)}
+          {global
+            ? (p.pos != null && p.pos !== '?'
+              ? `Pos ${p.pos} · #${p.posSample ?? p.index}`
+              : `#${p.index}`)
+            : `#${p.index}`}
         </Typography>
+        <Typography variant="caption" display="block">
+          x={fmtNum(p.x, 1, true)} · y={fmtNum(p.y, 2, true)}
+        </Typography>
+      </Paper>
+    );
+  };
+
+  const barTip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const p = payload[0]?.payload;
+    if (!p) return null;
+    return (
+      <Paper sx={{ p: 1 }} elevation={2}>
+        <Typography variant="caption" display="block" fontWeight={700}>{p.label}</Typography>
+        <Typography variant="caption" display="block">n={p.n}</Typography>
+        {p.fov != null && (
+          <Typography variant="caption" display="block">FOV {fmtNum(p.fov, 1)}°</Typography>
+        )}
+        {p.delta != null && (
+          <Typography variant="caption" display="block">Δ {fmtNum(p.delta, 1, true)}°</Typography>
+        )}
+        {p.residual != null && (
+          <Typography variant="caption" display="block">Res {fmtNum(p.residual, 1)} px</Typography>
+        )}
       </Paper>
     );
   };
@@ -825,60 +1129,153 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
     <Card sx={{ mt: 2 }}>
       <CardContent>
         <Typography variant="subtitle1" gutterBottom>
-          Auswertung ({ok.length} Messungen
+          {global ? 'Auswertung alle Positionen' : 'Auswertung'}
+          {' '}
+          ({ok.length} Messungen
+          {global && posKeys.length ? ` · ${posKeys.length} Pos` : ''}
           {excludedCount > 0 ? ` · ${excludedCount} manuell ungültig` : ''})
           {fromPrior ? ' — gespeicherte Kalibrierungen' : ''}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Statistik über ok-Samples (automatisch gültig; ohne manuell ungültige) + Abweichung vs. Taubenposition.
-          {fromPrior ? ' Geladen aus Detection.fovCalibration; Gerät-FOV wird nicht geschrieben.' : ''}
+          {global
+            ? 'Gesamtstatistik über alle Wegpunkte. Punkte farbig nach Pos. Gerät-FOV wird hier nicht geschrieben.'
+            : 'Statistik über ok-Samples (automatisch gültig; ohne manuell ungültige) + Abweichung vs. Taubenposition.'}
+          {fromPrior && !global ? ' Geladen aus Detection.fovCalibration; Gerät-FOV wird nicht geschrieben.' : ''}
         </Typography>
+
+        {global && posKeys.length > 0 && (
+          <Box display="flex" flexWrap="wrap" gap={0.75} sx={{ mb: 2 }}>
+            {posKeys.map((wp) => (
+              <Chip
+                key={wp}
+                size="small"
+                label={`Pos ${wp}`}
+                sx={{ bgcolor: posColor(wp), color: '#fff' }}
+              />
+            ))}
+          </Box>
+        )}
 
         <Grid container spacing={2}>
           <Grid item xs={12} md={5}>
             <Paper variant="outlined" sx={{ p: 1.5 }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>Statistik</Typography>
-              <StatsRow label="FOV H" stats={fovHStats} />
-              <StatsRow label="FOV V" stats={fovVStats} />
+              <Box sx={{ mb: 1 }}>
+                <Typography variant="body2" fontWeight={700}>
+                  FOV empfohlen
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.75 }}>
+                    n={fovTruth.count} · Speichern (alle Samples)
+                  </Typography>
+                </Typography>
+                <Typography variant="body1" fontWeight={800}>
+                  {empFovAll != null ? `${fmtNum(empFovAll, 1)}°` : '—'}
+                  {sollMedAll != null && medDeltaAll != null
+                    ? `  (Soll ${fmtNum(sollMedAll, 1)}° · Δ ${fmtNum(medDeltaAll, 1, true)}°)`
+                    : ''}
+                </Typography>
+              </Box>
+              <StatsRow label="FOV H (Diagnose)" stats={fovHStats} />
+              <StatsRow label="FOV V (Diagnose)" stats={fovVStats} />
               <StatsRow label="ΔFOV H (Ist−Soll)" stats={deltaHStats} />
               <StatsRow label="ΔFOV V (Ist−Soll)" stats={deltaVStats} />
               <StatsRow label="Pose ΔR" stats={dRotStats} />
               <StatsRow label="Pose ΔT" stats={dTiltStats} />
               <StatsRow label="Residual |px|" stats={residualMagStats} unit=" px" />
             </Paper>
+
+            {global && perPosRows.length > 0 && (
+              <Paper variant="outlined" sx={{ p: 1.5, mt: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Pro Position</Typography>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: '48px repeat(4, minmax(44px, 1fr))',
+                    gap: '4px 8px',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontSize: 12,
+                    alignItems: 'center'
+                  }}
+                >
+                  <Typography variant="caption" fontWeight={700} color="text.secondary">Pos</Typography>
+                  <Typography variant="caption" fontWeight={700} color="text.secondary" textAlign="right">n</Typography>
+                  <Typography variant="caption" fontWeight={700} color="text.secondary" textAlign="right">FOV</Typography>
+                  <Typography variant="caption" fontWeight={700} color="text.secondary" textAlign="right">Δ</Typography>
+                  <Typography variant="caption" fontWeight={700} color="text.secondary" textAlign="right">Res</Typography>
+                  {perPosRows.map((row) => (
+                    <React.Fragment key={row.pos}>
+                      <Typography variant="caption" fontWeight={700} sx={{ color: posColor(row.pos) }}>
+                        {row.pos}
+                      </Typography>
+                      <Typography variant="caption" textAlign="right">{row.n}</Typography>
+                      <Typography variant="caption" textAlign="right">{fmtNum(row.fov, 1)}°</Typography>
+                      <Typography variant="caption" textAlign="right">{fmtNum(row.delta, 1, true)}°</Typography>
+                      <Typography variant="caption" textAlign="right">
+                        {row.residual != null ? `${fmtNum(row.residual, 0)} px` : '—'}
+                      </Typography>
+                    </React.Fragment>
+                  ))}
+                </Box>
+              </Paper>
+            )}
           </Grid>
 
           <Grid item xs={12} md={7}>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
               Pose-Korrektur vs. Offset (px vom Zentrum)
             </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+              Ideal: näherungsweise linear. ΔR ~ Offset-X, ΔT ~ Offset-Y. Gestrichelte Linien = OLS-Fit.
+              {global ? ' Farbe = Position · Kreis = ΔR · Dreieck = ΔT.' : ''}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.25 }}>
+              {fmtLinearFitLabel('ΔR', rotFit)}
+            </Typography>
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Ideal: näherungsweise linear. ΔR ~ Offset-X, ΔT ~ Offset-Y.
+              {fmtLinearFitLabel('ΔT', tiltFit)}
             </Typography>
             <Box sx={{ width: '100%', height: 220, mb: 2 }}>
               <ResponsiveContainer>
                 <ScatterChart margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    type="number"
-                    dataKey="x"
-                    name="Offset"
-                    unit=" px"
-                    tick={{ fontSize: 11 }}
-                  />
-                  <YAxis
-                    type="number"
-                    dataKey="y"
-                    name="Δ"
-                    unit="°"
-                    tick={{ fontSize: 11 }}
-                  />
+                  <XAxis type="number" dataKey="x" name="Offset" unit=" px" tick={{ fontSize: 11 }} />
+                  <YAxis type="number" dataKey="y" name="Δ" unit="°" tick={{ fontSize: 11 }} />
                   <Tooltip content={tip} cursor={{ strokeDasharray: '3 3' }} />
                   <Legend />
                   <ReferenceLine x={0} stroke="#999" />
                   <ReferenceLine y={0} stroke="#999" />
-                  <Scatter name="ΔR vs Offset-X" data={rotVsOffsetX} fill="#1976d2" />
-                  <Scatter name="ΔT vs Offset-Y" data={tiltVsOffsetY} fill="#ed6c02" />
+                  {rotFit && (
+                    <ReferenceLine
+                      segment={rotFit.segment}
+                      stroke="#1976d2"
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                      ifOverflow="extendDomain"
+                    />
+                  )}
+                  {tiltFit && (
+                    <ReferenceLine
+                      segment={tiltFit.segment}
+                      stroke="#ed6c02"
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                      ifOverflow="extendDomain"
+                    />
+                  )}
+                  <Scatter name="ΔR vs Offset-X" data={rotVsOffsetX} fill="#1976d2">
+                    {global && rotVsOffsetX.map((p, i) => (
+                      <Cell key={`rot-${i}`} fill={posColor(p.pos)} />
+                    ))}
+                  </Scatter>
+                  <Scatter
+                    name="ΔT vs Offset-Y"
+                    data={tiltVsOffsetY}
+                    fill="#ed6c02"
+                    shape={global ? 'triangle' : 'circle'}
+                  >
+                    {global && tiltVsOffsetY.map((p, i) => (
+                      <Cell key={`tilt-${i}`} fill={posColor(p.pos)} />
+                    ))}
+                  </Scatter>
                 </ScatterChart>
               </ResponsiveContainer>
             </Box>
@@ -886,10 +1283,72 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
               FOV-Abweichung vs. Abstand vom Bildzentrum
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              ΔFOV (Ist−Soll) über radialen Offset √(x²+y²). Streuung zeigt, ob Randlagen systematisch abweichen.
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+              ΔFOV (Ist−Soll) über radialen Offset √(x²+y²). H/V-Punkte = Diagnose; gestrichelte Linien = Achsen-Median-Δ.
+              Schwarze Linie = empfohlene Korrektur (ein FOV, quadratisch).
+              {global ? ' Farbe = Position · Kreis = ΔFOV H · Dreieck = ΔFOV V.' : ''}
             </Typography>
-            <Box sx={{ width: '100%', height: 220 }}>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Empfohlen FOV
+              {fovFocusActive ? ' (Fokus)' : ''}
+              :&nbsp;
+              {empFov != null ? `${fmtNum(empFov, 1)}°` : '—'}
+              {sollMed != null && medDeltaCombined != null
+                ? ` (Soll ${fmtNum(sollMed, 1)}° + Δ ${fmtNum(medDeltaCombined, 1, true)}°)`
+                : ''}
+              {empFovH != null || empFovV != null
+                ? ` · Diagnose H ${fmtNum(empFovH, 1)}° / V ${fmtNum(empFovV, 1)}°`
+                : ''}
+              {` · n=${focusH.length + focusV.length}`}
+            </Typography>
+
+            <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                <Typography variant="caption" fontWeight={700}>
+                  Fokus Bereich
+                  {fovFocusActive ? ` · ${fovFocusCount}/${fovTotalCount} Punkte` : ` · alle ${fovTotalCount} Punkte`}
+                </Typography>
+                {fovFocusActive && (
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setRadiusRange([0, dataRadiusMax]);
+                      setDeltaAbsMax(dataDeltaAbsMax);
+                    }}
+                  >
+                    Zurücksetzen
+                  </Button>
+                )}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Radius {rMin}–{rMax} px
+              </Typography>
+              <Slider
+                size="small"
+                value={[rMin, rMax]}
+                min={0}
+                max={dataRadiusMax}
+                step={5}
+                valueLabelDisplay="auto"
+                onChange={(_e, v) => setRadiusRange(v)}
+                sx={{ mt: 0.5, mb: 1 }}
+              />
+              <Typography variant="caption" color="text.secondary" display="block">
+                |ΔFOV| max {dAbs}°
+              </Typography>
+              <Slider
+                size="small"
+                value={dAbs}
+                min={1}
+                max={dataDeltaAbsMax}
+                step={1}
+                valueLabelDisplay="auto"
+                onChange={(_e, v) => setDeltaAbsMax(v)}
+                sx={{ mt: 0.5 }}
+              />
+            </Paper>
+
+            <Box sx={{ width: '100%', height: 220, mb: global ? 2 : 0 }}>
               <ResponsiveContainer>
                 <ScatterChart margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" />
@@ -899,6 +1358,8 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
                     name="Radius"
                     unit=" px"
                     tick={{ fontSize: 11 }}
+                    domain={[rMin, rMax]}
+                    allowDataOverflow
                   />
                   <YAxis
                     type="number"
@@ -906,15 +1367,140 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
                     name="ΔFOV"
                     unit="°"
                     tick={{ fontSize: 11 }}
+                    domain={fovYDomain}
+                    allowDataOverflow
                   />
                   <Tooltip content={tip} cursor={{ strokeDasharray: '3 3' }} />
                   <Legend />
                   <ReferenceLine y={0} stroke="#999" />
-                  <Scatter name="ΔFOV H" data={deltaHPoints} fill="#2e7d32" />
-                  <Scatter name="ΔFOV V" data={deltaVPoints} fill="#9c27b0" />
+                  {medDeltaCombined != null && Math.abs(medDeltaCombined) <= dAbs && (
+                    <ReferenceLine
+                      y={medDeltaCombined}
+                      stroke="#212121"
+                      strokeWidth={2}
+                      strokeDasharray="2 2"
+                      label={{
+                        value: `Empf. Δ ${fmtNum(medDeltaCombined, 1, true)}°`,
+                        fill: '#212121',
+                        fontSize: 11,
+                        position: 'insideTopLeft'
+                      }}
+                    />
+                  )}
+                  {medDeltaH != null && Math.abs(medDeltaH) <= dAbs && (
+                    <ReferenceLine
+                      y={medDeltaH}
+                      stroke="#2e7d32"
+                      strokeWidth={1.5}
+                      strokeDasharray="6 4"
+                      label={{
+                        value: `Med ΔH ${fmtNum(medDeltaH, 1, true)}°`,
+                        fill: '#2e7d32',
+                        fontSize: 10,
+                        position: 'insideTopRight'
+                      }}
+                    />
+                  )}
+                  {medDeltaV != null && Math.abs(medDeltaV) <= dAbs && (
+                    <ReferenceLine
+                      y={medDeltaV}
+                      stroke="#9c27b0"
+                      strokeWidth={1.5}
+                      strokeDasharray="6 4"
+                      label={{
+                        value: `Med ΔV ${fmtNum(medDeltaV, 1, true)}°`,
+                        fill: '#9c27b0',
+                        fontSize: 10,
+                        position: 'insideBottomRight'
+                      }}
+                    />
+                  )}
+                  <Scatter name="ΔFOV H" data={deltaHFocus} fill="#2e7d32">
+                    {global && deltaHFocus.map((p, i) => (
+                      <Cell key={`dh-${i}`} fill={posColor(p.pos)} />
+                    ))}
+                  </Scatter>
+                  <Scatter
+                    name="ΔFOV V"
+                    data={deltaVFocus}
+                    fill="#9c27b0"
+                    shape={global ? 'triangle' : 'circle'}
+                  >
+                    {global && deltaVFocus.map((p, i) => (
+                      <Cell key={`dv-${i}`} fill={posColor(p.pos)} />
+                    ))}
+                  </Scatter>
                 </ScatterChart>
               </ResponsiveContainer>
             </Box>
+
+            {global && perPosRows.length > 0 && (
+              <>
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  Median-FOV und Residual pro Position
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  Balken = Median FOV (H∪V). Strichelte Referenz = Gesamt-Median
+                  {empFovAll != null ? ` (${fmtNum(empFovAll, 1)}°)` : ''}.
+                </Typography>
+                <Box sx={{ width: '100%', height: 200, mb: 2 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={perPosRows} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                      <YAxis
+                        yAxisId="fov"
+                        tick={{ fontSize: 11 }}
+                        unit="°"
+                        domain={['auto', 'auto']}
+                      />
+                      <YAxis
+                        yAxisId="res"
+                        orientation="right"
+                        tick={{ fontSize: 11 }}
+                        unit=" px"
+                        domain={[0, 'auto']}
+                      />
+                      <Tooltip content={barTip} />
+                      <Legend />
+                      {empFovAll != null && (
+                        <ReferenceLine yAxisId="fov" y={empFovAll} stroke="#212121" strokeDasharray="4 4" />
+                      )}
+                      <Bar yAxisId="fov" dataKey="fov" name="Median FOV" radius={[4, 4, 0, 0]}>
+                        {perPosRows.map((row) => (
+                          <Cell key={`fov-${row.pos}`} fill={posColor(row.pos)} />
+                        ))}
+                      </Bar>
+                      <Bar yAxisId="res" dataKey="residual" name="Median Residual" fill="#90a4ae" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Box>
+
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  ΔFOV (Ist−Soll) pro Position
+                </Typography>
+                <Box sx={{ width: '100%', height: 180 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={perPosRows} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} unit="°" />
+                      <Tooltip content={barTip} />
+                      <Legend />
+                      <ReferenceLine y={0} stroke="#999" />
+                      {medDeltaAll != null && (
+                        <ReferenceLine y={medDeltaAll} stroke="#212121" strokeDasharray="4 4" />
+                      )}
+                      <Bar dataKey="delta" name="Median ΔFOV" radius={[4, 4, 0, 0]}>
+                        {perPosRows.map((row) => (
+                          <Cell key={`d-${row.pos}`} fill={posColor(row.pos)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Box>
+              </>
+            )}
           </Grid>
         </Grid>
       </CardContent>
@@ -923,8 +1509,11 @@ function BatchAnalysisPanel({ items, fromPrior = false }) {
 }
 
 function ResultTable({ title, hint, columns, rows }) {
+  const colCount = columns?.length || 1;
+  const valueMin = colCount >= 3 ? 56 : 48;
+  const labelW = 40;
   return (
-    <Box sx={{ flex: 1, minWidth: 140 }}>
+    <Box sx={{ flex: `1 1 ${colCount >= 3 ? 220 : 140}px`, minWidth: colCount >= 3 ? 200 : 140 }}>
       <Typography variant="caption" fontWeight={800} display="block" sx={{ mb: 0.25 }}>
         {title}
       </Typography>
@@ -936,22 +1525,30 @@ function ResultTable({ title, hint, columns, rows }) {
       <Box
         sx={{
           display: 'grid',
-          gridTemplateColumns: `52px repeat(${columns.length}, minmax(48px, 1fr))`,
-          gap: '4px 10px',
+          gridTemplateColumns: `${labelW}px repeat(${colCount}, minmax(${valueMin}px, 1fr))`,
+          gap: '4px 8px',
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           fontSize: 13,
-          alignItems: 'center'
+          alignItems: 'center',
+          width: '100%'
         }}
       >
         <Box />
         {columns.map((c) => (
-          <Typography key={c} variant="caption" fontWeight={700} color="text.secondary" textAlign="right">
+          <Typography
+            key={c}
+            variant="caption"
+            fontWeight={700}
+            color="text.secondary"
+            textAlign="right"
+            sx={{ whiteSpace: 'nowrap' }}
+          >
             {c}
           </Typography>
         ))}
         {rows.map((row) => (
           <React.Fragment key={row.label}>
-            <Typography variant="caption" fontWeight={row.emphasis ? 800 : 600}>
+            <Typography variant="caption" fontWeight={row.emphasis ? 800 : 600} sx={{ whiteSpace: 'nowrap' }}>
               {row.label}
             </Typography>
             {row.values.map((v, i) => (
@@ -960,7 +1557,10 @@ function ResultTable({ title, hint, columns, rows }) {
                 variant="caption"
                 fontWeight={row.emphasis ? 800 : 600}
                 textAlign="right"
-                sx={{ color: row.emphasis ? 'text.primary' : 'text.secondary' }}
+                sx={{
+                  color: row.emphasis ? 'text.primary' : 'text.secondary',
+                  whiteSpace: 'nowrap'
+                }}
               >
                 {v}
               </Typography>
@@ -1797,12 +2397,19 @@ function CalibrateResultBanner({ report, waypointNumber, converged, saved }) {
         />
         <ResultTable
           title="FOV (°)"
-          hint="Soll = Gerät bisher · Ist = gemessen"
-          columns={['H', 'V']}
+          hint="FOV speichern · H/V Diagnose"
+          columns={['FOV', 'H', 'V']}
           rows={[
             {
               label: 'Soll',
               values: [
+                fmtNum(
+                  fov.soll?.combined
+                    ?? ((fov.soll?.h != null && fov.soll?.v != null)
+                      ? (Number(fov.soll.h) + Number(fov.soll.v)) / 2
+                      : (fov.soll?.h ?? fov.soll?.v ?? fov.soll?.horizontal ?? fov.soll?.vertical)),
+                  1
+                ),
                 fmtNum(fov.soll?.h ?? fov.soll?.horizontal, 1),
                 fmtNum(fov.soll?.v ?? fov.soll?.vertical, 1)
               ]
@@ -1810,16 +2417,30 @@ function CalibrateResultBanner({ report, waypointNumber, converged, saved }) {
             {
               label: 'Ist',
               values: [
-                fmtNum(fov.ist?.h ?? fov.ist?.fovH, 1),
-                fmtNum(fov.ist?.v ?? fov.ist?.fovV, 1)
+                fmtNum(fov.fov ?? fov.ist?.h ?? fov.ist?.v ?? fov.ist?.fovH, 1),
+                fmtNum(fov.axis?.h ?? fov.ist?.h ?? fov.ist?.fovH, 1),
+                fmtNum(fov.axis?.v ?? fov.ist?.v ?? fov.ist?.fovV, 1)
               ]
             },
             {
               label: 'Δ',
               emphasis: true,
               values: [
-                fmtNum(fov.delta?.h, 1, true),
-                fmtNum(fov.delta?.v, 1, true)
+                fmtNum(fov.delta?.h ?? fov.delta?.v, 1, true),
+                fmtNum(
+                  (fov.axis?.h ?? fov.ist?.h) != null && (fov.soll?.h ?? fov.soll?.horizontal) != null
+                    ? Number(fov.axis?.h ?? fov.ist?.h) - Number(fov.soll?.h ?? fov.soll?.horizontal)
+                    : null,
+                  1,
+                  true
+                ),
+                fmtNum(
+                  (fov.axis?.v ?? fov.ist?.v) != null && (fov.soll?.v ?? fov.soll?.vertical) != null
+                    ? Number(fov.axis?.v ?? fov.ist?.v) - Number(fov.soll?.v ?? fov.soll?.vertical)
+                    : null,
+                  1,
+                  true
+                )
               ]
             }
           ]}
@@ -1948,6 +2569,8 @@ const ShootTest = () => {
   const [batchStartPriorMode, setBatchStartPriorMode] = useState('overwrite'); // overwrite|skip|append
   const [batchStartBirdFilter, setBatchStartBirdFilter] = useState('pigeon_and_unknown'); // pigeon_and_unknown|confirmed_only|all
   const [batchManualMode, setBatchManualMode] = useState(false);
+  const [allPosRun, setAllPosRun] = useState([]);
+  const [allPosLoading, setAllPosLoading] = useState(false);
   const liveBoxRef = useRef(null);
   const calibrateBusyRef = useRef(false);
   calibrateBusyRef.current = calibrateBusy;
@@ -2474,14 +3097,12 @@ const ShootTest = () => {
         || natural.h
         || 640;
 
-      const trialFovH = medianFinite(calibrateSamples.map((s) => s.fovH))
+      const trialFov = medianFinite(calibrateSamples.flatMap((s) => [s.fovH, s.fovV]))
         || calibrateMeta?.resolvedFov?.horizontal
-        || device?.camera?.raspberryPi?.fovH
-        || device?.camera?.raspberryPi?.fov;
-      const trialFovV = medianFinite(calibrateSamples.map((s) => s.fovV))
         || calibrateMeta?.resolvedFov?.vertical
-        || device?.camera?.raspberryPi?.fovV
-        || device?.camera?.raspberryPi?.fov;
+        || device?.camera?.raspberryPi?.fov
+        || device?.camera?.raspberryPi?.fovH
+        || device?.camera?.raspberryPi?.fovV;
 
       const res = await axios.post(`/api/devices/${deviceId}/shoot-test/aim-click`, {
         rotation: pose.rotation,
@@ -2492,8 +3113,8 @@ const ShootTest = () => {
         imageWidth: imgW,
         imageHeight: imgH,
         cameraSource: selected?.camera_source || device?.camera?.type,
-        ...(Number(trialFovH) > 0 && Number(trialFovV) > 0
-          ? { fovH: trialFovH, fovV: trialFovV }
+        ...(Number(trialFov) > 0
+          ? { fovH: trialFov, fovV: trialFov }
           : {})
       });
       if (res.data?.position) setLivePose(res.data.position);
@@ -2589,7 +3210,7 @@ const ShootTest = () => {
         toast.info(
           `${data.converged ? 'Konvergiert' : 'Beendet'} — FOV gemessen `
           + `H ${Number(data.fov.fovH).toFixed(1)}° / V ${Number(data.fov.fovV).toFixed(1)}° `
-          + '(auf Detection gespeichert; Gerät erst mit „Median-FOV speichern“)'
+          + '(auf Detection gespeichert; Gerät erst mit „FOV speichern“)'
         );
       } else {
         toast.warning('Kalibrierung fertig, aber FOV nicht berechenbar (Offset zu klein?)');
@@ -2672,6 +3293,7 @@ const ShootTest = () => {
         key: `batch-${c.detectionId}-${i}`,
         status: 'pending',
         source: 'batch',
+        waypointNumber: wp,
         manual: false,
         fovH: null,
         fovV: null,
@@ -2818,7 +3440,7 @@ const ShootTest = () => {
         fovH: s.fovH,
         fovV: s.fovV
       }));
-      const { h: medH, v: medV } = medianFovFromBatchRows(batchOkRows);
+      const { h: medH, v: medV, fov: medFov } = medianFovFromBatchRows(batchOkRows);
       if (batchSamples.length && batchSamples[batchSamples.length - 1]?.report) {
         const last = batchSamples[batchSamples.length - 1];
         const soll = last.report.fov?.soll;
@@ -2834,8 +3456,10 @@ const ShootTest = () => {
 
       toast.success(
         `Batch Pos ${wp ?? '?'} fertig: ${ok} ok / ${fail} fehlgeschlagen`
-        + (medH != null ? ` · Median H ${medH.toFixed(1)}°` : '')
-        + (medV != null ? ` / V ${medV.toFixed(1)}°` : '')
+        + (medFov != null ? ` · FOV ${medFov.toFixed(1)}°` : '')
+        + (medH != null || medV != null
+          ? ` (H ${medH != null ? medH.toFixed(1) : '—'} / V ${medV != null ? medV.toFixed(1) : '—'})`
+          : '')
       );
     } catch (e) {
       console.error(e);
@@ -2906,6 +3530,12 @@ const ShootTest = () => {
       ?? device?.camera?.raspberryPi?.fovV
       ?? device?.camera?.raspberryPi?.fov
       ?? null;
+    const sollCombined = (fovSollH != null && fovSollV != null)
+      ? (Number(fovSollH) + Number(fovSollV)) / 2
+      : (fovSollH ?? fovSollV);
+    const istCombined = (computed.fovH != null && computed.fovV != null)
+      ? (computed.fovH + computed.fovV) / 2
+      : (computed.fovH ?? computed.fovV);
     setCalibrateReport({
       waypointNumber: calibrateMeta.waypointNumber,
       converged: true,
@@ -2919,19 +3549,23 @@ const ShootTest = () => {
         }
       },
       fov: {
-        soll: { h: fovSollH, v: fovSollV },
-        ist: { h: computed.fovH, v: computed.fovV },
+        soll: { h: fovSollH, v: fovSollV, combined: sollCombined },
+        ist: { h: istCombined, v: istCombined },
         delta: {
-          h: computed.fovH != null && fovSollH != null ? computed.fovH - fovSollH : null,
-          v: computed.fovV != null && fovSollV != null ? computed.fovV - fovSollV : null
-        }
+          h: istCombined != null && sollCombined != null ? istCombined - sollCombined : null,
+          v: istCombined != null && sollCombined != null ? istCombined - sollCombined : null
+        },
+        fov: istCombined,
+        axis: { h: computed.fovH, v: computed.fovV }
       }
     });
 
     toast.success(
       `Sample #${calibrateSamples.length + 1}: `
-      + (computed.fovH != null ? `H ${computed.fovH.toFixed(1)}° ` : '')
-      + (computed.fovV != null ? `V ${computed.fovV.toFixed(1)}°` : '')
+      + (istCombined != null ? `FOV ${istCombined.toFixed(1)}°` : '')
+      + (computed.fovH != null || computed.fovV != null
+        ? ` (H ${computed.fovH != null ? computed.fovH.toFixed(1) : '—'} / V ${computed.fovV != null ? computed.fovV.toFixed(1) : '—'})`
+        : '')
     );
   };
 
@@ -2946,7 +3580,7 @@ const ShootTest = () => {
     if (mainTab === 'batch') {
       const fromRun = batchRun
         .filter((r) => r.status === 'ok' && !r.excluded)
-        .map((r) => ({ fovH: r.fovH, fovV: r.fovV }));
+        .map((r) => ({ status: 'ok', excluded: false, fovH: r.fovH, fovV: r.fovV }));
       usePool = fromRun.length
         ? fromRun
         : calibrateSamples
@@ -2954,24 +3588,27 @@ const ShootTest = () => {
           .filter((s) => {
             const row = batchRun.find((r) => String(r.detectionId) === String(s.detectionId));
             return !row?.excluded;
-          });
+          })
+          .map((s) => ({ status: 'ok', excluded: false, fovH: s.fovH, fovV: s.fovV }));
     } else {
       const single = calibrateSamples.filter((s) => !s.batch);
-      usePool = single.length ? single : calibrateSamples;
+      const src = single.length ? single : calibrateSamples;
+      usePool = src.map((s) => ({ status: 'ok', excluded: false, fovH: s.fovH, fovV: s.fovV }));
     }
-    let fovH = medianFinite(usePool.map((s) => s.fovH));
-    let fovV = medianFinite(usePool.map((s) => s.fovV));
-    if (fovH == null && fovV != null) fovH = fovV;
-    if (fovV == null && fovH != null) fovV = fovH;
-    if (fovH == null || fovV == null) {
+    const { fov } = medianFovFromBatchRows(usePool);
+    if (fov == null) {
       toast.warning('Mindestens ein Sample mit nutzbarem Offset nötig');
       return;
     }
     if (!deviceId) return;
     setCalibrateBusy(true);
     try {
-      const res = await axios.post(`/api/devices/${deviceId}/shoot-test/calibrate-save-fov`, { fovH, fovV });
-      toast.success(`FOV gespeichert: H ${fovH.toFixed(1)}° / V ${fovV.toFixed(1)}°`);
+      const res = await axios.post(`/api/devices/${deviceId}/shoot-test/calibrate-save-fov`, {
+        fov,
+        fovH: fov,
+        fovV: fov
+      });
+      toast.success(`FOV gespeichert: ${fov.toFixed(1)}° (H=V, quadratisch)`);
       if (res.data?.raspberryPi) {
         setDevice((prev) => (prev ? {
           ...prev,
@@ -3239,7 +3876,11 @@ const ShootTest = () => {
         });
         if (cancelled || calibrateBusyRef.current) return;
         const candidates = candRes.data?.candidates || [];
-        const rows = candidates.map((c, i) => batchRowFromCandidate(c, i));
+        const rows = candidates.map((c, i) => ({
+          ...batchRowFromCandidate(c, i),
+          // Force selected Pos — stored cal.waypointNumber can be stale/wrong
+          waypointNumber: wp
+        }));
         setBatchRun(rows);
 
         const priorSamples = rows
@@ -3307,6 +3948,38 @@ const ShootTest = () => {
     // Omit calibrateBusy from deps so a finished live batch keeps its frames until Pos changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainTab, deviceId, batchWaypoint]);
+
+  // Load calibrated samples across all waypoints for global analysis (no images)
+  useEffect(() => {
+    if (mainTab !== 'batch' || !deviceId) {
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      setAllPosLoading(true);
+      try {
+        const res = await axios.get(`/api/devices/${deviceId}/shoot-test/calibrate-candidates`, {
+          params: {
+            calibratedOnly: true,
+            allPositions: true,
+            limit: 200
+          }
+        });
+        if (cancelled) return;
+        const candidates = res.data?.candidates || [];
+        const rows = candidates.map((c, i) => batchRowFromCandidate(c, i));
+        setAllPosRun(rows);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('All-positions analysis load failed', e);
+          setAllPosRun([]);
+        }
+      } finally {
+        if (!cancelled) setAllPosLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mainTab, deviceId]);
 
   const handleMainTab = (_e, v) => {
     if (v !== 'batch' && batchManualMode) {
@@ -3614,11 +4287,17 @@ const ShootTest = () => {
                         <Typography variant="caption" color="text.secondary" display="block">
                           Samples: {singleSamplesOnly.length}
                           {(() => {
-                            const h = medianFinite(singleSamplesOnly.map((s) => s.fovH));
-                            const v = medianFinite(singleSamplesOnly.map((s) => s.fovV));
-                            if (h == null && v == null) return '';
-                            return ` · Median FOV ${h != null ? `H ${h.toFixed(1)}°` : 'H —'}`
-                              + ` / ${v != null ? `V ${v.toFixed(1)}°` : 'V —'}`;
+                            const { fov, h, v } = medianFovFromBatchRows(
+                              singleSamplesOnly.map((s) => ({
+                                status: 'ok',
+                                excluded: false,
+                                fovH: s.fovH,
+                                fovV: s.fovV
+                              }))
+                            );
+                            if (fov == null && h == null && v == null) return '';
+                            return ` · FOV ${fov != null ? `${fov.toFixed(1)}°` : '—'}`
+                              + ` (H ${h != null ? h.toFixed(1) : '—'} / V ${v != null ? v.toFixed(1) : '—'})`;
                           })()}
                         </Typography>
                         {singleSamplesOnly.slice(-5).map((s, i) => (
@@ -3640,7 +4319,7 @@ const ShootTest = () => {
                           disabled={calibrateBusy}
                           onClick={handleCalibrateSaveFov}
                         >
-                          Median-FOV ins Gerät speichern
+                          Median-FOV speichern (H=V)
                         </Button>
                       </Box>
                     )}
@@ -4101,10 +4780,10 @@ const ShootTest = () => {
                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                       Median über {batchValidRows.length} gültige Samples
                       {(() => {
-                        const { h, v } = medianFovFromBatchRows(batchRun);
-                        if (h == null && v == null) return '';
-                        return `: ${h != null ? `H ${h.toFixed(1)}°` : 'H —'}`
-                          + ` / ${v != null ? `V ${v.toFixed(1)}°` : 'V —'}`;
+                        const { fov, h, v } = medianFovFromBatchRows(batchRun);
+                        if (fov == null && h == null && v == null) return '';
+                        return `: FOV ${fov != null ? `${fov.toFixed(1)}°` : '—'}`
+                          + ` (H ${h != null ? h.toFixed(1) : '—'} / V ${v != null ? v.toFixed(1) : '—'})`;
                       })()}
                     </Typography>
                     <Button
@@ -4114,7 +4793,7 @@ const ShootTest = () => {
                       disabled={calibrateBusy}
                       onClick={handleCalibrateSaveFov}
                     >
-                      Median-FOV ins Gerät speichern
+                      FOV ins Gerät speichern (H=V)
                     </Button>
                   </Box>
                 )}
@@ -4154,6 +4833,21 @@ const ShootTest = () => {
         </Grid>
 
         {showBatchAnalysis && <BatchAnalysisPanel items={batchRun} fromPrior={batchFromPrior} />}
+
+        {mainTab === 'batch' && (
+          <Box sx={{ mt: 2 }}>
+            {allPosLoading && <LinearProgress sx={{ mb: 1 }} />}
+            {!allPosLoading && allPosRun.length === 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Keine gespeicherten Kalibrierungen über alle Positionen gefunden.
+              </Typography>
+            )}
+            {allPosRun.some((r) => r.status === 'ok') && (
+              <BatchAnalysisPanel items={allPosRun} fromPrior global />
+            )}
+          </Box>
+        )}
+
         <BatchDetailDialog
           item={batchDetailItem}
           open={!!batchDetailItem}

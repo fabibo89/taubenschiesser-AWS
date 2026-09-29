@@ -319,10 +319,13 @@ const Devices = () => {
   };
 
   const handleDelete = async (deviceId) => {
-    if (window.confirm('Gerät wirklich löschen?')) {
+    if (window.confirm(
+      'Gerät wirklich löschen?\n\n'
+      + 'Alle zugehörigen Erkennungen, Bilder, Routen- und Panorama-Daten werden unwiderruflich gelöscht.'
+    )) {
       try {
         await axios.delete(`/api/devices/${deviceId}`);
-        toast.success('Gerät erfolgreich gelöscht');
+        toast.success('Gerät und zugehörige Bilder gelöscht');
         fetchDevices();
       } catch (error) {
         toast.error('Fehler beim Löschen des Geräts');
