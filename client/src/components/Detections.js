@@ -57,6 +57,42 @@ function formatDeltaSeconds(sec) {
   return s ? `${m} Min ${s} Sek` : `${m} Min`;
 }
 
+function hasFovCalibration(cal) {
+  return !!(cal && (
+    cal.at
+    || cal.fovH != null
+    || cal.fovV != null
+    || cal.finalPose?.rotation != null
+  ));
+}
+
+function fovCalibrationChipProps(cal) {
+  if (!hasFovCalibration(cal)) {
+    return { label: '—', color: 'default', variant: 'outlined' };
+  }
+  if (cal.excluded) {
+    return { label: 'ungültig', color: 'warning', variant: 'outlined' };
+  }
+  if (cal.manual || cal.method === 'manual' || cal.source === 'manual') {
+    return { label: 'manuell', color: 'secondary', variant: 'filled' };
+  }
+  if (cal.source === 'post_shot') {
+    return { label: 'nach Schuss', color: 'info', variant: 'outlined' };
+  }
+  if (cal.source === 'on_detection') {
+    return { label: 'bei Erkennung', color: 'info', variant: 'outlined' };
+  }
+  if (cal.converged === false) {
+    return { label: 'ja (offen)', color: 'warning', variant: 'filled' };
+  }
+  return { label: 'ja', color: 'success', variant: 'filled' };
+}
+
+function fmtPoseDeg(pose) {
+  if (!pose || pose.rotation == null || pose.tilt == null) return null;
+  return `R ${Number(pose.rotation).toFixed(0)}° / T ${Number(pose.tilt).toFixed(0)}°`;
+}
+
 function DuplicateThumb({ detectionId, birdBoxes, imageInfo, imageUrl, onLoadRequest, onOpen, caption, subcaption, borderColor }) {
   const rootRef = useRef(null);
   const requestedRef = useRef(false);
@@ -924,6 +960,16 @@ const Detections = () => {
       }
     },
     {
+      field: 'fovCalibration',
+      headerName: 'Kalibrierung',
+      width: 130,
+      sortable: false,
+      renderCell: (params) => {
+        const chip = fovCalibrationChipProps(params.row.fovCalibration);
+        return <Chip size="small" {...chip} />;
+      }
+    },
+    {
       field: 'actions',
       headerName: 'Aktionen',
       width: 120,
@@ -1482,6 +1528,89 @@ const Detections = () => {
                           </FormControl>
                         </Grid>
                       )}
+                      <Grid item xs={12}>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                          FOV-Kalibrierung
+                        </Typography>
+                        {(() => {
+                          const cal = selectedDetection.fovCalibration;
+                          if (!hasFovCalibration(cal)) {
+                            return (
+                              <Typography variant="body2" color="text.secondary">
+                                Keine Kalibrierung gespeichert
+                              </Typography>
+                            );
+                          }
+                          const chip = fovCalibrationChipProps(cal);
+                          const dRot = (cal.finalPose && cal.scanPose)
+                            ? Number(cal.finalPose.rotation) - Number(cal.scanPose.rotation)
+                            : null;
+                          const dTilt = (cal.finalPose && cal.scanPose)
+                            ? Number(cal.finalPose.tilt) - Number(cal.scanPose.tilt)
+                            : null;
+                          const dH = (cal.fovH != null && cal.fovSollH != null)
+                            ? Number(cal.fovH) - Number(cal.fovSollH)
+                            : null;
+                          const dV = (cal.fovV != null && cal.fovSollV != null)
+                            ? Number(cal.fovV) - Number(cal.fovSollV)
+                            : null;
+                          return (
+                            <Box>
+                              <Box display="flex" flexWrap="wrap" gap={0.75} alignItems="center" sx={{ mb: 0.75 }}>
+                                <Chip size="small" {...chip} />
+                                {cal.converged === true && (
+                                  <Chip size="small" label="konvergiert" color="success" variant="outlined" />
+                                )}
+                                {cal.converged === false && (
+                                  <Chip size="small" label="nicht konvergiert" color="warning" variant="outlined" />
+                                )}
+                                {cal.waypointNumber != null && (
+                                  <Chip size="small" label={`Pos ${cal.waypointNumber}`} variant="outlined" />
+                                )}
+                              </Box>
+                              <Typography variant="body2">
+                                FOV Ist
+                                {cal.fovH != null ? ` H ${Number(cal.fovH).toFixed(1)}°` : ' H —'}
+                                {cal.fovV != null ? ` / V ${Number(cal.fovV).toFixed(1)}°` : ' / V —'}
+                              </Typography>
+                              {(cal.fovSollH != null || cal.fovSollV != null) && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  Soll
+                                  {cal.fovSollH != null ? ` H ${Number(cal.fovSollH).toFixed(1)}°` : ''}
+                                  {cal.fovSollV != null ? ` / V ${Number(cal.fovSollV).toFixed(1)}°` : ''}
+                                  {dH != null ? ` · ΔH ${dH.toFixed(1)}°` : ''}
+                                  {dV != null ? ` ΔV ${dV.toFixed(1)}°` : ''}
+                                </Typography>
+                              )}
+                              {(fmtPoseDeg(cal.scanPose) || fmtPoseDeg(cal.finalPose)) && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  Pose
+                                  {fmtPoseDeg(cal.scanPose) ? ` ${fmtPoseDeg(cal.scanPose)}` : ''}
+                                  {fmtPoseDeg(cal.finalPose) ? ` → ${fmtPoseDeg(cal.finalPose)}` : ''}
+                                  {(dRot != null || dTilt != null)
+                                    ? ` · ΔR ${dRot != null ? dRot.toFixed(1) : '—'}° / ΔT ${dTilt != null ? dTilt.toFixed(1) : '—'}°`
+                                    : ''}
+                                </Typography>
+                              )}
+                              {cal.offsetPx && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  Offset {Number(cal.offsetPx.x).toFixed(1)} / {Number(cal.offsetPx.y).toFixed(1)} px
+                                </Typography>
+                              )}
+                              {cal.residualPx && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  Residual {Number(cal.residualPx.x).toFixed(1)} / {Number(cal.residualPx.y).toFixed(1)} px
+                                </Typography>
+                              )}
+                              {cal.at && (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  Kalibriert: {new Date(cal.at).toLocaleString()}
+                                </Typography>
+                              )}
+                            </Box>
+                          );
+                        })()}
+                      </Grid>
                       <Grid item xs={12}>
                         <Typography variant="body2" color="text.secondary" gutterBottom>
                           Erkannte Objekte:

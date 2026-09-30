@@ -181,7 +181,7 @@ const detectionSchema = new mongoose.Schema({
     waypointNumber: Number,
     // true = manuell ausgerichtet (Steuerkreuz / Nachklicken), false/absent = Auto
     manual: Boolean,
-    // Herkunft: auto | manual | post_shot
+    // Herkunft: auto | manual | post_shot | on_detection
     source: String,
     // Manuell aus Statistik/Median ausgeschlossen (Shoot-Test Batch)
     excluded: Boolean,

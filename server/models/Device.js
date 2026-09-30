@@ -95,7 +95,7 @@ const deviceSchema = new mongoose.Schema({
       type: Boolean,
       default: false
     },
-    // Nach Schuss: FOV-Sample per Bildabgleich auf Detection speichern (kein Gerät-FOV-Write)
+    // Bei Erkennung (ggf. nach Schuss): FOV-Sample per Bildabgleich auf Detection speichern (kein Gerät-FOV-Write)
     postShotFovCalibrate: {
       type: Boolean,
       default: false

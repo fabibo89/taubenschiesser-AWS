@@ -1013,8 +1013,10 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
       : (fovH ?? fovV);
 
     let saved = null;
-    // Post-shot never writes device FOV — samples only on Detection
-    const allowSaveFov = saveFov === true && source !== 'post_shot';
+    // Monitor samples (post_shot / on_detection) never write device FOV — only Detection
+    const allowSaveFov = saveFov === true
+      && source !== 'post_shot'
+      && source !== 'on_detection';
     if (allowSaveFov && fovCombined != null
       && fovCombined > 5 && fovCombined < 170) {
       if (!device.camera) device.camera = {};
@@ -1064,7 +1066,9 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
               at: new Date(),
               converged,
               manual: false,
-              source: source === 'post_shot' ? 'post_shot' : 'auto',
+              source: source === 'post_shot'
+                ? 'post_shot'
+                : (source === 'on_detection' ? 'on_detection' : 'auto'),
               scanPose,
               autoAimPose,
               finalPose: pose,
@@ -1118,7 +1122,9 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
       iterations,
       lastLocate,
       persistedOnDetection: true,
-      source: source === 'post_shot' ? 'post_shot' : 'auto',
+      source: source === 'post_shot'
+        ? 'post_shot'
+        : (source === 'on_detection' ? 'on_detection' : 'auto'),
       directAim: !!directAim,
       returnedToScan: !!returnToScan,
       liveImageBase64: lastLiveBase64 || null

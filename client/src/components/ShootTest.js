@@ -609,6 +609,7 @@ function batchRowFromCandidate(c, index) {
       targetBird,
       imageInfo,
       useZoomed,
+      processedAt: c.processedAt || null,
       fovH: cal.fovH,
       fovV: cal.fovV,
       dRot,
@@ -641,6 +642,7 @@ function batchRowFromCandidate(c, index) {
     targetBird,
     imageInfo,
     useZoomed,
+    processedAt: c.processedAt || null,
     fovH: null,
     fovV: null,
     dRot: null,
@@ -1668,6 +1670,9 @@ function BatchDetailDialog({
         {item.calSource === 'post_shot' && !manualMode && (
           <Chip size="small" color="info" variant="outlined" label="nach Schuss" />
         )}
+        {item.calSource === 'on_detection' && !manualMode && (
+          <Chip size="small" color="info" variant="outlined" label="bei Erkennung" />
+        )}
         {item.excluded && (
           <Chip size="small" color="default" label="manuell ungültig" />
         )}
@@ -2034,6 +2039,7 @@ function BatchDetailDialog({
                     {item.fovV != null ? ` / V ${Number(item.fovV).toFixed(1)}°` : ' / V —'}
                     {item.manual ? ' · manuell' : ''}
                     {item.calSource === 'post_shot' ? ' · nach Schuss' : ''}
+                    {item.calSource === 'on_detection' ? ' · bei Erkennung' : ''}
                   </Typography>
                   {item.residualPx && (
                     <Typography variant="body2" color="text.secondary">
@@ -2207,6 +2213,11 @@ function BatchRunRow({ item, onOpen, onToggleExcluded }) {
           #{item.index}
         </Typography>
         <Chip size="small" color={statusColor} label={statusLabel} />
+        {item.processedAt && (
+          <Typography variant="caption" color="text.secondary">
+            Bild {new Date(item.processedAt).toLocaleString()}
+          </Typography>
+        )}
         {item.excluded && (
           <Chip size="small" label="ungültig" />
         )}
@@ -2215,6 +2226,9 @@ function BatchRunRow({ item, onOpen, onToggleExcluded }) {
         )}
         {item.calSource === 'post_shot' && item.status === 'ok' && (
           <Chip size="small" color="info" variant="outlined" label="nach Schuss" />
+        )}
+        {item.calSource === 'on_detection' && item.status === 'ok' && (
+          <Chip size="small" color="info" variant="outlined" label="bei Erkennung" />
         )}
         {item.source === 'prior' && (
           <Chip size="small" variant="outlined" label="gespeicherte Messung" />
@@ -4805,7 +4819,7 @@ const ShootTest = () => {
                   Batch-Liste
                 </Typography>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
-                  Alle Bilder mit gespeicherten Messdaten an dieser Pos (Batch, manuell, nach Schuss).
+                  Alle Bilder mit gespeicherten Messdaten an dieser Pos (Batch, manuell, Monitor).
                   ok = automatisch gültig. Mit „Ungültig“ aus Statistik/Median nehmen — im Popup ebenso.
                 </Typography>
                 {batchRun.length === 0 ? (

@@ -1712,11 +1712,26 @@ class HardwareMonitor:
                             target_bird, detection_id = await self.save_detection_to_db(
                                 device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed
                             )
-                            
-                            # Trigger shoot only when monitor is armed
+
+                            taub_cfg = device.get('taubenschiesser', {}) if isinstance(device.get('taubenschiesser'), dict) else {}
+                            fov_on_detection = bool(taub_cfg.get('postShotFovCalibrate'))
+
+                            # Trigger shoot only when monitor is armed (calibrate runs after shoot if enabled).
+                            # If not armed but FOV-on-detection is on: calibrate from scan pose now.
                             if monitor_armed:
                                 await self.trigger_shoot(
                                     device, target_bird=target_bird, detection_id=detection_id
+                                )
+                            elif fov_on_detection and detection_id and target_bird and target_bird.get('bbox'):
+                                await self.run_post_shot_fov_calibrate(
+                                    device,
+                                    detection_id,
+                                    direct_aim=False,
+                                    source='on_detection',
+                                )
+                            elif fov_on_detection and not detection_id:
+                                logger.warning(
+                                    "FOV bei Erkennung aktiv, aber keine detection_id — Kalibrierung übersprungen"
                                 )
                         else:
                             await self._emit_device_waiting_snapshot(device)
@@ -2344,11 +2359,16 @@ class HardwareMonitor:
                         # Optional: FOV sample via image match while still near aim (no device FOV write).
                         # returnToScan is handled by the API; on failure we fall back to MQTT return.
                         if post_shot_cal and detection_id:
-                            await self.run_post_shot_fov_calibrate(device, detection_id)
+                            await self.run_post_shot_fov_calibrate(
+                                device,
+                                detection_id,
+                                direct_aim=True,
+                                source='post_shot',
+                            )
                         else:
                             if post_shot_cal and not detection_id:
                                 logger.warning(
-                                    "postShotFovCalibrate enabled but no detection_id — skipping calibrate"
+                                    "FOV bei Erkennung aktiv, aber keine detection_id — Kalibrierung übersprungen"
                                 )
                             # Return to original position
                             return_command = {
@@ -2385,29 +2405,49 @@ class HardwareMonitor:
                 has_target, has_bbox, mode,
                 len(route_coords), route_index, "yes" if image_info else "no"
             )
+            # Still calibrate on detection if enabled (gun stayed at scan pose)
+            if post_shot_cal and detection_id and has_bbox:
+                await self.run_post_shot_fov_calibrate(
+                    device,
+                    detection_id,
+                    direct_aim=False,
+                    source='on_detection',
+                )
 
         except Exception as e:
             logger.error(f"Error triggering shoot: {e}")
 
-    async def run_post_shot_fov_calibrate(self, device: Dict, detection_id: str):
-        """Call server calibrate-auto after shoot: persist fovCalibration on Detection, return to scan."""
+    async def run_post_shot_fov_calibrate(
+        self,
+        device: Dict,
+        detection_id: str,
+        *,
+        direct_aim: bool = True,
+        source: str = 'post_shot',
+    ):
+        """Call server calibrate-auto: persist fovCalibration on Detection, return to scan.
+
+        direct_aim=True: already near aim (after shoot). False: start from scan/waypoint.
+        source: post_shot | on_detection (stored on Detection.fovCalibration).
+        """
         device_id = device.get('_id') or device.get('deviceId')
         if not device_id or not detection_id:
-            logger.warning("post-shot FOV calibrate skipped: missing device_id or detection_id")
+            logger.warning("FOV calibrate skipped: missing device_id or detection_id")
             return
         headers = {'Authorization': f'Bearer {self.service_token}'}
         payload = {
             'detectionId': str(detection_id),
             'saveFov': False,
-            'directAim': True,
+            'directAim': bool(direct_aim),
             'returnToScan': True,
-            'source': 'post_shot',
+            'source': source if source in ('post_shot', 'on_detection', 'auto') else 'on_detection',
             'maxIterations': 6,
             'pixelThreshold': 8,
         }
         try:
             logger.info(
-                f"📐 Post-shot FOV calibrate starting for detection {detection_id} (device {device_id})"
+                f"📐 FOV calibrate ({payload['source']}, directAim={payload['directAim']}) "
+                f"for detection {detection_id} (device {device_id})"
             )
             timeout = aiohttp.ClientTimeout(total=180)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -2423,19 +2463,19 @@ class HardwareMonitor:
                         except Exception:
                             data = {}
                         logger.info(
-                            f"✅ Post-shot FOV sample saved on detection {detection_id}: "
+                            f"✅ FOV sample saved on detection {detection_id}: "
                             f"converged={data.get('converged')} "
                             f"fovH={data.get('fov', {}).get('fovH')} "
                             f"fovV={data.get('fov', {}).get('fovV')}"
                         )
                     else:
                         logger.warning(
-                            f"⚠️ Post-shot FOV calibrate failed ({response.status}): {body[:400]}"
+                            f"⚠️ FOV calibrate failed ({response.status}): {body[:400]}"
                         )
                         # API may have left the gun at aim — return to waypoint
                         raise RuntimeError(f"calibrate-auto HTTP {response.status}")
         except Exception as e:
-            logger.error(f"Post-shot FOV calibrate error: {e}")
+            logger.error(f"FOV calibrate error: {e}")
             # Best-effort: try to return to waypoint via MQTT if API left gun mid-aim
             try:
                 taub = device.get('taubenschiesser') or {}
@@ -2462,7 +2502,7 @@ class HardwareMonitor:
                         self.device_moving[device_ip] = True
                         await self.wait_for_movement_complete(device_ip, timeout=10)
             except Exception as ret_err:
-                logger.warning(f"Post-shot return-to-scan fallback failed: {ret_err}")
+                logger.warning(f"FOV calibrate return-to-scan fallback failed: {ret_err}")
     
     async def monitor_devices(self):
         """Monitor hardware devices and send status updates"""

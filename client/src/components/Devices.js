@@ -631,12 +631,13 @@ const Devices = () => {
                     })}
                   />
                 }
-                label="FOV nach Schuss kalibrieren"
+                label="FOV bei Erkennung kalibrieren"
               />
             </Box>
             {!!formData.taubenschiesser.postShotFovCalibrate && (
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, mb: 0.5 }}>
-                Nach dem Schuss: Bildabgleich und FOV-Sample nur auf die Detection schreiben (kein FOV ins Gerät).
+                Nach Speichern einer Tauben-Erkennung: Bildabgleich und FOV-Sample auf die Detection
+                (bei scharfem Monitor nach dem Schuss am Aim, sonst vom Wegpunkt). Schreibt kein FOV ins Gerät.
               </Typography>
             )}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
