@@ -627,8 +627,8 @@ router.post('/execute', authenticateToken, async (req, res) => {
 
 /**
  * FOV calibration: move to scan pose → auto-aim from detection bbox → stay.
- * If resumeManual + stored manual finalPose: go there instead of fresh auto-aim.
- * Client then lets the user nudge residuals on live and records final pose.
+ * If resumeManual + stored finalPose (auto or manual batch): go there instead of
+ * fresh auto-aim so Live matches the Kalibrierbild. Client then nudges + saves.
  */
 router.post('/calibrate-start', authenticateToken, async (req, res) => {
   try {
@@ -691,8 +691,8 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
     );
 
     const cal = detection.fovCalibration || null;
-    const storedManualPose = (resumeManual
-      && (cal?.manual === true || cal?.method === 'manual')
+    // Any stored finalPose (auto batch or prior manual) — matches Kalibrierbild pose.
+    const storedFinalPose = (resumeManual
       && cal?.finalPose?.rotation != null
       && cal?.finalPose?.tilt != null)
       ? {
@@ -701,15 +701,15 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
       }
       : null;
 
-    // Prefer stored scanPose from prior calibration when resuming manual (FOV math).
-    const scanPose = (storedManualPose && cal?.scanPose?.rotation != null && cal?.scanPose?.tilt != null)
+    // Prefer stored scanPose from prior calibration when resuming (FOV math).
+    const scanPose = (storedFinalPose && cal?.scanPose?.rotation != null && cal?.scanPose?.tilt != null)
       ? {
         rotation: Math.round(Number(cal.scanPose.rotation)),
         tilt: Math.round(Number(cal.scanPose.tilt))
       }
       : applyInversion(device, pos.rotation, pos.tilt);
 
-    const autoAimPose = (storedManualPose && cal?.autoAimPose?.rotation != null && cal?.autoAimPose?.tilt != null)
+    const autoAimPose = (storedFinalPose && cal?.autoAimPose?.rotation != null && cal?.autoAimPose?.tilt != null)
       ? {
         rotation: Math.round(Number(cal.autoAimPose.rotation)),
         tilt: Math.round(Number(cal.autoAimPose.tilt))
@@ -719,8 +719,8 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
         tilt: Math.round(scanPose.tilt + tiltAdjustment)
       };
 
-    // Aim target: stored manual finalPose, else fresh auto-aim.
-    const aimPose = storedManualPose || autoAimPose;
+    // Aim target: stored finalPose (batch/manual), else fresh auto-aim.
+    const aimPose = storedFinalPose || autoAimPose;
 
     // directAim: skip scan home (e.g. batch manual after replay already at finalPose).
     // scanPose is still returned for FOV math; only the physical detour is skipped.
@@ -744,13 +744,13 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
       zoomFactor,
       imageSize: { width: imgW, height: imgH },
       bbox,
-      offsetPx: (storedManualPose && cal?.offsetPx)
+      offsetPx: (storedFinalPose && cal?.offsetPx)
         ? { x: Number(cal.offsetPx.x), y: Number(cal.offsetPx.y) }
         : { x: offsetX, y: offsetY },
       scanPose,
       autoAimPose,
       aimPose,
-      resumedManual: !!storedManualPose,
+      resumedManual: !!storedFinalPose,
       adjustment: { rotation: rotationAdjustment, tilt: tiltAdjustment },
       resolvedFov,
       cameraSource: camSource,

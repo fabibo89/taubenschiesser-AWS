@@ -840,15 +840,15 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
   const ok = okAll.filter((r) => !r.excluded);
   const excludedCount = okAll.length - ok.length;
 
-  const dataRadiusMax = (() => {
-    let maxR = 0;
+  const dataOffsetMax = (() => {
+    let maxO = 0;
     ok.forEach((r) => {
       const ox = Number(r.offsetPx?.x);
       const oy = Number(r.offsetPx?.y);
-      if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
-      maxR = Math.max(maxR, Math.hypot(ox, oy));
+      if (Number.isFinite(ox)) maxO = Math.max(maxO, Math.abs(ox));
+      if (Number.isFinite(oy)) maxO = Math.max(maxO, Math.abs(oy));
     });
-    return Math.max(50, Math.ceil(maxR / 25) * 25 || 400);
+    return Math.max(50, Math.ceil(maxO / 25) * 25 || 400);
   })();
   const dataDeltaAbsMax = (() => {
     let maxD = 0;
@@ -861,13 +861,13 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
     return Math.max(5, Math.ceil(maxD / 5) * 5 || 40);
   })();
 
-  const [radiusRange, setRadiusRange] = useState([0, 400]);
+  const [offsetRange, setOffsetRange] = useState([0, 400]);
   const [deltaAbsMax, setDeltaAbsMax] = useState(40);
 
   useEffect(() => {
-    setRadiusRange([0, dataRadiusMax]);
+    setOffsetRange([0, dataOffsetMax]);
     setDeltaAbsMax(dataDeltaAbsMax);
-  }, [dataRadiusMax, dataDeltaAbsMax, global, ok.length]);
+  }, [dataOffsetMax, dataDeltaAbsMax, global, ok.length]);
 
   if (!okAll.length) return null;
   if (!ok.length) {
@@ -937,80 +937,75 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
     }));
   const rotFit = linearFit(rotVsOffsetX);
   const tiltFit = linearFit(tiltVsOffsetY);
-  const fovDeltaVsRadius = ok
+  // ΔFOV H vs |offsetX|, ΔFOV V vs |offsetY| (axis-specific reliability)
+  const deltaHPoints = ok
     .map((r) => {
       const ox = Number(r.offsetPx?.x);
-      const oy = Number(r.offsetPx?.y);
-      if (!Number.isFinite(ox) || !Number.isFinite(oy)) return null;
-      const radius = Math.hypot(ox, oy);
-      const dH = r.report?.fov?.delta?.h;
-      const dV = r.report?.fov?.delta?.v;
+      const dH = Number(r.report?.fov?.delta?.h);
+      if (!Number.isFinite(ox) || !Number.isFinite(dH)) return null;
       return {
-        radius,
-        deltaH: Number.isFinite(Number(dH)) ? Number(dH) : null,
-        deltaV: Number.isFinite(Number(dV)) ? Number(dV) : null,
+        x: Math.abs(ox),
+        y: dH,
         index: r.index,
         pos: r.waypointNumber ?? '?',
         posSample: posSampleById.get(String(r.detectionId)) ?? r.index,
-        detectionId: r.detectionId ? String(r.detectionId) : null
+        detectionId: r.detectionId ? String(r.detectionId) : null,
+        axis: 'H'
       };
     })
     .filter(Boolean);
-  const deltaHPoints = fovDeltaVsRadius
-    .filter((p) => p.deltaH != null)
-    .map((p) => ({
-      x: p.radius,
-      y: p.deltaH,
-      index: p.index,
-      pos: p.pos,
-      posSample: p.posSample,
-      detectionId: p.detectionId
-    }));
-  const deltaVPoints = fovDeltaVsRadius
-    .filter((p) => p.deltaV != null)
-    .map((p) => ({
-      x: p.radius,
-      y: p.deltaV,
-      index: p.index,
-      pos: p.pos,
-      posSample: p.posSample,
-      detectionId: p.detectionId
-    }));
+  const deltaVPoints = ok
+    .map((r) => {
+      const oy = Number(r.offsetPx?.y);
+      const dV = Number(r.report?.fov?.delta?.v);
+      if (!Number.isFinite(oy) || !Number.isFinite(dV)) return null;
+      return {
+        x: Math.abs(oy),
+        y: dV,
+        index: r.index,
+        pos: r.waypointNumber ?? '?',
+        posSample: posSampleById.get(String(r.detectionId)) ?? r.index,
+        detectionId: r.detectionId ? String(r.detectionId) : null,
+        axis: 'V'
+      };
+    })
+    .filter(Boolean);
 
-  const rMin = Math.min(radiusRange[0], radiusRange[1]);
-  const rMax = Math.max(radiusRange[0], radiusRange[1]);
+  const oMin = Math.min(offsetRange[0], offsetRange[1]);
+  const oMax = Math.max(offsetRange[0], offsetRange[1]);
   const dAbs = Math.max(1, Number(deltaAbsMax) || dataDeltaAbsMax);
   const fovPointInFocus = (p) => (
     Number.isFinite(p.x) && Number.isFinite(p.y)
-    && p.x >= rMin && p.x <= rMax
+    && p.x >= oMin && p.x <= oMax
     && Math.abs(p.y) <= dAbs
   );
   const deltaHFocus = deltaHPoints.filter(fovPointInFocus);
   const deltaVFocus = deltaVPoints.filter(fovPointInFocus);
   const fovFocusCount = deltaHFocus.length + deltaVFocus.length;
   const fovTotalCount = deltaHPoints.length + deltaVPoints.length;
-  const fovFocusActive = rMin > 0 || rMax < dataRadiusMax || dAbs < dataDeltaAbsMax;
+  const fovFocusActive = oMin > 0 || oMax < dataOffsetMax || dAbs < dataDeltaAbsMax;
 
-  // Empfohlen-FOV-Zeile + Empf.-Δ-Linie: neu aus Fokus-Regler
+  // Empfohlen: H nur wenn |x| im Fokus, V nur wenn |y| im Fokus → Median H∪V
   const focusH = [];
   const focusV = [];
   const focusSoll = [];
   ok.forEach((r) => {
     const ox = Number(r.offsetPx?.x);
     const oy = Number(r.offsetPx?.y);
-    if (!Number.isFinite(ox) || !Number.isFinite(oy)) return;
-    const radius = Math.hypot(ox, oy);
-    if (radius < rMin || radius > rMax) return;
     const dH = Number(r.report?.fov?.delta?.h);
     const dV = Number(r.report?.fov?.delta?.v);
     const h = Number(r.fovH);
     const v = Number(r.fovV);
-    if (Number.isFinite(h) && (!Number.isFinite(dH) || Math.abs(dH) <= dAbs)) {
+    if (Number.isFinite(ox) && Number.isFinite(h)
+      && Math.abs(ox) >= oMin && Math.abs(ox) <= oMax
+      && (!Number.isFinite(dH) || Math.abs(dH) <= dAbs)) {
       focusH.push(h);
       const sh = Number(r.report?.fov?.soll?.h ?? r.report?.fov?.soll?.combined);
       if (Number.isFinite(sh)) focusSoll.push(sh);
     }
-    if (Number.isFinite(v) && (!Number.isFinite(dV) || Math.abs(dV) <= dAbs)) {
+    if (Number.isFinite(oy) && Number.isFinite(v)
+      && Math.abs(oy) >= oMin && Math.abs(oy) <= oMax
+      && (!Number.isFinite(dV) || Math.abs(dV) <= dAbs)) {
       focusV.push(v);
       const sv = Number(r.report?.fov?.soll?.v ?? r.report?.fov?.soll?.combined);
       if (Number.isFinite(sv)) focusSoll.push(sv);
@@ -1098,7 +1093,9 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
             : `#${p.index}`}
         </Typography>
         <Typography variant="caption" display="block">
-          x={fmtNum(p.x, 1, true)} · y={fmtNum(p.y, 2, true)}
+          {p.axis
+            ? `${p.axis} · |off|=${fmtNum(p.x, 1)} · Δ=${fmtNum(p.y, 2, true)}°`
+            : `x=${fmtNum(p.x, 1, true)} · y=${fmtNum(p.y, 2, true)}`}
         </Typography>
       </Paper>
     );
@@ -1281,11 +1278,11 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
             </Box>
 
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              FOV-Abweichung vs. Abstand vom Bildzentrum
+              FOV-Abweichung vs. Achsen-Offset
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-              ΔFOV (Ist−Soll) über radialen Offset √(x²+y²). H/V-Punkte = Diagnose; gestrichelte Linien = Achsen-Median-Δ.
-              Schwarze Linie = empfohlene Korrektur (ein FOV, quadratisch).
+              ΔFOV H über |Offset-X|, ΔFOV V über |Offset-Y| (wie die FOV-Formel). Gestrichelte Linien = Achsen-Median-Δ.
+              Schwarze Linie = empfohlene Korrektur (ein FOV, quadratisch, Median H∪V im Fokus).
               {global ? ' Farbe = Position · Kreis = ΔFOV H · Dreieck = ΔFOV V.' : ''}
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
@@ -1297,7 +1294,7 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
                 ? ` (Soll ${fmtNum(sollMed, 1)}° + Δ ${fmtNum(medDeltaCombined, 1, true)}°)`
                 : ''}
               {empFovH != null || empFovV != null
-                ? ` · Diagnose H ${fmtNum(empFovH, 1)}° / V ${fmtNum(empFovV, 1)}°`
+                ? ` · Diagnose H ${fmtNum(empFovH, 1)}° (n=${focusH.length}) / V ${fmtNum(empFovV, 1)}° (n=${focusV.length})`
                 : ''}
               {` · n=${focusH.length + focusV.length}`}
             </Typography>
@@ -1312,7 +1309,7 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
                   <Button
                     size="small"
                     onClick={() => {
-                      setRadiusRange([0, dataRadiusMax]);
+                      setOffsetRange([0, dataOffsetMax]);
                       setDeltaAbsMax(dataDeltaAbsMax);
                     }}
                   >
@@ -1321,16 +1318,16 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
                 )}
               </Stack>
               <Typography variant="caption" color="text.secondary" display="block">
-                Radius {rMin}–{rMax} px
+                |Offset| {oMin}–{oMax} px · H nutzt |x|, V nutzt |y|
               </Typography>
               <Slider
                 size="small"
-                value={[rMin, rMax]}
+                value={[oMin, oMax]}
                 min={0}
-                max={dataRadiusMax}
+                max={dataOffsetMax}
                 step={5}
                 valueLabelDisplay="auto"
-                onChange={(_e, v) => setRadiusRange(v)}
+                onChange={(_e, v) => setOffsetRange(v)}
                 sx={{ mt: 0.5, mb: 1 }}
               />
               <Typography variant="caption" color="text.secondary" display="block">
@@ -1355,10 +1352,10 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
                   <XAxis
                     type="number"
                     dataKey="x"
-                    name="Radius"
+                    name="|Offset|"
                     unit=" px"
                     tick={{ fontSize: 11 }}
-                    domain={[rMin, rMax]}
+                    domain={[oMin, oMax]}
                     allowDataOverflow
                   />
                   <YAxis
@@ -1415,13 +1412,13 @@ function BatchAnalysisPanel({ items, fromPrior = false, global = false }) {
                       }}
                     />
                   )}
-                  <Scatter name="ΔFOV H" data={deltaHFocus} fill="#2e7d32">
+                  <Scatter name="ΔFOV H (|x|)" data={deltaHFocus} fill="#2e7d32">
                     {global && deltaHFocus.map((p, i) => (
                       <Cell key={`dh-${i}`} fill={posColor(p.pos)} />
                     ))}
                   </Scatter>
                   <Scatter
-                    name="ΔFOV V"
+                    name="ΔFOV V (|y|)"
                     data={deltaVFocus}
                     fill="#9c27b0"
                     shape={global ? 'triangle' : 'circle'}
@@ -2747,9 +2744,9 @@ const ShootTest = () => {
     setCalibrateRefineCount(0);
     setCalibrateMeta(null);
     try {
-      // directAim: skip scan-home. resumeManual: if already manually saved, go to that
-      // finalPose instead of recomputing fresh auto-aim (matches Kalibrierbild).
-      const resumeManual = !!(item.manual && item.finalPose?.rotation != null && item.finalPose?.tilt != null);
+      // directAim: skip scan-home. resumeManual: use stored batch/manual finalPose
+      // (matches Kalibrierbild) instead of recomputing fresh auto-aim.
+      const resumeManual = !!(item.finalPose?.rotation != null && item.finalPose?.tilt != null);
       const res = await axios.post(`/api/devices/${deviceId}/shoot-test/calibrate-start`, {
         detectionId: item.detectionId,
         directAim: true,
@@ -2760,7 +2757,7 @@ const ShootTest = () => {
       if (startPose) setLivePose(startPose);
       toast.info(
         res.data?.resumedManual
-          ? 'Gespeicherte Manual-Ausrichtung geladen — ggf. nachjustieren und speichern'
+          ? 'Final-Pose vom Batch geladen — ggf. nachjustieren und speichern'
           : 'Auto-Aim fertig — mit Steuerkreuz oder Klick im Live-Bild ausrichten'
       );
     } catch (e) {
