@@ -1056,7 +1056,12 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
       fov: { soll: fovSoll, ist: fovIst, delta: fovDelta }
     };
 
-    // Persist sample on this detection (does not write device FOV unless saveFov)
+    // Persist sample on this detection (does not write device FOV unless saveFov).
+    // Post-shot only: auto-exclude if not converged (batch/manual untouched).
+    const calSource = source === 'post_shot'
+      ? 'post_shot'
+      : (source === 'on_detection' ? 'on_detection' : 'auto');
+    const postShotExcluded = calSource === 'post_shot' && !converged;
     try {
       await Detection.updateOne(
         { _id: detectionId },
@@ -1066,9 +1071,7 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
               at: new Date(),
               converged,
               manual: false,
-              source: source === 'post_shot'
-                ? 'post_shot'
-                : (source === 'on_detection' ? 'on_detection' : 'auto'),
+              source: calSource,
               scanPose,
               autoAimPose,
               finalPose: pose,
@@ -1082,7 +1085,13 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
               method: lastLocate?.method || null,
               confidence: lastLocate?.confidence ?? null,
               iterations: iterations.length,
-              waypointNumber
+              waypointNumber,
+              ...(calSource === 'post_shot'
+                ? {
+                  excluded: postShotExcluded,
+                  excludedAt: postShotExcluded ? new Date() : null
+                }
+                : {})
             }
           }
         }
