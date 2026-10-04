@@ -232,9 +232,17 @@ function legacyCameraFromCameras(cameras, prevCamera) {
     next.localImagePath = master.localImagePath || '';
   }
 
-  // Keep secondary configs populated for UI/monitor when slaves exist
-  if (httpSlave) applyHttpStill(httpSlave);
-  if (tapoSlave) {
+  // Keep secondary HTTP config for slaves WITHOUT overwriting the master's slot.
+  // (Previously applyHttpStill(slave) mirrored ESP-P4 into raspberryPi and clobbered master.)
+  if (httpSlave) {
+    const cfg = getHttpStillConfig(httpSlave) || defaultHttpStill();
+    if (httpSlave.type === 'esp32-p4') {
+      next.esp32P4 = { ...defaultEsp32P4(), ...cfg };
+    } else if (httpSlave.type === 'raspberry-pi' && master.type !== 'raspberry-pi') {
+      next.raspberryPi = { ...defaultRaspberryPi(), ...cfg };
+    }
+  }
+  if (tapoSlave && master.type !== 'tapo') {
     next.tapo = { ...defaultTapo(), ...(plain(tapoSlave.tapo) || {}) };
   }
 

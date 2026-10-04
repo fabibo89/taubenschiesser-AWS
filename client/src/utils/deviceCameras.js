@@ -199,8 +199,18 @@ export function legacyCameraFromCameras(cameras, prevCamera = {}) {
     next.useLocalImage = true;
     next.localImagePath = master.localImagePath || '';
   }
-  if (httpSlave) applyHttpStill(httpSlave);
-  if (tapoSlave) next.tapo = { ...defaultTapo(), ...(tapoSlave.tapo || {}) };
+  // Keep secondary HTTP config for slaves without overwriting the master's slot
+  if (httpSlave) {
+    const cfg = getHttpStillConfig(httpSlave) || defaultHttpStill();
+    if (httpSlave.type === 'esp32-p4') {
+      next.esp32P4 = { ...defaultEsp32P4(), ...cfg };
+    } else if (httpSlave.type === 'raspberry-pi' && master.type !== 'raspberry-pi') {
+      next.raspberryPi = { ...defaultRaspberryPi(), ...cfg };
+    }
+  }
+  if (tapoSlave && master.type !== 'tapo') {
+    next.tapo = { ...defaultTapo(), ...(tapoSlave.tapo || {}) };
+  }
   return next;
 }
 
