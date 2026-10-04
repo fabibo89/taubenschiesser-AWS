@@ -1367,6 +1367,52 @@ const Detections = () => {
                     </CardContent>
                   </Card>
               )}
+
+              {/* Foto vor Vertreibung (Aim-Pose, vor Schuss) */}
+              {Array.isArray(selectedDetection.preShootPhotos)
+                && selectedDetection.preShootPhotos.map((photo, idx) => {
+                  const src = photo?.image?.url;
+                  if (!src) return null;
+                  const titleParts = [
+                    'Foto vor Vertreibung',
+                    photo.cameraName || photo.cameraType,
+                    photo.role === 'master' ? 'Master' : photo.role === 'slave' ? 'Slave' : null
+                  ].filter(Boolean);
+                  return (
+                    <Card key={photo.cameraId || `pre-shoot-${idx}`}>
+                      <CardContent>
+                        <Typography variant="subtitle1" gutterBottom>
+                          {titleParts.join(' · ')}
+                        </Typography>
+                        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                          <Box
+                            component="img"
+                            src={src}
+                            alt={photo.cameraName || 'Pre-Shoot'}
+                            sx={{
+                              display: 'block',
+                              maxWidth: '100%',
+                              height: 'auto',
+                              border: '1px solid #e0e0e0',
+                              borderRadius: 1,
+                              backgroundColor: '#000'
+                            }}
+                          />
+                        </Box>
+                        {(photo.pose?.rotation != null || photo.pose?.tilt != null) && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            display="block"
+                            sx={{ mt: 1 }}
+                          >
+                            Pose: Rot {photo.pose?.rotation ?? '–'}° / Tilt {photo.pose?.tilt ?? '–'}°
+                          </Typography>
+                        )}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
                 </Box>
               </Grid>
 

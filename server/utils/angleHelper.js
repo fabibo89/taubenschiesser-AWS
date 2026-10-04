@@ -29,24 +29,29 @@ function isSquareFrame(imageWidth, imageHeight) {
  * (square crop → equal H/V, no diagonal decomposition).
  */
 function resolveAxisFov(cameraConfig, cameraSource, imageWidth, imageHeight) {
-  const pi = cameraConfig?.raspberryPi || {};
+  const pi = {
+    ...(cameraConfig?.raspberryPi || {}),
+    ...(cameraConfig?.esp32P4 || {})
+  };
   const tapo = cameraConfig?.tapo || {};
-  const fromPi = cameraSource === 'raspberry-pi' || cameraSource === 'raspberry_pi';
+  const fromHttpStill = cameraSource === 'raspberry-pi'
+    || cameraSource === 'raspberry_pi'
+    || cameraSource === 'esp32-p4';
 
-  const fovH = fromPi ? pi.fovH : (tapo.fovH ?? pi.fovH);
-  const fovV = fromPi ? pi.fovV : (tapo.fovV ?? pi.fovV);
+  const fovH = fromHttpStill ? pi.fovH : (tapo.fovH ?? pi.fovH);
+  const fovV = fromHttpStill ? pi.fovV : (tapo.fovV ?? pi.fovV);
   if (Number(fovH) > 0 && Number(fovV) > 0) {
     return { horizontal: Number(fovH), vertical: Number(fovV), mode: 'explicit' };
   }
 
-  let fov = fromPi ? pi.fov : null;
+  let fov = fromHttpStill ? pi.fov : null;
   if (fov == null || fov <= 0) fov = tapo.fov;
   if (fov == null || fov <= 0) fov = pi.fov;
   if (fov == null || fov <= 0) {
     return { horizontal: 0, vertical: 0, mode: 'none' };
   }
 
-  if (isSquareFrame(imageWidth, imageHeight) || (fromPi && pi.square)) {
+  if (isSquareFrame(imageWidth, imageHeight) || (fromHttpStill && pi.square)) {
     return { horizontal: Number(fov), vertical: Number(fov), mode: 'square-per-axis' };
   }
 

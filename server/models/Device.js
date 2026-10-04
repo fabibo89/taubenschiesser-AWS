@@ -1,4 +1,11 @@
 const mongoose = require('mongoose');
+const {
+  syncDeviceCameras,
+  getMasterCamera,
+  getEnabledCameras,
+  getHttpStillConfig,
+  isHttpStillType
+} = require('../utils/deviceCameras');
 
 const deviceSchema = new mongoose.Schema({
   name: {
@@ -105,7 +112,7 @@ const deviceSchema = new mongoose.Schema({
   camera: {
     type: {
       type: String,
-      enum: ['tapo', 'direct', 'local', 'raspberry-pi', 'dual'],
+      enum: ['tapo', 'direct', 'local', 'raspberry-pi', 'esp32-p4', 'dual'],
       default: 'tapo'
     },
     // For Tapo cameras
@@ -158,10 +165,49 @@ const deviceSchema = new mongoose.Schema({
       },
       square: {
         type: Boolean,
-        default: false  // Optional: quadratischer Ausschnitt (square=true)
+        default: true  // Optional: quadratischer Ausschnitt (square=true)
       },
       resolution: {
-        type: String  // Optional: Zielauflösung als "WIDTHxHEIGHT" oder einzelner Wert für Quadrate
+        type: String,
+        default: '640'  // Zielauflösung als "WIDTHxHEIGHT" oder einzelner Wert für Quadrate
+      }
+    },
+    // ESP32-P4 Cam — same HTTP still API as Raspberry Pi camera_server
+    esp32P4: {
+      ip: String,
+      port: {
+        type: Number,
+        default: 8080
+      },
+      endpoint: {
+        type: String,
+        default: '/image.jpg'
+      },
+      streamEndpoint: {
+        type: String,
+        default: '/stream.mjpeg'
+      },
+      flip: {
+        type: Boolean,
+        default: false
+      },
+      fov: {
+        type: Number,
+        default: 75
+      },
+      fovH: Number,
+      fovV: Number,
+      angle: {
+        type: Number,
+        default: 0
+      },
+      square: {
+        type: Boolean,
+        default: true
+      },
+      resolution: {
+        type: String,
+        default: '640'
       }
     },
     // For direct RTSP or other cameras
@@ -181,6 +227,127 @@ const deviceSchema = new mongoose.Schema({
     lastImage: String,
     lastDetection: Date
   },
+  /**
+   * Multi-camera list (master/slave). Source of truth going forward.
+   * Legacy `camera` is kept in sync for older monitor/UI paths.
+   */
+  cameras: [{
+    id: { type: String, required: true },
+    name: { type: String, default: '' },
+    type: {
+      type: String,
+      enum: ['tapo', 'raspberry-pi', 'esp32-p4', 'direct', 'local'],
+      required: true
+    },
+    role: {
+      type: String,
+      enum: ['master', 'slave'],
+      default: 'slave'
+    },
+    enabled: {
+      type: Boolean,
+      default: true
+    },
+    /** Capture a still at aim pose after aim, before shoot/deterrence */
+    photoBeforeDeterrence: {
+      type: Boolean,
+      default: false
+    },
+    tapo: {
+      ip: String,
+      username: String,
+      password: String,
+      stream: {
+        type: String,
+        enum: ['stream1', 'stream2'],
+        default: 'stream1'
+      },
+      fov: {
+        type: Number,
+        default: 110
+      }
+    },
+    raspberryPi: {
+      ip: String,
+      port: {
+        type: Number,
+        default: 8080
+      },
+      endpoint: {
+        type: String,
+        default: '/image.jpg'
+      },
+      streamEndpoint: {
+        type: String,
+        default: '/stream.mjpeg'
+      },
+      flip: {
+        type: Boolean,
+        default: false
+      },
+      fov: {
+        type: Number,
+        default: 75
+      },
+      fovH: Number,
+      fovV: Number,
+      angle: {
+        type: Number,
+        default: 0
+      },
+      square: {
+        type: Boolean,
+        default: true
+      },
+      resolution: {
+        type: String,
+        default: '640'
+      }
+    },
+    esp32P4: {
+      ip: String,
+      port: {
+        type: Number,
+        default: 8080
+      },
+      endpoint: {
+        type: String,
+        default: '/image.jpg'
+      },
+      streamEndpoint: {
+        type: String,
+        default: '/stream.mjpeg'
+      },
+      flip: {
+        type: Boolean,
+        default: false
+      },
+      fov: {
+        type: Number,
+        default: 75
+      },
+      fovH: Number,
+      fovV: Number,
+      angle: {
+        type: Number,
+        default: 0
+      },
+      square: {
+        type: Boolean,
+        default: true
+      },
+      resolution: {
+        type: String,
+        default: '640'
+      }
+    },
+    directUrl: String,
+    useLocalImage: {
+      type: Boolean,
+      default: false
+    },
+    localImagePath: String
+  }],
   // Route Configuration
   actions: {
     mode: {
@@ -307,63 +474,77 @@ const deviceSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Method to get RTSP URL based on camera configuration
+deviceSchema.pre('save', function syncCamerasHook(next) {
+  try {
+    syncDeviceCameras(this);
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+deviceSchema.methods.getMasterCamera = function() {
+  return getMasterCamera(this);
+};
+
+deviceSchema.methods.getEnabledCameras = function() {
+  return getEnabledCameras(this);
+};
+
+// Method to get RTSP URL based on camera configuration (master preferred)
 deviceSchema.methods.getRtspUrl = function() {
-  if (this.camera.type === 'raspberry-pi') {
-    // Raspberry Pi doesn't use RTSP, return null
+  const master = getMasterCamera(this);
+  if (master?.type === 'tapo' && master.tapo?.ip && master.tapo?.username && master.tapo?.password) {
+    const { ip, username, password, stream } = master.tapo;
+    return `rtsp://${username}:${password}@${ip}:554/${stream || 'stream1'}`;
+  }
+  if (master?.type === 'direct') {
+    return master.directUrl || this.camera?.directUrl || this.camera?.rtspUrl || null;
+  }
+
+  if (this.camera?.type === 'raspberry-pi') {
     return null;
-  } else if (this.camera.type === 'tapo' || this.camera.type === 'dual') {
-    // Check for Tapo camera - works for both 'tapo' and 'dual' mode
+  }
+  if (this.camera?.type === 'tapo' || this.camera?.type === 'dual') {
     if (this.camera.tapo && this.camera.tapo.ip && this.camera.tapo.username && this.camera.tapo.password) {
       const { ip, username, password, stream } = this.camera.tapo;
       return `rtsp://${username}:${password}@${ip}:554/${stream || 'stream1'}`;
     }
-    // If dual mode but no Tapo config, fall through to other options
   }
-  
-  if (this.camera.type === 'direct') {
+
+  if (this.camera?.type === 'direct') {
     return this.camera.directUrl || this.camera.rtspUrl;
   }
-  
-  // Fallback to directUrl or rtspUrl
-  return this.camera.directUrl || this.camera.rtspUrl;
+
+  return this.camera?.directUrl || this.camera?.rtspUrl || null;
 };
 
-// Method to get HTTP image URL for Raspberry Pi cameras
+// Method to get HTTP image URL for PiCam / ESP-P4 Cam (master preferred)
 deviceSchema.methods.getImageUrl = function() {
-  if (this.camera.type === 'raspberry-pi') {
-    const pi = this.camera.raspberryPi;
-    if (!pi || !pi.ip) {
-      return null;
-    }
-    const port = pi.port || 8080;
-    const endpoint = pi.endpoint || '/image.jpg';
-    const flip = !!pi.flip;
-    const angle = typeof pi.angle === 'number' ? pi.angle : 0;
-    const square = !!pi.square;
-    const resolution = pi.resolution;
-
-    const params = [];
-    if (flip) {
-      params.push('flip=true');
-    }
-    if (angle && angle !== 0) {
-      params.push(`angle=${angle}`);
-    }
-    if (square) {
-      params.push('square=true');
-    }
-    if (resolution) {
-      params.push(`resolution=${encodeURIComponent(resolution)}`);
-    }
-
-    const baseUrl = `http://${pi.ip}:${port}${endpoint}`;
-    if (params.length === 0) {
-      return baseUrl;
-    }
-    return `${baseUrl}?${params.join('&')}`;
+  const master = getMasterCamera(this);
+  const httpCfg = (master && isHttpStillType(master.type) ? getHttpStillConfig(master) : null)
+    || getHttpStillConfig(this.camera)
+    || null;
+  if (!httpCfg || !httpCfg.ip) {
+    return null;
   }
-  return null;
+  const port = httpCfg.port || 8080;
+  const endpoint = httpCfg.endpoint || '/image.jpg';
+  const flip = !!httpCfg.flip;
+  const angle = typeof httpCfg.angle === 'number' ? httpCfg.angle : 0;
+  const square = httpCfg.square == null ? true : !!httpCfg.square;
+  const resolution = httpCfg.resolution != null && String(httpCfg.resolution).trim() !== ''
+    ? String(httpCfg.resolution)
+    : '640';
+
+  const params = [];
+  if (flip) params.push('flip=true');
+  if (angle && angle !== 0) params.push(`angle=${angle}`);
+  params.push(square ? 'square=true' : 'square=false');
+  params.push(`resolution=${encodeURIComponent(resolution)}`);
+
+  const baseUrl = `http://${httpCfg.ip}:${port}${endpoint}`;
+  return params.length === 0 ? baseUrl : `${baseUrl}?${params.join('&')}`;
 };
 
 // Method to get Taubenschiesser IP

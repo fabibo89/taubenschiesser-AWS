@@ -12,8 +12,10 @@ function getDeviceStabilizationMs(device) {
   return Number.isFinite(ms) && ms >= 0 ? ms : 500;
 }
 
+const { getHttpStillConfig, isHttpStillType } = require('./deviceCameras');
+
 /**
- * Build Raspberry Pi still-image URL with device Bild-Einstellungen
+ * Build PiCam / ESP-P4 still-image URL with Bild-Einstellungen
  * (flip, angle, square, resolution) plus optional zoom / wait_focus.
  */
 function buildRaspberryPiImageUrl(pi, options = {}) {
@@ -27,10 +29,13 @@ function buildRaspberryPiImageUrl(pi, options = {}) {
   if (typeof pi.angle === 'number' && pi.angle !== 0) {
     params.push(`angle=${pi.angle}`);
   }
-  if (pi.square) params.push('square=true');
-  if (pi.resolution) {
-    params.push(`resolution=${encodeURIComponent(String(pi.resolution))}`);
-  }
+  // Defaults match Geräte-UI: square + 640 when unset; always send square explicitly
+  const square = pi.square == null ? true : !!pi.square;
+  params.push(square ? 'square=true' : 'square=false');
+  const resolution = pi.resolution != null && String(pi.resolution).trim() !== ''
+    ? String(pi.resolution)
+    : '640';
+  params.push(`resolution=${encodeURIComponent(resolution)}`);
 
   const zoom = Number(options.zoom);
   if (Number.isFinite(zoom) && zoom > 1.0) {
@@ -42,10 +47,11 @@ function buildRaspberryPiImageUrl(pi, options = {}) {
 }
 
 function shouldUseRaspberryPiCapture(camera, cameraSource) {
-  if (!camera?.raspberryPi?.ip) return false;
-  if (cameraSource === 'raspberry-pi') return true;
+  const httpCfg = getHttpStillConfig(camera);
+  if (!httpCfg?.ip) return false;
+  if (cameraSource === 'raspberry-pi' || cameraSource === 'esp32-p4') return true;
   if (cameraSource === 'tapo') return false;
-  return camera.type === 'raspberry-pi';
+  return isHttpStillType(camera?.type) || camera?.type === 'dual';
 }
 
 class HardwareHelper {
@@ -388,11 +394,15 @@ class HardwareHelper {
         throw new Error('Local image capture not yet implemented in server');
       }
 
-      // Handle Raspberry Pi camera (HTTP GET)
-      if (camera.type === 'raspberry-pi') {
-        const pi = camera.raspberryPi;
+      // PiCam / ESP-P4 HTTP still (same Bild-Einstellungen: square + resolution)
+      if (
+        isHttpStillType(camera.type)
+        || options.cameraSource === 'raspberry-pi'
+        || options.cameraSource === 'esp32-p4'
+      ) {
+        const pi = getHttpStillConfig(camera);
         if (!pi || !pi.ip) {
-          throw new Error('Raspberry Pi camera IP not configured');
+          throw new Error('HTTP still camera IP not configured (PiCam / ESP-P4)');
         }
 
         let url = buildRaspberryPiImageUrl(pi, { waitFocus: options.waitFocus });
@@ -408,7 +418,8 @@ class HardwareHelper {
           }
         }
 
-        logger.info(`Capturing frame from Raspberry Pi: ${url}`);
+        const label = camera.type === 'esp32-p4' ? 'ESP-P4' : 'Raspberry Pi';
+        logger.info(`Capturing frame from ${label}: ${url}`);
         
         const response = await axios.get(url, {
           responseType: 'arraybuffer',
@@ -416,13 +427,12 @@ class HardwareHelper {
         });
 
         if (response.data) {
-          // Convert arraybuffer to base64
           const imageBase64 = Buffer.from(response.data, 'binary').toString('base64');
-          logger.info('Successfully captured image from Raspberry Pi');
+          logger.info(`Successfully captured image from ${label}`);
           return imageBase64;
         }
 
-        throw new Error('Failed to capture frame from Raspberry Pi - empty response');
+        throw new Error(`Failed to capture frame from ${label} - empty response`);
       }
 
       // Get RTSP URL for other camera types
@@ -513,22 +523,25 @@ class HardwareHelper {
         throw new Error('No camera configured for device');
       }
 
-      // Raspberry Pi (or dual forced to Pi): apply Geräte Bild-Einstellungen
+      // PiCam / ESP-P4 (or dual forced to HTTP still): apply Geräte Bild-Einstellungen
       if (shouldUseRaspberryPiCapture(camera, options.cameraSource)) {
-        const pi = camera.raspberryPi;
+        const pi = getHttpStillConfig(camera);
         if (!pi || !pi.ip) {
-          throw new Error('Raspberry Pi camera IP not configured');
+          throw new Error('HTTP still camera IP not configured (PiCam / ESP-P4)');
         }
 
+        const label = options.cameraSource === 'esp32-p4' || camera.type === 'esp32-p4'
+          ? 'ESP-P4'
+          : 'Raspberry Pi';
         const originalUrl = buildRaspberryPiImageUrl(pi, { waitFocus: options.waitFocus });
-        logger.info(`Capturing original frame from Raspberry Pi: ${originalUrl}`);
+        logger.info(`Capturing original frame from ${label}: ${originalUrl}`);
         const originalResponse = await axios.get(originalUrl, {
           responseType: 'arraybuffer',
           timeout: 20000
         });
         
         if (!originalResponse.data) {
-          throw new Error('Failed to capture original frame from Raspberry Pi - empty response');
+          throw new Error(`Failed to capture original frame from ${label} - empty response`);
         }
         
         const originalBase64 = Buffer.from(originalResponse.data, 'binary').toString('base64');
@@ -540,7 +553,7 @@ class HardwareHelper {
             waitFocus: options.waitFocus
           });
           
-          logger.info(`Capturing zoomed frame from Raspberry Pi: ${zoomedUrl}`);
+          logger.info(`Capturing zoomed frame from ${label}: ${zoomedUrl}`);
           const zoomedResponse = await axios.get(zoomedUrl, {
             responseType: 'arraybuffer',
             timeout: 20000
@@ -549,7 +562,7 @@ class HardwareHelper {
           if (zoomedResponse.data) {
             zoomedBase64 = Buffer.from(zoomedResponse.data, 'binary').toString('base64');
           } else {
-            logger.warn('Failed to capture zoomed frame from Raspberry Pi, using original');
+            logger.warn(`Failed to capture zoomed frame from ${label}, using original`);
             zoomedBase64 = originalBase64;
           }
         }

@@ -18,8 +18,12 @@ import {
   Select,
   MenuItem,
   Alert,
+  Switch,
   Checkbox,
-  Switch
+  Radio,
+  RadioGroup,
+  Divider,
+  Stack
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -37,6 +41,62 @@ import axios from 'axios';
 import { toast } from 'react-toastify';
 import RouteEditDialog from './RouteEditDialog';
 import { useRouteManagement } from '../hooks/useRouteManagement';
+import {
+  createCameraEntry,
+  normalizeRole,
+  legacyCameraFromCameras,
+  ensureFormCameras,
+  emptyCameraForm,
+  defaultTapo,
+  defaultRaspberryPi,
+  defaultEsp32P4
+} from '../utils/deviceCameras';
+
+const RESOLUTION_RECT = [
+  { value: '', label: 'Standard (Kamera-Default)' },
+  { value: '640x480', label: '640×480 (SD)' },
+  { value: '1280x720', label: '1280×720 (HD)' },
+  { value: '1920x1080', label: '1920×1080 (Full HD)' },
+  { value: '3280x2464', label: '3280×2464 (Full)' }
+];
+
+const RESOLUTION_SQUARE = [
+  { value: '', label: 'Standard (Kamera-Default)' },
+  { value: '640', label: '640×640' },
+  { value: '800', label: '800×800' },
+  { value: '1024', label: '1024×1024' },
+  { value: '1280', label: '1280×1280' },
+  { value: '1920', label: '1920×1920' }
+];
+
+function resolutionOptions(square) {
+  return square ? RESOLUTION_SQUARE : RESOLUTION_RECT;
+}
+
+function normalizeResolutionForSquare(resolution, square) {
+  const opts = resolutionOptions(square);
+  const cur = resolution == null || resolution === ''
+    ? (square ? '640' : '640x480')
+    : String(resolution);
+  if (opts.some((o) => o.value === cur)) return cur;
+  // Map common WIDTHxHEIGHT → side when enabling square
+  if (square && cur.includes('x')) {
+    const [w] = cur.split('x');
+    if (opts.some((o) => o.value === w)) return w;
+  }
+  // Map side → WIDTHxHEIGHT heuristic when disabling square
+  if (!square && cur && !cur.includes('x')) {
+    const mapped = {
+      640: '640x480',
+      800: '1280x720',
+      1024: '1280x720',
+      1280: '1280x720',
+      1920: '1920x1080'
+    }[cur];
+    if (mapped && opts.some((o) => o.value === mapped)) return mapped;
+  }
+  return '';
+}
 
 const Devices = () => {
   const [devices, setDevices] = useState([]);
@@ -50,25 +110,7 @@ const Devices = () => {
     name: '',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
     taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
-    camera: { 
-      type: 'tapo',
-      directUrl: '',
-      rtspUrl: '',
-      tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-      raspberryPi: { 
-        ip: '', 
-        port: 8080, 
-        endpoint: '/image.jpg', 
-        streamEndpoint: '/stream.mjpeg', 
-        flip: false, 
-        fov: 41,
-        angle: 0,
-        square: false,
-        resolution: ''
-      },
-      useLocalImage: false,
-      localImagePath: ''
-    }
+    ...emptyCameraForm()
   });
   const navigate = useNavigate();
   const {
@@ -123,6 +165,7 @@ const Devices = () => {
   const handleOpenDialog = (device = null) => {
     if (device) {
       setEditingDevice(device);
+      const camState = ensureFormCameras(device);
       setFormData({
         name: device.name,
         location: device.location || { name: '', coordinates: { lat: 0, lng: 0 } },
@@ -141,25 +184,7 @@ const Devices = () => {
           shootUseAudio: device.taubenschiesser?.shootUseAudio ?? false,
           postShotFovCalibrate: !!device.taubenschiesser?.postShotFovCalibrate
         },
-        camera: device.camera || { 
-          type: 'tapo',
-          directUrl: '',
-          rtspUrl: '',
-          tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-          raspberryPi: { 
-            ip: '', 
-            port: 8080, 
-            endpoint: '/image.jpg', 
-            streamEndpoint: '/stream.mjpeg', 
-            flip: false, 
-            fov: 41,
-            angle: 0,
-            square: false,
-            resolution: ''
-          },
-          useLocalImage: false,
-          localImagePath: ''
-        }
+        ...camState
       });
     } else {
       setEditingDevice(null);
@@ -167,28 +192,65 @@ const Devices = () => {
         name: '',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
         taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
-        camera: {
-          type: 'tapo',
-          directUrl: '',
-          rtspUrl: '',
-          tapo: { ip: '', username: '', password: '', stream: 'stream1', fov: 110 },
-          raspberryPi: {
-            ip: '',
-            port: 8080,
-            endpoint: '/image.jpg',
-            streamEndpoint: '/stream.mjpeg',
-            flip: false,
-            fov: 75,
-            angle: 0,
-            square: false,
-            resolution: ''
-          },
-          useLocalImage: false,
-          localImagePath: ''
-        }
+        ...emptyCameraForm()
       });
     }
     setOpenDialog(true);
+  };
+
+  const setCameras = (nextListOrFn) => {
+    setFormData((prev) => {
+      const prevList = prev.cameras || [];
+      const nextList = typeof nextListOrFn === 'function' ? nextListOrFn(prevList) : nextListOrFn;
+      const cameras = normalizeRole(nextList);
+      return {
+        ...prev,
+        cameras,
+        camera: legacyCameraFromCameras(cameras, prev.camera)
+      };
+    });
+  };
+
+  const updateCameraAt = (id, patch) => {
+    setCameras((list) => list.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  };
+
+  const updateCameraNested = (id, key, nestedPatch) => {
+    setCameras((list) => list.map((c) => {
+      if (c.id !== id) return c;
+      const prevNested = c[key] || (
+        key === 'tapo' ? defaultTapo()
+          : key === 'esp32P4' ? defaultEsp32P4()
+            : defaultRaspberryPi()
+      );
+      return { ...c, [key]: { ...prevNested, ...nestedPatch } };
+    }));
+  };
+
+  const addCamera = (type = 'raspberry-pi') => {
+    setCameras((list) => {
+      const role = list.length === 0 ? 'master' : 'slave';
+      return [...list, createCameraEntry(type, role)];
+    });
+  };
+
+  const removeCamera = (id) => {
+    setCameras((list) => {
+      const next = list.filter((c) => c.id !== id);
+      if (!next.length) {
+        toast.warning('Mindestens eine Kamera behalten');
+        return list;
+      }
+      return next;
+    });
+  };
+
+  const setMasterCamera = (id) => {
+    setCameras((list) => list.map((c) => ({
+      ...c,
+      role: c.id === id ? 'master' : 'slave',
+      enabled: true
+    })));
   };
 
   const handleCloseDialog = () => {
@@ -711,613 +773,430 @@ const Devices = () => {
               </Alert>
             </Box>
 
-            {/* Camera Configuration */}
-            <FormControl fullWidth margin="dense">
-              <InputLabel>Kamera-Typ</InputLabel>
-              <Select
-                value={formData.camera.type}
-                onChange={(e) => {
-                  const newType = e.target.value;
-                  const updatedCamera = { 
-                    ...formData.camera, 
-                    type: newType,
-                    // Set useLocalImage based on type (keep path for easy switching)
-                    useLocalImage: newType === 'local'
-                  };
-                  setFormData({
-                    ...formData,
-                    camera: updatedCamera
-                  });
-                }}
-                label="Kamera-Typ"
+            {/* Multi-camera Configuration */}
+            <Box sx={{ mt: 2, mb: 1 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                <Typography variant="subtitle1">Kameras</Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" startIcon={<AddIcon />} onClick={() => addCamera('raspberry-pi')}>
+                    PiCam
+                  </Button>
+                  <Button size="small" startIcon={<AddIcon />} onClick={() => addCamera('esp32-p4')}>
+                    ESP-P4
+                  </Button>
+                  <Button size="small" startIcon={<AddIcon />} onClick={() => addCamera('tapo')}>
+                    Tapo
+                  </Button>
+                  <Button size="small" startIcon={<AddIcon />} onClick={() => addCamera('direct')}>
+                    RTSP
+                  </Button>
+                </Stack>
+              </Stack>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                Genau eine Master-Kamera steuert Aim/FOV/Schuss.
+                Mit „Foto vor Vertreibung“ macht die Kamera nach dem Aim und vor dem Schuss ein Still.
+                „aktiv“ ist vorerst für alle Kameras fest an.
+              </Typography>
+
+              <RadioGroup
+                value={(formData.cameras || []).find((c) => c.role === 'master')?.id || ''}
+                onChange={(e) => setMasterCamera(e.target.value)}
               >
-                <MenuItem value="direct">Direkter RTSP-Link</MenuItem>
-                <MenuItem value="tapo">Tapo Kamera</MenuItem>
-                <MenuItem value="raspberry-pi">Raspberry Pi Kamera</MenuItem>
-                <MenuItem value="dual">Dual (Tapo + Raspberry Pi)</MenuItem>
-                <MenuItem value="local">Lokales Bild (Test)</MenuItem>
-              </Select>
-            </FormControl>
+                {(formData.cameras || []).map((cam, idx) => (
+                  <Card key={cam.id} variant="outlined" sx={{ mb: 1.5, p: 1.5 }}>
+                    <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }} flexWrap="wrap">
+                      <FormControlLabel
+                        value={cam.id}
+                        control={<Radio size="small" />}
+                        label="Master"
+                      />
+                      <Chip
+                        size="small"
+                        color={cam.role === 'master' ? 'primary' : 'default'}
+                        label={cam.role === 'master' ? 'Master' : 'Slave'}
+                      />
+                      <Chip size="small" variant="outlined" label={`#${idx + 1}`} />
+                      <Box sx={{ flex: 1 }} />
+                      <FormControlLabel
+                        control={(
+                          <Switch
+                            size="small"
+                            checked
+                            disabled
+                          />
+                        )}
+                        label="aktiv"
+                        title="Vorerst immer aktiv"
+                      />
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={!!cam.photoBeforeDeterrence}
+                            onChange={(e) => updateCameraAt(cam.id, {
+                              photoBeforeDeterrence: e.target.checked
+                            })}
+                          />
+                        )}
+                        label="Foto vor Vertreibung"
+                        title="Still nach Aim, bevor geschossen/vertrieben wird"
+                      />
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => removeCamera(cam.id)}
+                        disabled={(formData.cameras || []).length <= 1}
+                        title="Kamera entfernen"
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Stack>
 
-            {/* Tapo Camera Configuration */}
-            {formData.camera.type === 'tapo' && (
-              <>
-                <TextField
-                  margin="dense"
-                  label="Kamera IP"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.tapo.ip}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { ...formData.camera.tapo, ip: e.target.value }
-                    }
-                  })}
-                  placeholder="192.168.1.101"
-                />
-                <TextField
-                  margin="dense"
-                  label="Benutzername"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.tapo.username}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { ...formData.camera.tapo, username: e.target.value }
-                    }
-                  })}
-                />
-                <TextField
-                  margin="dense"
-                  label="Passwort"
-                  fullWidth
-                  variant="outlined"
-                  type="text"
-                  value={formData.camera.tapo.password}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { ...formData.camera.tapo, password: e.target.value }
-                    }
-                  })}
-                  helperText="Passwort ist sichtbar für Bearbeitung"
-                />
-                <FormControl fullWidth margin="dense">
-                  <InputLabel>Stream</InputLabel>
-                  <Select
-                    value={formData.camera.tapo.stream}
-                    onChange={(e) => setFormData({
-                      ...formData,
-                      camera: {
-                        ...formData.camera,
-                        tapo: { ...formData.camera.tapo, stream: e.target.value }
-                      }
-                    })}
-                    label="Stream"
-                  >
-                    <MenuItem value="stream1">Stream 1 (1920x1080, 30fps)</MenuItem>
-                    <MenuItem value="stream2">Stream 2 (640x480, 30fps)</MenuItem>
-                  </Select>
-                </FormControl>
-                <TextField
-                  margin="dense"
-                  label="Diagonal Field of View (FOV) in Grad"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.tapo.fov || 110}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { ...formData.camera.tapo, fov: parseFloat(e.target.value) || 110 }
-                    }
-                  })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 110° für Tapo)"
-                  inputProps={{ min: 1, max: 180, step: 0.1 }}
-                />
-              </>
-            )}
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mb: 1 }}>
+                      <TextField
+                        size="small"
+                        label="Name"
+                        fullWidth
+                        value={cam.name || ''}
+                        onChange={(e) => updateCameraAt(cam.id, { name: e.target.value })}
+                      />
+                      <FormControl size="small" fullWidth>
+                        <InputLabel>Typ</InputLabel>
+                        <Select
+                          label="Typ"
+                          value={cam.type}
+                          onChange={(e) => updateCameraAt(cam.id, {
+                            type: e.target.value,
+                            useLocalImage: e.target.value === 'local'
+                          })}
+                        >
+                          <MenuItem value="tapo">Tapo</MenuItem>
+                          <MenuItem value="raspberry-pi">Raspberry Pi</MenuItem>
+                          <MenuItem value="esp32-p4">ESP-P4 Cam</MenuItem>
+                          <MenuItem value="direct">RTSP direkt</MenuItem>
+                          <MenuItem value="local">Lokales Bild</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </Stack>
 
-            {/* Direct RTSP URL */}
-            {formData.camera.type === 'direct' && (
-              <TextField
-                margin="dense"
-                label="RTSP URL"
-                fullWidth
-                variant="outlined"
-                value={formData.camera.directUrl}
-                onChange={(e) => setFormData({
-                  ...formData,
-                  camera: { ...formData.camera, directUrl: e.target.value }
-                })}
-                placeholder="rtsp://user:pass@ip:port/stream"
-              />
-            )}
+                    {cam.type === 'tapo' && (
+                      <>
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Kamera IP"
+                          fullWidth
+                          value={cam.tapo?.ip || ''}
+                          onChange={(e) => updateCameraNested(cam.id, 'tapo', { ip: e.target.value })}
+                          placeholder="192.168.1.101"
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Benutzername"
+                          fullWidth
+                          value={cam.tapo?.username || ''}
+                          onChange={(e) => updateCameraNested(cam.id, 'tapo', { username: e.target.value })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Passwort"
+                          fullWidth
+                          type="text"
+                          value={cam.tapo?.password || ''}
+                          onChange={(e) => updateCameraNested(cam.id, 'tapo', { password: e.target.value })}
+                          helperText="Passwort ist sichtbar für Bearbeitung"
+                        />
+                        <FormControl fullWidth margin="dense" size="small">
+                          <InputLabel>Stream</InputLabel>
+                          <Select
+                            label="Stream"
+                            value={cam.tapo?.stream || 'stream1'}
+                            onChange={(e) => updateCameraNested(cam.id, 'tapo', { stream: e.target.value })}
+                          >
+                            <MenuItem value="stream1">stream1</MenuItem>
+                            <MenuItem value="stream2">stream2</MenuItem>
+                          </Select>
+                        </FormControl>
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Diagonal FOV (°)"
+                          type="number"
+                          fullWidth
+                          value={cam.tapo?.fov ?? 110}
+                          onChange={(e) => updateCameraNested(cam.id, 'tapo', {
+                            fov: parseFloat(e.target.value) || 110
+                          })}
+                        />
+                      </>
+                    )}
 
-            {/* Raspberry Pi Camera Configuration */}
-            {formData.camera.type === 'raspberry-pi' && (
-              <>
-                <TextField
-                  margin="dense"
-                  label="Raspberry Pi IP/Hostname"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.ip || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        ip: e.target.value,
-                        port: formData.camera.raspberryPi?.port || 8080,
-                        endpoint: formData.camera.raspberryPi?.endpoint || '/image.jpg',
-                        streamEndpoint: formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'
-                      }
-                    }
-                  })}
-                  placeholder="PiCam oder 192.168.1.100"
-                  helperText="Hostname (z.B. PiCam) oder IP-Adresse"
-                />
-                <TextField
-                  margin="dense"
-                  label="Port"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.raspberryPi?.port || 8080}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        port: parseInt(e.target.value) || 8080
-                      }
-                    }
-                  })}
-                  helperText="Standard: 8080"
-                />
-                <TextField
-                  margin="dense"
-                  label="Image Endpoint"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.endpoint || '/image.jpg'}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        endpoint: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Endpoint für Einzelbilder (Standard: /image.jpg)"
-                />
-                <TextField
-                  margin="dense"
-                  label="Stream Endpoint"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        streamEndpoint: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Endpoint für MJPEG-Stream (Standard: /stream.mjpeg)"
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={formData.camera.raspberryPi?.flip || false}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        camera: {
-                          ...formData.camera,
-                          raspberryPi: { 
-                            ...(formData.camera.raspberryPi || {}),
-                            flip: e.target.checked
-                          }
-                        }
-                      })}
-                    />
-                  }
-                  label="Bild um 180° drehen"
-                />
-                <TextField
-                  margin="dense"
-                  label="FOV nach Flip & Rotation (Grad)"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.raspberryPi?.fov ?? 41}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 41
-                      }
-                    }
-                  })}
-                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
-                  inputProps={{ min: 1, max: 180, step: 0.1 }}
-                />
-                <TextField
-                  margin="dense"
-                  label="Raspberry Pi Bilddrehung (Grad)"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.raspberryPi?.angle ?? 0}
-                  onChange={(e) => {
-                    const raw = parseFloat(e.target.value);
-                    const angle = Number.isNaN(raw) ? 0 : raw;
-                    setFormData({
-                      ...formData,
-                      camera: {
-                        ...formData.camera,
-                        raspberryPi: {
-                          ...(formData.camera.raspberryPi || {}),
-                          angle
-                        }
-                      }
-                    });
-                  }}
-                  helperText="Optionaler Rotationswinkel, z.B. 90, 180 oder 270"
-                  inputProps={{ min: -360, max: 360, step: 1 }}
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={formData.camera.raspberryPi?.square || false}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        camera: {
-                          ...formData.camera,
-                          raspberryPi: {
-                            ...(formData.camera.raspberryPi || {}),
-                            square: e.target.checked
-                          }
-                        }
-                      })}
-                    />
-                  }
-                  label="Quadratisches Bild (square=true)"
-                />
-                <TextField
-                  margin="dense"
-                  label="Raspberry Pi Auflösung (resolution)"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.resolution || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: {
-                        ...(formData.camera.raspberryPi || {}),
-                        resolution: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Format: WIDTHxHEIGHT (z.B. 1280x720) oder einzelner Wert (z.B. 1024) für quadratische Bilder"
-                />
-              </>
-            )}
+                    {cam.type === 'raspberry-pi' && (
+                      <>
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="PiCam IP / Hostname"
+                          fullWidth
+                          value={cam.raspberryPi?.ip || ''}
+                          onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', { ip: e.target.value })}
+                          placeholder="PiCam oder 192.168.x.x"
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Port"
+                          type="number"
+                          fullWidth
+                          value={cam.raspberryPi?.port ?? 8080}
+                          onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', {
+                            port: parseInt(e.target.value, 10) || 8080
+                          })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Bild-Endpoint"
+                          fullWidth
+                          value={cam.raspberryPi?.endpoint || '/image.jpg'}
+                          onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', { endpoint: e.target.value })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Stream-Endpoint"
+                          fullWidth
+                          value={cam.raspberryPi?.streamEndpoint || '/stream.mjpeg'}
+                          onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', {
+                            streamEndpoint: e.target.value
+                          })}
+                        />
+                        <FormControlLabel
+                          control={(
+                            <Switch
+                              checked={!!cam.raspberryPi?.flip}
+                              onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', {
+                                flip: e.target.checked
+                              })}
+                            />
+                          )}
+                          label="Bild um 180° drehen (flip)"
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="FOV (°)"
+                          type="number"
+                          fullWidth
+                          value={cam.raspberryPi?.fov ?? 75}
+                          onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', {
+                            fov: parseFloat(e.target.value) || 75
+                          })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Drehwinkel (°)"
+                          type="number"
+                          fullWidth
+                          value={cam.raspberryPi?.angle ?? 0}
+                          onChange={(e) => {
+                            const raw = parseFloat(e.target.value);
+                            updateCameraNested(cam.id, 'raspberryPi', {
+                              angle: Number.isNaN(raw) ? 0 : raw
+                            });
+                          }}
+                        />
+                        <FormControlLabel
+                          control={(
+                            <Switch
+                              checked={cam.raspberryPi?.square == null ? true : !!cam.raspberryPi.square}
+                              onChange={(e) => {
+                                const square = e.target.checked;
+                                updateCameraNested(cam.id, 'raspberryPi', {
+                                  square,
+                                  resolution: normalizeResolutionForSquare(
+                                    cam.raspberryPi?.resolution,
+                                    square
+                                  )
+                                });
+                              }}
+                            />
+                          )}
+                          label="Quadratischer Ausschnitt"
+                        />
+                        <FormControl fullWidth margin="dense" size="small">
+                          <InputLabel>Auflösung</InputLabel>
+                          <Select
+                            label="Auflösung"
+                            value={normalizeResolutionForSquare(
+                              cam.raspberryPi?.resolution,
+                              cam.raspberryPi?.square == null ? true : !!cam.raspberryPi.square
+                            )}
+                            onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', {
+                              resolution: e.target.value
+                            })}
+                          >
+                            {resolutionOptions(cam.raspberryPi?.square == null ? true : !!cam.raspberryPi.square).map((o) => (
+                              <MenuItem key={`pi-${o.value || 'default'}`} value={o.value}>
+                                {o.label}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </>
+                    )}
 
-            {/* Dual Camera Configuration */}
-            {formData.camera.type === 'dual' && (
-              <>
-                <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, fontWeight: 'bold' }}>
-                  Tapo Kamera
-                </Typography>
-                <TextField
-                  margin="dense"
-                  label="Kamera IP"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.tapo?.ip || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { 
-                        ...(formData.camera.tapo || {}),
-                        ip: e.target.value,
-                        username: formData.camera.tapo?.username || '',
-                        password: formData.camera.tapo?.password || '',
-                        stream: formData.camera.tapo?.stream || 'stream1'
-                      }
-                    }
-                  })}
-                  placeholder="192.168.1.101"
-                />
-                <TextField
-                  margin="dense"
-                  label="Benutzername"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.tapo?.username || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { 
-                        ...(formData.camera.tapo || {}),
-                        username: e.target.value
-                      }
-                    }
-                  })}
-                />
-                <TextField
-                  margin="dense"
-                  label="Passwort"
-                  fullWidth
-                  variant="outlined"
-                  type="text"
-                  value={formData.camera.tapo?.password || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { 
-                        ...(formData.camera.tapo || {}),
-                        password: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Passwort ist sichtbar für Bearbeitung"
-                />
-                <FormControl fullWidth margin="dense">
-                  <InputLabel>Stream</InputLabel>
-                  <Select
-                    value={formData.camera.tapo?.stream || 'stream1'}
-                    onChange={(e) => setFormData({
-                      ...formData,
-                      camera: {
-                        ...formData.camera,
-                        tapo: { 
-                          ...(formData.camera.tapo || {}),
-                          stream: e.target.value
-                        }
-                      }
-                    })}
-                    label="Stream"
-                  >
-                    <MenuItem value="stream1">Stream 1 (1920x1080, 30fps)</MenuItem>
-                    <MenuItem value="stream2">Stream 2 (640x480, 30fps)</MenuItem>
-                  </Select>
-                </FormControl>
-                <TextField
-                  margin="dense"
-                  label="Tapo Diagonal FOV (Grad)"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.tapo?.fov || 110}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      tapo: { 
-                        ...(formData.camera.tapo || {}),
-                        fov: parseFloat(e.target.value) || 110
-                      }
-                    }
-                  })}
-                  helperText="Diagonaler Bildwinkel in Grad (Standard: 110° für Tapo, Master-Kamera)"
-                  inputProps={{ min: 1, max: 180, step: 0.1 }}
-                />
+                    {cam.type === 'esp32-p4' && (
+                      <>
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="ESP-P4 IP / Hostname"
+                          fullWidth
+                          value={cam.esp32P4?.ip || ''}
+                          onChange={(e) => updateCameraNested(cam.id, 'esp32P4', { ip: e.target.value })}
+                          placeholder="ESP-P4 oder 192.168.x.x"
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Port"
+                          type="number"
+                          fullWidth
+                          value={cam.esp32P4?.port ?? 8080}
+                          onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                            port: parseInt(e.target.value, 10) || 8080
+                          })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Bild-Endpoint"
+                          fullWidth
+                          value={cam.esp32P4?.endpoint || '/image.jpg'}
+                          onChange={(e) => updateCameraNested(cam.id, 'esp32P4', { endpoint: e.target.value })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Stream-Endpoint"
+                          fullWidth
+                          value={cam.esp32P4?.streamEndpoint || '/stream.mjpeg'}
+                          onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                            streamEndpoint: e.target.value
+                          })}
+                        />
+                        <FormControlLabel
+                          control={(
+                            <Switch
+                              checked={!!cam.esp32P4?.flip}
+                              onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                                flip: e.target.checked
+                              })}
+                            />
+                          )}
+                          label="Bild um 180° drehen (flip)"
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="FOV (°)"
+                          type="number"
+                          fullWidth
+                          value={cam.esp32P4?.fov ?? 75}
+                          onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                            fov: parseFloat(e.target.value) || 75
+                          })}
+                        />
+                        <TextField
+                          margin="dense"
+                          size="small"
+                          label="Drehwinkel (°)"
+                          type="number"
+                          fullWidth
+                          value={cam.esp32P4?.angle ?? 0}
+                          onChange={(e) => {
+                            const raw = parseFloat(e.target.value);
+                            updateCameraNested(cam.id, 'esp32P4', {
+                              angle: Number.isNaN(raw) ? 0 : raw
+                            });
+                          }}
+                        />
+                        <FormControlLabel
+                          control={(
+                            <Switch
+                              checked={cam.esp32P4?.square == null ? true : !!cam.esp32P4.square}
+                              onChange={(e) => {
+                                const square = e.target.checked;
+                                updateCameraNested(cam.id, 'esp32P4', {
+                                  square,
+                                  resolution: normalizeResolutionForSquare(
+                                    cam.esp32P4?.resolution,
+                                    square
+                                  )
+                                });
+                              }}
+                            />
+                          )}
+                          label="Quadratischer Ausschnitt"
+                        />
+                        <FormControl fullWidth margin="dense" size="small">
+                          <InputLabel>Auflösung</InputLabel>
+                          <Select
+                            label="Auflösung"
+                            value={normalizeResolutionForSquare(
+                              cam.esp32P4?.resolution,
+                              cam.esp32P4?.square == null ? true : !!cam.esp32P4.square
+                            )}
+                            onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                              resolution: e.target.value
+                            })}
+                          >
+                            {resolutionOptions(cam.esp32P4?.square == null ? true : !!cam.esp32P4.square).map((o) => (
+                              <MenuItem key={`p4-${o.value || 'default'}`} value={o.value}>
+                                {o.label}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                      </>
+                    )}
 
-                <Typography variant="subtitle2" sx={{ mt: 3, mb: 1, fontWeight: 'bold' }}>
-                  Raspberry Pi Kamera
-                </Typography>
-                <TextField
-                  margin="dense"
-                  label="Raspberry Pi IP/Hostname"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.ip || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        ip: e.target.value,
-                        port: formData.camera.raspberryPi?.port || 8080,
-                        endpoint: formData.camera.raspberryPi?.endpoint || '/image.jpg',
-                        streamEndpoint: formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'
-                      }
-                    }
-                  })}
-                  placeholder="PiCam oder 192.168.1.100"
-                  helperText="Hostname (z.B. PiCam) oder IP-Adresse"
-                />
-                <TextField
-                  margin="dense"
-                  label="Port"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.raspberryPi?.port || 8080}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        port: parseInt(e.target.value) || 8080
-                      }
-                    }
-                  })}
-                  helperText="Standard: 8080"
-                />
-                <TextField
-                  margin="dense"
-                  label="Image Endpoint"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.endpoint || '/image.jpg'}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        endpoint: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Endpoint für Einzelbilder (Standard: /image.jpg)"
-                />
-                <TextField
-                  margin="dense"
-                  label="Stream Endpoint"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.streamEndpoint || '/stream.mjpeg'}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        streamEndpoint: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Endpoint für MJPEG-Stream (Standard: /stream.mjpeg)"
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={formData.camera.raspberryPi?.flip || false}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        camera: {
-                          ...formData.camera,
-                          raspberryPi: { 
-                            ...(formData.camera.raspberryPi || {}),
-                            flip: e.target.checked
-                          }
-                        }
-                      })}
-                    />
-                  }
-                  label="Bild um 180° drehen"
-                />
-                <TextField
-                  margin="dense"
-                  label="FOV nach Flip & Rotation (Grad)"
-                  fullWidth
-                  variant="outlined"
-                  type="number"
-                  value={formData.camera.raspberryPi?.fov ?? 41}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        fov: parseFloat(e.target.value) || 41
-                      }
-                    }
-                  })}
-                  helperText="Effektiver diagonaler Bildwinkel der angezeigten Ansicht (nach Flip/Rotation). Standard: 41°."
-                  inputProps={{ min: 1, max: 180, step: 0.1 }}
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={formData.camera.raspberryPi?.square || false}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        camera: {
-                          ...formData.camera,
-                          raspberryPi: { 
-                            ...(formData.camera.raspberryPi || {}),
-                            square: e.target.checked
-                          }
-                        }
-                      })}
-                    />
-                  }
-                  label="Quadratisches Bild (square=true)"
-                />
-                <TextField
-                  margin="dense"
-                  label="Raspberry Pi Auflösung (resolution)"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.raspberryPi?.resolution || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: {
-                      ...formData.camera,
-                      raspberryPi: { 
-                        ...(formData.camera.raspberryPi || {}),
-                        resolution: e.target.value
-                      }
-                    }
-                  })}
-                  helperText="Format: WIDTHxHEIGHT (z.B. 1280x720) oder einzelner Wert (z.B. 1024) für quadratische Bilder"
-                />
-              </>
-            )}
+                    {cam.type === 'direct' && (
+                      <TextField
+                        margin="dense"
+                        size="small"
+                        label="RTSP URL"
+                        fullWidth
+                        value={cam.directUrl || ''}
+                        onChange={(e) => updateCameraAt(cam.id, { directUrl: e.target.value })}
+                        placeholder="rtsp://user:pass@ip:554/stream"
+                      />
+                    )}
 
-            {/* Local Image Configuration */}
-            {formData.camera.type === 'local' && (
-              <>
-                <TextField
-                  margin="dense"
-                  label="Pfad zum Bild"
-                  fullWidth
-                  variant="outlined"
-                  value={formData.camera.localImagePath || ''}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    camera: { 
-                      ...formData.camera, 
-                      useLocalImage: true,
-                      localImagePath: e.target.value 
-                    }
-                  })}
-                  placeholder="/Users/name/Documents/test.jpg oder images/bird.jpg"
-                  helperText="Absoluter Pfad oder relativ zum Arbeitsordner"
-                />
-              </>
-            )}
+                    {cam.type === 'local' && (
+                      <TextField
+                        margin="dense"
+                        size="small"
+                        label="Pfad zum Bild"
+                        fullWidth
+                        value={cam.localImagePath || ''}
+                        onChange={(e) => updateCameraAt(cam.id, {
+                          localImagePath: e.target.value,
+                          useLocalImage: true
+                        })}
+                        placeholder="/Users/name/Documents/test.jpg"
+                      />
+                    )}
+                  </Card>
+                ))}
+              </RadioGroup>
+              <Divider sx={{ my: 1 }} />
+            </Box>
 
-            {/* Legacy RTSP URL for backward compatibility */}
-            <TextField
-              margin="dense"
-              label="Legacy RTSP URL (für Rückwärtskompatibilität)"
-              fullWidth
-              variant="outlined"
-              value={formData.camera.rtspUrl}
-              onChange={(e) => setFormData({
-                ...formData,
-                camera: { ...formData.camera, rtspUrl: e.target.value }
-              })}
-              placeholder="rtsp://user:pass@ip:port/stream"
-            />
           </DialogContent>
           <DialogActions>
             <Button onClick={handleCloseDialog}>Abbrechen</Button>

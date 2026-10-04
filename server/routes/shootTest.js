@@ -427,7 +427,7 @@ router.post('/aim-click', authenticateToken, async (req, res) => {
     const bbox = { x: cx - 0.5, y: cy - 0.5, width: 1, height: 1 };
 
     const camSource = cameraSource
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
 
     const { rotationAdjustment, tiltAdjustment } = calculateAngleAdjustment(
       bbox,
@@ -530,7 +530,7 @@ router.post('/execute', authenticateToken, async (req, res) => {
 
     const camSource = targetBird.camera_source
       || detection.camera_source
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
 
     const { rotationAdjustment, tiltAdjustment } = calculateAngleAdjustment(
       targetBird.bbox,
@@ -672,7 +672,7 @@ router.post('/calibrate-start', authenticateToken, async (req, res) => {
 
     const camSource = targetBird.camera_source
       || detection.camera_source
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
 
     const bbox = targetBird.bbox;
     const bboxCenterX = Number(bbox.x || 0) + Number(bbox.width || 0) / 2;
@@ -867,7 +867,7 @@ router.post('/calibrate-auto', authenticateToken, async (req, res) => {
 
     const camSource = targetBird.camera_source
       || detection.camera_source
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
 
     const bbox = targetBird.bbox;
     const birdX = Number(bbox.x || 0) + Number(bbox.width || 0) / 2;
@@ -1233,7 +1233,7 @@ router.post('/calibrate-save-manual', authenticateToken, async (req, res) => {
 
     const camSource = targetBird?.camera_source
       || detection.camera_source
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
     const resolvedFov = resolveAxisFov(device.camera || {}, camSource, imgW, imgH);
     const fovSoll = {
       h: resolvedFov?.horizontal ?? device.camera?.raspberryPi?.fovH ?? device.camera?.raspberryPi?.fov ?? null,
@@ -1404,7 +1404,7 @@ router.post('/replay-calibrated-image', authenticateToken, async (req, res) => {
     const zoomFactor = cal.zoomFactor || detection.zoom_factor || 1;
     const camSource = detection.target_bird?.camera_source
       || detection.camera_source
-      || (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo');
+      || (device.camera?.type === 'esp32-p4' ? 'esp32-p4' : (device.camera?.type === 'raspberry-pi' ? 'raspberry-pi' : 'tapo'));
 
     const stabMs = getStabilizationMs(device);
     const ctx = await hardwareHelper.moveToPosition(device, pose.rotation, pose.tilt);

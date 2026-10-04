@@ -11,6 +11,7 @@ const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
 const routeImages = require('../utils/routeImages');
 const panoramaScanImages = require('../utils/panoramaScanImages');
 const panoramaScanResults = require('../utils/panoramaScanResults');
+const { syncDeviceCameras } = require('../utils/deviceCameras');
 
 const router = express.Router();
 
@@ -142,6 +143,7 @@ router.get('/', authenticateToken, async (req, res) => {
     const yesterdayStr = yesterday.toISOString().split('T')[0];
     
     const devicesWithStatus = devices.map(device => {
+      syncDeviceCameras(device);
       const deviceObj = device.toObject(); // Convert Mongoose document to plain object
       deviceObj.status = device.getOverallStatus(); // Dynamisch berechnen
       
@@ -201,17 +203,19 @@ router.post('/', authenticateToken, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, location, camera, taubenschiesser } = req.body;
+    const { name, location, camera, cameras, taubenschiesser } = req.body;
 
     const device = new Device({
       name,
       type: 'taubenschiesser', // Immer Taubenschiesser
       location,
       camera,
+      cameras: Array.isArray(cameras) ? cameras : undefined,
       taubenschiesser,
       owner: req.user.userId
     });
 
+    syncDeviceCameras(device);
     await device.save();
     res.status(201).json(device);
   } catch (error) {
@@ -246,19 +250,23 @@ router.put('/:id', authenticateToken, async (req, res) => {
       } else if (key === 'camera' && req.body[key]) {
         // Merge camera object to preserve existing fields
         device.camera = {
-          ...device.camera,
+          ...(device.camera?.toObject ? device.camera.toObject() : device.camera),
           ...req.body[key]
         };
+      } else if (key === 'cameras' && Array.isArray(req.body[key])) {
+        device.cameras = req.body[key];
       } else if (key === 'location' && req.body[key]) {
         // Merge location object to preserve existing fields
         device.location = {
           ...device.location,
           ...req.body[key]
         };
-      } else {
+      } else if (key !== 'cameras') {
         device[key] = req.body[key];
       }
     });
+
+    syncDeviceCameras(device);
     
     // Keep coordinate images in the RouteImage collection, not the device doc.
     await routeImages.persistAndStripCoordinateImages(device._id, device.actions?.route?.coordinates || []);

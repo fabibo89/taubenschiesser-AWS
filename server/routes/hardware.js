@@ -226,6 +226,69 @@ router.post('/detection', async (req, res) => {
   }
 });
 
+// Append pre-shoot still(s) to an existing detection (aim pose, before deterrence)
+router.post('/detection/:id/pre-shoot-photos', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { photos } = req.body || {};
+    if (!Array.isArray(photos) || photos.length === 0) {
+      return res.status(400).json({ error: 'photos array required' });
+    }
+
+    const detection = await Detection.findById(id);
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+
+    const entries = photos.map((p, idx) => {
+      const imageUrl = p.image || p.imageUrl || p.url;
+      if (!imageUrl || typeof imageUrl !== 'string') {
+        return null;
+      }
+      return {
+        cameraId: p.cameraId || '',
+        cameraName: p.cameraName || '',
+        cameraType: p.cameraType || 'unknown',
+        role: p.role || 'slave',
+        image: {
+          url: imageUrl,
+          filename: p.filename || `pre_shoot_${id}_${Date.now()}_${idx}.jpg`,
+          size: imageUrl.length
+        },
+        pose: p.pose && (p.pose.rotation != null || p.pose.tilt != null)
+          ? { rotation: p.pose.rotation, tilt: p.pose.tilt }
+          : undefined,
+        capturedAt: p.capturedAt ? new Date(p.capturedAt) : new Date()
+      };
+    }).filter(Boolean);
+
+    if (!entries.length) {
+      return res.status(400).json({ error: 'No valid photos in request' });
+    }
+
+    if (!Array.isArray(detection.preShootPhotos)) {
+      detection.preShootPhotos = [];
+    }
+    detection.preShootPhotos.push(...entries);
+    await detection.save();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`device-${detection.device}`).emit('detection-pre-shoot-photos', {
+        detectionId: detection._id,
+        photos: entries,
+        timestamp: new Date()
+      });
+    }
+
+    logger.info(`Pre-shoot photos appended to detection ${id}: ${entries.length}`);
+    res.json({ success: true, count: entries.length, detection_id: detection._id });
+  } catch (error) {
+    logger.error('Pre-shoot photos save error:', error);
+    res.status(500).json({ error: 'Failed to save pre-shoot photos' });
+  }
+});
+
 // Get hardware detections (no auth required for monitoring)
 router.get('/detections/:deviceId', async (req, res) => {
   try {

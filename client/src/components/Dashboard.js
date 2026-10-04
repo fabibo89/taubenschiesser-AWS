@@ -240,7 +240,10 @@ const DeviceCard = React.memo(({
   const raspberryPiImageRef = useRef(null);
 
   const hasTapo = device.camera?.tapo?.ip && device.camera?.tapo?.username && device.camera?.tapo?.password;
-  const hasRaspberryPi = device.camera?.raspberryPi?.ip;
+  const httpStillCam = device.camera?.type === 'esp32-p4'
+    ? (device.camera?.esp32P4 || device.camera?.raspberryPi)
+    : (device.camera?.raspberryPi || device.camera?.esp32P4);
+  const hasRaspberryPi = !!httpStillCam?.ip;
   const isDualCamera = hasTapo && hasRaspberryPi;
 
   const normalized = useMemo(() => {
@@ -298,7 +301,9 @@ const DeviceCard = React.memo(({
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (isStreaming && device && hasRaspberryPi) {
-      const pi = device.camera.raspberryPi;
+      const pi = device.camera?.type === 'esp32-p4'
+        ? (device.camera.esp32P4 || device.camera.raspberryPi)
+        : (device.camera.raspberryPi || device.camera.esp32P4);
       const piIp = pi.ip;
       const piPort = pi.port || 8080;
       const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
@@ -306,8 +311,9 @@ const DeviceCard = React.memo(({
 
       if (pi.flip) params.set('flip', 'true');
       if (typeof pi.angle === 'number' && pi.angle !== 0) params.set('angle', String(pi.angle));
-      if (pi.square) params.set('square', 'true');
-      if (pi.resolution) params.set('resolution', String(pi.resolution));
+      const square = pi.square == null ? true : !!pi.square;
+      params.set('square', square ? 'true' : 'false');
+      params.set('resolution', pi.resolution ? String(pi.resolution) : '640');
 
       let nextUrl = `http://${piIp}:${piPort}${streamEndpoint}`;
       const qs = params.toString();

@@ -36,9 +36,12 @@ def _resolve_axis_fov(
     image_width: int,
     image_height: int,
 ) -> Tuple[float, float]:
-    pi = camera_config.get('raspberryPi') or {}
+    pi = {
+        **(camera_config.get('raspberryPi') or {}),
+        **(camera_config.get('esp32P4') or {}),
+    }
     tapo = camera_config.get('tapo') or {}
-    from_pi = camera_source in ('raspberry-pi', 'raspberry_pi')
+    from_pi = camera_source in ('raspberry-pi', 'raspberry_pi', 'esp32-p4')
 
     fov_h = pi.get('fovH') if from_pi else (tapo.get('fovH') if tapo.get('fovH') is not None else pi.get('fovH'))
     fov_v = pi.get('fovV') if from_pi else (tapo.get('fovV') if tapo.get('fovV') is not None else pi.get('fovV'))

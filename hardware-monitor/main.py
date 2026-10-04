@@ -1110,31 +1110,37 @@ class HardwareMonitor:
                 logger.info(f"⏰ Device {device_ip} timeout reached ({time_since_last_seen:.1f}s since last message), continuing with image analysis")
                 # Don't return - continue with image analysis after timeout
             
-            # Check for different camera types
-            camera_config = device.get('camera', {})
+            # Prefer Master from cameras[]; fall back to legacy camera
+            camera_config, master_cam = self._resolve_detection_camera(device)
+            if master_cam:
+                # FOV / angle helpers read device.camera — keep aligned with Master
+                device = {**device, 'camera': {**(device.get('camera') or {}), **camera_config}}
+                logger.info(
+                    f"📷 Detection uses Master camera "
+                    f"'{master_cam.get('name') or master_cam.get('type')}' "
+                    f"({camera_config.get('type')})"
+                )
+
             camera_type = camera_config.get('type')
-            
-            # Check if using local image file instead of camera
             use_local_image = camera_config.get('useLocalImage', False)
             local_image_path = camera_config.get('localImagePath', '')
-            
-            # Determine which cameras to check
-            has_tapo = False
-            has_raspberry_pi = False
-            
-            # Check for Tapo camera
-            tapo_config = camera_config.get('tapo', {})
-            if tapo_config and tapo_config.get('ip') and tapo_config.get('username') and tapo_config.get('password'):
-                has_tapo = True
-            
-            # Check for Raspberry Pi camera
-            pi_config = camera_config.get('raspberryPi', {})
-            if pi_config and pi_config.get('ip'):
-                has_raspberry_pi = True
-            
-            # Single camera only: use device camera type (tapo or raspberry-pi)
+
+            tapo_config = camera_config.get('tapo', {}) or {}
+            has_tapo = bool(
+                tapo_config.get('ip')
+                and tapo_config.get('username')
+                and tapo_config.get('password')
+            )
+            pi_config = camera_config.get('raspberryPi') or {}
+            esp_config = camera_config.get('esp32P4') or {}
+            has_raspberry_pi = bool(
+                (pi_config and pi_config.get('ip'))
+                or (esp_config and esp_config.get('ip'))
+            )
+            has_direct = bool(camera_config.get('directUrl'))
+
+            # YOLO / Aim: Master only (single-camera path)
             if use_local_image and local_image_path:
-                # Use local image file
                 logger.info(f"📁 Using local image file for device {device_ip}: {local_image_path}")
                 await self.send_monitor_event(device, 'image_source', {
                     'source': 'local',
@@ -1145,9 +1151,35 @@ class HardwareMonitor:
                     await self.process_single_camera(device, original_frame, 'local')
                 else:
                     return False
-            elif (camera_type == 'raspberry-pi' and has_raspberry_pi) or (has_raspberry_pi and not has_tapo):
-                await self.analyze_raspberry_pi_camera(device, device_ip, camera_config)
-            elif (camera_type == 'tapo' and has_tapo) or has_tapo:
+            elif camera_type == 'esp32-p4' and (esp_config.get('ip') or pi_config.get('ip')):
+                await self.analyze_raspberry_pi_camera(
+                    device, device_ip, camera_config, camera_label='esp32-p4'
+                )
+            elif camera_type == 'raspberry-pi' and has_raspberry_pi:
+                await self.analyze_raspberry_pi_camera(
+                    device, device_ip, camera_config, camera_label='raspberry-pi'
+                )
+            elif camera_type == 'tapo' and has_tapo:
+                await self.analyze_tapo_camera(device, device_ip, camera_config)
+            elif camera_type == 'direct' and has_direct:
+                rtsp_url = camera_config.get('directUrl')
+                logger.info(f"Using direct RTSP for Master detection on device {device_ip}")
+                await self.send_monitor_event(device, 'image_source', {
+                    'source': 'direct',
+                    'camera_label': 'direct'
+                })
+                # Direct URL: do not use device-image (master-only helper)
+                original_frame = await self.capture_frame(rtsp_url, device_id=None)
+                if original_frame is not None:
+                    await self.process_single_camera(device, original_frame, 'direct', 'direct')
+                else:
+                    return False
+            elif has_raspberry_pi and not has_tapo:
+                label = 'esp32-p4' if (esp_config.get('ip') and not pi_config.get('ip')) else 'raspberry-pi'
+                await self.analyze_raspberry_pi_camera(
+                    device, device_ip, camera_config, camera_label=label
+                )
+            elif has_tapo:
                 await self.analyze_tapo_camera(device, device_ip, camera_config)
             else:
                 logger.warning(f"No camera configured for device {device_ip}")
@@ -1217,19 +1249,23 @@ class HardwareMonitor:
             })
     
     async def analyze_raspberry_pi_camera(self, device: Dict, device_ip: str, camera_config: Dict, camera_label: str = 'raspberry-pi'):
-        """Analyze Raspberry Pi camera"""
+        """Analyze PiCam or ESP-P4 Cam (identical HTTP still API)."""
         try:
-            pi_config = camera_config.get('raspberryPi', {})
+            if camera_label == 'esp32-p4':
+                pi_config = camera_config.get('esp32P4') or camera_config.get('raspberryPi') or {}
+            else:
+                pi_config = camera_config.get('raspberryPi') or camera_config.get('esp32P4') or {}
             pi_ip = pi_config.get('ip')
             pi_port = pi_config.get('port', 8080)
             pi_endpoint = pi_config.get('endpoint', '/image.jpg')
             pi_flip = pi_config.get('flip', False)
             pi_angle = pi_config.get('angle', 0)
-            pi_square = pi_config.get('square', False)
+            # Geräte-Bild-Einstellungen (Defaults match UI: square + 640)
+            pi_square = bool(pi_config.get('square', True))
             pi_resolution = pi_config.get('resolution')
             
             if not pi_ip:
-                logger.warning(f"Raspberry Pi camera IP not configured for device {device_ip}")
+                logger.warning(f"HTTP still camera IP not configured for device {device_ip} ({camera_label})")
                 return
             
             # Resolve hostname to IP if needed (in case hostname is used instead of IP)
@@ -1246,55 +1282,47 @@ class HardwareMonitor:
                     logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
                     resolved_ip = pi_ip
             
-            # Detection capture: pull square frame at 640×zoom so local zoom leaves 640.
-            # Panorama scan uses a separate full-res path and is unaffected.
+            # Detection capture: always use configured square/resolution from device settings.
+            # When route zoom > 1, request base×zoom so local crop still leaves ~base pixels.
             zoom_factor = self.get_route_zoom_factor(device)
-            detection_side = max(
-                DETECTION_INPUT_SIZE,
-                int(round(DETECTION_INPUT_SIZE * zoom_factor))
+            resolution_param = self._resolution_query_for_capture(
+                pi_resolution, pi_square, zoom_factor
             )
 
-            # Build URL with query parameters (flip, angle)
+            # Build URL with query parameters (flip, angle, square, resolution)
             base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
             query_params = []
             if pi_flip:
                 query_params.append("flip=true")
             if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
                 query_params.append(f"angle={pi_angle}")
-            # Always square for detection (matches YOLO 640×640 and equal H/V FoV).
-            query_params.append("square=true")
-            query_params.append(f"resolution={detection_side}")
-            if pi_square and pi_resolution and str(pi_resolution) != str(detection_side):
-                logger.debug(
-                    f"Pi detection overrides configured resolution={pi_resolution} "
-                    f"with {detection_side} (640×zoom={zoom_factor})"
-                )
+            query_params.append("square=true" if pi_square else "square=false")
+            query_params.append(f"resolution={resolution_param}")
             
             image_url = f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
-            logger.info(f"Using Raspberry Pi camera HTTP URL for device {device_ip}: {image_url}")
+            logger.info(f"Using {camera_label} HTTP URL for device {device_ip}: {image_url}")
             await self.send_monitor_event(device, 'image_source', {
-                'source': 'raspberry-pi',
+                'source': camera_label,
                 'ip': pi_ip,
                 'port': pi_port,
                 'endpoint': pi_endpoint,
                 'camera_label': camera_label
             })
             
-            # Capture frame from Raspberry Pi
-            logger.info(f"📷 Attempting to capture frame from Raspberry Pi: {device_ip}")
+            logger.info(f"📷 Attempting to capture frame from {camera_label}: {device_ip}")
             await self.send_monitor_event(device, 'capturing_image', {
-                'message': 'Capturing image from Raspberry Pi camera',
-                'camera': 'raspberry-pi'
+                'message': f'Capturing image from {camera_label}',
+                'camera': camera_label
             })
             original_frame = await self.capture_frame_from_http(image_url)
             
             if original_frame is not None:
-                await self.process_single_camera(device, original_frame, 'raspberry-pi', camera_label)
+                await self.process_single_camera(device, original_frame, camera_label, camera_label)
             else:
-                logger.warning(f"❌ Could not capture frame from Raspberry Pi camera for device {device_ip}")
+                logger.warning(f"❌ Could not capture frame from {camera_label} for device {device_ip}")
                 await self.send_monitor_event(device, 'error', {
-                    'message': 'Could not capture frame from Raspberry Pi camera',
-                    'camera': 'raspberry-pi'
+                    'message': f'Could not capture frame from {camera_label}',
+                    'camera': camera_label
                 })
                 
         except Exception as e:
@@ -1324,6 +1352,54 @@ class HardwareMonitor:
             return 1.0
 
     @staticmethod
+    def _parse_resolution_side(resolution, default: int = DETECTION_INPUT_SIZE) -> int:
+        """Parse configured resolution to a single side length (min for WxH)."""
+        if resolution is None:
+            return default
+        text = str(resolution).strip().lower().replace(' ', '')
+        if not text:
+            return default
+        try:
+            if 'x' in text:
+                w_str, h_str = text.split('x', 1)
+                return max(1, min(int(w_str), int(h_str)))
+            return max(1, int(text))
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _resolution_query_for_capture(
+        cls,
+        resolution,
+        square: bool,
+        zoom_factor: float = 1.0,
+    ) -> str:
+        """
+        Build resolution query from device settings.
+        Empty/missing → 640. With zoom>1, scale so local crop keeps configured base size.
+        """
+        zoom = max(1.0, float(zoom_factor) or 1.0)
+        text = str(resolution).strip() if resolution is not None else ''
+        if not text:
+            text = str(DETECTION_INPUT_SIZE)
+
+        cleaned = text.lower().replace(' ', '')
+        if 'x' in cleaned and not square:
+            try:
+                w_str, h_str = cleaned.split('x', 1)
+                width, height = int(w_str), int(h_str)
+                if zoom > 1.0:
+                    width = max(width, int(round(width * zoom)))
+                    height = max(height, int(round(height * zoom)))
+                return f"{width}x{height}"
+            except (TypeError, ValueError):
+                pass
+
+        base_side = cls._parse_resolution_side(text, DETECTION_INPUT_SIZE)
+        request_side = max(base_side, int(round(base_side * zoom)))
+        return str(request_side)
+
+    @staticmethod
     def _center_square_crop(frame: np.ndarray) -> np.ndarray:
         h, w = frame.shape[:2]
         side = min(h, w)
@@ -1340,30 +1416,78 @@ class HardwareMonitor:
         interp = cv2.INTER_AREA if min(frame.shape[0], frame.shape[1]) > side else cv2.INTER_LINEAR
         return cv2.resize(frame, (side, side), interpolation=interp)
 
+    @staticmethod
+    def _resize_keep_aspect(frame: np.ndarray, long_side: int) -> np.ndarray:
+        h, w = frame.shape[:2]
+        if h <= 0 or w <= 0 or long_side <= 0:
+            return frame
+        current_long = max(h, w)
+        if current_long == long_side:
+            return frame
+        scale = long_side / current_long
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        interp = cv2.INTER_AREA if current_long > long_side else cv2.INTER_LINEAR
+        return cv2.resize(frame, (new_w, new_h), interpolation=interp)
+
     def prepare_detection_frames(
         self,
         frame: np.ndarray,
         zoom_factor: float = 1.0,
         target_size: int = DETECTION_INPUT_SIZE,
+        square: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Prepare detection images so YOLO always sees ~target_size after zoom.
+        Prepare detection images for YOLO / DB.
 
-        working  = square center crop resized to (target_size × zoom)
-        zoomed   = center crop of working to target_size × target_size
+        square=True:  center square crop → resize to (target×zoom) → zoom crop to target²
+        square=False: keep aspect ratio → scale long side to (target×zoom) → center zoom crop
 
         Panorama / full-res capture paths are separate and must not use this.
         """
         zoom = max(1.0, float(zoom_factor) or 1.0)
-        working_side = max(target_size, int(round(target_size * zoom)))
-        square = self._center_square_crop(frame)
-        working = self._resize_square(square, working_side)
-        if working_side == target_size:
+        working_long = max(target_size, int(round(target_size * zoom)))
+
+        if square:
+            cropped = self._center_square_crop(frame)
+            working = self._resize_square(cropped, working_long)
+            if working_long == target_size:
+                return working, working
+            start = (working_long - target_size) // 2
+            end = start + target_size
+            zoomed = working[start:end, start:end]
+            return working, zoomed
+
+        working = self._resize_keep_aspect(frame, working_long)
+        if zoom <= 1.0:
             return working, working
-        start = (working_side - target_size) // 2
-        end = start + target_size
-        zoomed = working[start:end, start:end]
+        wh, ww = working.shape[:2]
+        crop_w = max(1, int(round(ww / zoom)))
+        crop_h = max(1, int(round(wh / zoom)))
+        x0 = (ww - crop_w) // 2
+        y0 = (wh - crop_h) // 2
+        zoomed = working[y0:y0 + crop_h, x0:x0 + crop_w]
         return working, zoomed
+
+    def _device_square_setting(self, device: Dict, camera_source: str) -> bool:
+        """Respect Geräte square on/off for HTTP still cams; Tapo/local keep square prep."""
+        source = (camera_source or '').lower()
+        camera = device.get('camera') or {}
+        cam_type = (camera.get('type') or '').lower()
+        is_http_still = (
+            source in ('raspberry-pi', 'esp32-p4')
+            or 'esp32' in source
+            or cam_type in ('raspberry-pi', 'esp32-p4')
+        )
+        if not is_http_still:
+            return True
+        if source == 'esp32-p4' or cam_type == 'esp32-p4' or 'esp32' in source:
+            cfg = camera.get('esp32P4') or camera.get('raspberryPi') or {}
+        else:
+            cfg = camera.get('raspberryPi') or camera.get('esp32P4') or {}
+        if 'square' not in cfg or cfg.get('square') is None:
+            return True
+        return bool(cfg.get('square'))
 
     async def process_single_camera(self, device: Dict, original_frame: np.ndarray, camera_source: str, camera_label: str = None):
         """Process a single camera frame (Tapo or Raspberry Pi) for detection."""
@@ -1372,14 +1496,16 @@ class HardwareMonitor:
             logger.info(f"✅ Frame captured successfully from {camera_source}: {width}x{height} pixels")
 
             zoom_factor = self.get_route_zoom_factor(device)
+            use_square = self._device_square_setting(device, camera_source)
             detection_original, zoomed_frame = self.prepare_detection_frames(
-                original_frame, zoom_factor
+                original_frame, zoom_factor, square=use_square
             )
             det_h, det_w = detection_original.shape[:2]
             zoom_h, zoom_w = zoomed_frame.shape[:2]
             logger.info(
                 f"🎯 Detection prep ({camera_source}): capture {width}x{height} → "
-                f"working {det_w}x{det_h} (640×zoom={zoom_factor:g}) → zoomed {zoom_w}x{zoom_h}"
+                f"working {det_w}x{det_h} (square={use_square}, 640×zoom={zoom_factor:g}) → "
+                f"zoomed {zoom_w}x{zoom_h}"
             )
 
             # Live monitor / DB use detection-sized frames (not full camera res)
@@ -2320,6 +2446,16 @@ class HardwareMonitor:
                         await self.wait_for_movement_complete(device_ip, timeout=10)
                         await asyncio.sleep(0.5)  # Brief stabilization
 
+                        # Foto vor Vertreibung: stills at aim pose, before shoot
+                        await self.capture_pre_shoot_photos(
+                            device,
+                            detection_id,
+                            pose={
+                                'rotation': int(target_rotation),
+                                'tilt': int(target_tilt),
+                            },
+                        )
+
                         image_info = getattr(self, 'last_image_info', {})
                         use_laser = resolve_shoot_use_laser(
                             taubenschiesser_config,
@@ -2416,6 +2552,204 @@ class HardwareMonitor:
 
         except Exception as e:
             logger.error(f"Error triggering shoot: {e}")
+
+    def _resolve_detection_camera(self, device: Dict) -> Tuple[Dict, Optional[Dict]]:
+        """
+        Resolve Master from cameras[] into a legacy-shaped camera config.
+        Returns (camera_config, master_entry_or_None).
+        """
+        cameras = device.get('cameras') or []
+        if isinstance(cameras, list) and cameras:
+            master = next(
+                (c for c in cameras if isinstance(c, dict) and c.get('role') == 'master'),
+                None,
+            )
+            if master is None:
+                master = next((c for c in cameras if isinstance(c, dict)), None)
+            if master:
+                cam_type = master.get('type') or 'tapo'
+                config = {
+                    'type': cam_type,
+                    'tapo': master.get('tapo') or {},
+                    'raspberryPi': master.get('raspberryPi') or {},
+                    'esp32P4': master.get('esp32P4') or {},
+                    'directUrl': master.get('directUrl') or '',
+                    'useLocalImage': bool(master.get('useLocalImage')),
+                    'localImagePath': master.get('localImagePath') or '',
+                    'rtspUrl': master.get('directUrl') or '',
+                }
+                return config, master
+        return device.get('camera') or {}, None
+
+    def _cameras_for_pre_shoot(self, device: Dict) -> list:
+        """Cameras with Foto vor Vertreibung enabled (cameras[])."""
+        cameras = device.get('cameras') or []
+        selected = []
+        if isinstance(cameras, list) and cameras:
+            for cam in cameras:
+                if not isinstance(cam, dict):
+                    continue
+                flag = cam.get('photoBeforeDeterrence')
+                if flag is None:
+                    flag = cam.get('photoAfterDetection')
+                if not flag:
+                    continue
+                selected.append(cam)
+            return selected
+
+        # Legacy single camera: no per-cam flag → nothing
+        return []
+
+    def _build_http_still_url(self, pi_config: Dict, zoom_factor: float = 1.0) -> Optional[str]:
+        """Build PiCam / ESP-P4 still URL from config (square/resolution defaults)."""
+        if not isinstance(pi_config, dict):
+            return None
+        pi_ip = pi_config.get('ip')
+        if not pi_ip:
+            return None
+        pi_port = pi_config.get('port', 8080)
+        pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+        pi_flip = pi_config.get('flip', False)
+        pi_angle = pi_config.get('angle', 0)
+        pi_square = bool(pi_config.get('square', True))
+        pi_resolution = pi_config.get('resolution')
+
+        resolved_ip = pi_ip
+        try:
+            socket.inet_aton(pi_ip)
+        except socket.error:
+            try:
+                resolved_ip = socket.gethostbyname(pi_ip)
+            except socket.gaierror:
+                resolved_ip = pi_ip
+
+        resolution_param = self._resolution_query_for_capture(
+            pi_resolution, pi_square, zoom_factor
+        )
+        base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
+        query_params = []
+        if pi_flip:
+            query_params.append("flip=true")
+        if isinstance(pi_angle, (int, float)) and pi_angle not in (0, 0.0):
+            query_params.append(f"angle={pi_angle}")
+        query_params.append("square=true" if pi_square else "square=false")
+        query_params.append(f"resolution={resolution_param}")
+        return f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
+
+    async def capture_pre_shoot_photos(
+        self,
+        device: Dict,
+        detection_id: Optional[str],
+        pose: Optional[Dict] = None,
+    ):
+        """Capture stills for cameras with photoBeforeDeterrence, after aim / before shoot."""
+        cams = self._cameras_for_pre_shoot(device)
+        if not cams:
+            return
+        if not detection_id:
+            logger.warning("Pre-shoot photos skipped: no detection_id")
+            return
+
+        photos = []
+        for cam in cams:
+            cam_type = (cam.get('type') or '').lower()
+            cam_id = cam.get('id') or ''
+            cam_name = cam.get('name') or cam_type or 'Kamera'
+            role = cam.get('role') or 'slave'
+
+            frame = None
+            await self.send_monitor_event(device, 'pre_shoot_capture', {
+                'message': f'Foto vor Vertreibung: {cam_name}',
+                'camera': cam_type,
+                'camera_id': cam_id,
+                'camera_name': cam_name,
+            })
+
+            if cam_type in ('raspberry-pi', 'esp32-p4'):
+                if cam_type == 'esp32-p4':
+                    pi_cfg = cam.get('esp32P4') or cam.get('raspberryPi') or {}
+                else:
+                    pi_cfg = cam.get('raspberryPi') or cam.get('esp32P4') or {}
+                # At aim pose: use configured resolution (no route-zoom upscale)
+                image_url = self._build_http_still_url(pi_cfg, zoom_factor=1.0)
+                if not image_url:
+                    logger.warning(
+                        f"Pre-shoot skip {cam_name}: HTTP still IP not configured"
+                    )
+                    continue
+                logger.info(f"📷 Pre-shoot capture ({cam_name}): {image_url}")
+                frame = await self.capture_frame_from_http(image_url)
+            elif cam_type == 'tapo':
+                tapo = cam.get('tapo') or {}
+                tapo_ip = tapo.get('ip')
+                tapo_user = tapo.get('username')
+                tapo_pass = tapo.get('password')
+                tapo_stream = tapo.get('stream') or 'stream1'
+                if not (tapo_ip and tapo_user and tapo_pass):
+                    logger.warning(f"Pre-shoot skip {cam_name}: Tapo config incomplete")
+                    continue
+                rtsp_url = f"rtsp://{tapo_user}:{tapo_pass}@{tapo_ip}:554/{tapo_stream}"
+                logger.info(f"📷 Pre-shoot capture Tapo ({cam_name}): {tapo_ip}/{tapo_stream}")
+                # No device_id → direct OpenCV (device-image is master-only)
+                frame = await self.capture_frame(rtsp_url, device_id=None)
+            elif cam_type == 'direct':
+                rtsp_url = (cam.get('directUrl') or '').strip()
+                if not rtsp_url:
+                    logger.warning(f"Pre-shoot skip {cam_name}: no directUrl")
+                    continue
+                logger.info(f"📷 Pre-shoot capture direct RTSP ({cam_name})")
+                frame = await self.capture_frame(rtsp_url, device_id=None)
+            else:
+                logger.info(
+                    f"Pre-shoot skip {cam_name}: type={cam_type} not supported"
+                )
+                continue
+
+            if frame is None:
+                logger.warning(f"Pre-shoot capture failed for {cam_name}")
+                continue
+
+            _, buffer = cv2.imencode('.jpg', frame)
+            image_b64 = base64.b64encode(buffer).decode('utf-8')
+            photos.append({
+                'cameraId': cam_id,
+                'cameraName': cam_name,
+                'cameraType': cam_type,
+                'role': role,
+                'image': f'data:image/jpeg;base64,{image_b64}',
+                'pose': pose or {},
+                'capturedAt': datetime.now().isoformat(),
+            })
+
+        if not photos:
+            return
+
+        headers = {'Authorization': f'Bearer {self.service_token}'}
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.api_url}/api/hardware/detection/{detection_id}/pre-shoot-photos",
+                    json={'photos': photos},
+                    headers=headers,
+                ) as response:
+                    body = await response.text()
+                    if response.status == 200:
+                        logger.info(
+                            f"✅ Pre-shoot photos saved for detection {detection_id}: "
+                            f"{len(photos)} camera(s)"
+                        )
+                        await self.send_monitor_event(device, 'pre_shoot_saved', {
+                            'detection_id': detection_id,
+                            'count': len(photos),
+                        })
+                    else:
+                        logger.error(
+                            f"❌ Failed to save pre-shoot photos for {detection_id}: "
+                            f"{response.status} - {body[:300]}"
+                        )
+        except Exception as e:
+            logger.error(f"Error saving pre-shoot photos: {e}")
 
     async def run_post_shot_fov_calibrate(
         self,

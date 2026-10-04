@@ -281,8 +281,16 @@ const DeviceDetail = () => {
               </Typography>
               {device.camera ? (
                 <Box>
+                  {Array.isArray(device.cameras) && device.cameras.length > 0 && (
+                    <Typography variant="body2" color="textSecondary" sx={{ mb: 0.5 }}>
+                      <strong>Kameras:</strong>{' '}
+                      {device.cameras.map((c) => (
+                        `${c.name || c.type} (${c.role === 'master' ? 'Master' : 'Slave'}${c.enabled === false ? ', aus' : ''})`
+                      )).join(' · ')}
+                    </Typography>
+                  )}
                   <Typography variant="body2" color="textSecondary">
-                    <strong>Typ:</strong> {device.camera.type || 'Nicht spezifiziert'}
+                    <strong>Legacy-Typ:</strong> {device.camera.type || 'Nicht spezifiziert'}
                   </Typography>
                   {device.camera.rtspUrl && (
                     <Typography variant="body2" color="textSecondary">

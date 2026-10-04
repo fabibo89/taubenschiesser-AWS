@@ -373,14 +373,15 @@ router.post('/:id/stream', async (req, res) => {
       return res.status(404).json({ error: 'Gerät nicht gefunden' });
     }
 
-    // Für Raspberry Pi Kameras: Stream wird direkt im Frontend verwendet (HTTP MJPEG)
+    // Für PiCam / ESP-P4: Stream wird direkt im Frontend verwendet (HTTP MJPEG)
     // Kein Backend-Stream-Service nötig
-    if (device.camera.type === 'raspberry-pi') {
+    if (device.camera.type === 'raspberry-pi' || device.camera.type === 'esp32-p4') {
       if (action === 'start') {
-        // Für Raspberry Pi: Stream-URL direkt zurückgeben
-        const pi = device.camera.raspberryPi;
+        const pi = device.camera.type === 'esp32-p4'
+          ? (device.camera.esp32P4 || device.camera.raspberryPi)
+          : (device.camera.raspberryPi || device.camera.esp32P4);
         if (!pi || !pi.ip) {
-          return res.status(400).json({ error: 'Raspberry Pi Kamera nicht konfiguriert' });
+          return res.status(400).json({ error: 'HTTP-Kamera (PiCam / ESP-P4) nicht konfiguriert' });
         }
         const port = pi.port || 8080;
         const streamEndpoint = pi.streamEndpoint || '/stream.mjpeg';
@@ -392,7 +393,7 @@ router.post('/:id/stream', async (req, res) => {
           streamUrl = `${streamUrl}${separator}flip=true`;
         }
         
-        logger.info(`Raspberry Pi stream URL for device ${device.name}: ${streamUrl}`);
+        logger.info(`${device.camera.type} stream URL for device ${device.name}: ${streamUrl}`);
         
         return res.json({
           success: true,
