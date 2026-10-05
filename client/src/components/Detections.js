@@ -305,6 +305,45 @@ function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
   return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
 }
 
+function CompanionPhotoCard({ photo, titlePrefix, cardKey }) {
+  const src = photo?.image?.url;
+  if (!src) return null;
+  const titleParts = [
+    titlePrefix,
+    photo.cameraName || photo.cameraType,
+    photo.role === 'master' ? 'Master' : photo.role === 'slave' ? 'Slave' : null
+  ].filter(Boolean);
+  return (
+    <Card key={cardKey} sx={{ mb: 1.5 }}>
+      <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+        <Typography variant="subtitle2" gutterBottom>
+          {titleParts.join(' · ')}
+        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+          <Box
+            component="img"
+            src={src}
+            alt={photo.cameraName || titlePrefix || 'Foto'}
+            sx={{
+              display: 'block',
+              maxWidth: '100%',
+              height: 'auto',
+              border: '1px solid #e0e0e0',
+              borderRadius: 1,
+              backgroundColor: '#000'
+            }}
+          />
+        </Box>
+        {(photo.pose?.rotation != null || photo.pose?.tilt != null) && (
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+            Pose: Rot {photo.pose?.rotation ?? '–'}° / Tilt {photo.pose?.tilt ?? '–'}°
+          </Typography>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 const Detections = () => {
   const [detections, setDetections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1180,28 +1219,51 @@ const Detections = () => {
           </Box>
         </DialogTitle>
         <DialogContent>
-          {selectedDetectionLoading ? (
+          {/* Spinner only on initial open — keep content mounted while paging so scroll stays */}
+          {selectedDetectionLoading && !selectedDetection ? (
             <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
               <CircularProgress />
             </Box>
           ) : selectedDetection && (
-            <Grid container spacing={2} alignItems="flex-start">
-              {/* Left: images */}
-              <Grid item xs={12} md={7}>
-                <Box display="flex" flexDirection="column" gap={2}>
-              {/* Original Image mit Bounding-Boxen (bei Zoom = 1 nur dieses eine Bild; bei Zoom > 1 darunter Gezoomtes) */}
-              {selectedDetection.image?.url && (
-                  <Card>
-                    <CardContent>
-                      <Typography variant="subtitle1" gutterBottom>
-                        Original-Bild
-                      </Typography>
-                      <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+            <Grid
+              container
+              spacing={2}
+              sx={{
+                opacity: selectedDetectionLoading ? 0.55 : 1,
+                pointerEvents: selectedDetectionLoading ? 'none' : 'auto',
+                transition: 'opacity 0.15s ease'
+              }}
+            >
+              {/* Top block: in-flow image defines height; details panel pinned to image edges on md+ */}
+              <Grid item xs={12}>
+                {selectedDetection.image?.url && (
+                  <Typography variant="subtitle1" sx={{ mb: 0.75 }}>
+                    Original-Bild
+                  </Typography>
+                )}
+                <Box
+                  sx={{
+                    position: 'relative',
+                    display: 'flex',
+                    flexDirection: { xs: 'column', md: 'row' },
+                    gap: { xs: 2, md: 0 }
+                  }}
+                >
+                  {/* In-flow image only — its bottom edge is the row bottom */}
+                  {selectedDetection.image?.url && (
+                    <Box
+                      sx={{
+                        width: { xs: '100%', md: '58%' },
+                        pr: { md: 2 },
+                        lineHeight: 0,
+                        boxSizing: 'border-box'
+                      }}
+                    >
                       <Box
                         sx={{
                           position: 'relative',
-                          display: 'inline-block',
-                          maxWidth: '100%',
+                          display: 'block',
+                          width: '100%',
                           border: '1px solid #e0e0e0',
                           borderRadius: 1,
                           overflow: 'visible',
@@ -1214,9 +1276,8 @@ const Detections = () => {
                           alt="Original Detection"
                           sx={{
                             display: 'block',
-                            maxWidth: '100%',
-                            height: 'auto',
-                            verticalAlign: 'middle'
+                            width: '100%',
+                            height: 'auto'
                           }}
                         />
                         {selectedDetection.image_info?.original_size &&
@@ -1228,8 +1289,6 @@ const Detections = () => {
                             const imgWidth = selectedDetection.image_info.original_size.width || 1;
                             const imgHeight = selectedDetection.image_info.original_size.height || 1;
 
-                            // Falls ein gezoomtes Bild existiert, sind die BBox-Koordinaten relativ zum Zoom-Bild.
-                            // Wir verschieben sie daher in das Originalbild, indem wir den Zoom-Ausschnitt zentriert annehmen.
                             let adjX = x;
                             let adjY = y;
 
@@ -1267,24 +1326,369 @@ const Detections = () => {
                             );
                           })}
                       </Box>
-                      </Box>
-                      {selectedDetection.image_info?.original_size && (
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          display="block"
-                          sx={{ mt: 1 }}
-                        >
-                          Größe: {selectedDetection.image_info.original_size.width} x{' '}
-                          {selectedDetection.image_info.original_size.height}
+                    </Box>
+                  )}
+
+                  {/* md+: absolute top/right/bottom = flush with image edges */}
+                  <Box
+                    sx={{
+                      position: { xs: 'relative', md: selectedDetection.image?.url ? 'absolute' : 'relative' },
+                      top: { md: 0 },
+                      right: { md: 0 },
+                      bottom: { md: 0 },
+                      width: {
+                        xs: '100%',
+                        md: selectedDetection.image?.url ? '42%' : '100%'
+                      },
+                      display: 'flex',
+                      minHeight: 0
+                    }}
+                  >
+                <Card
+                  sx={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
+                    overflow: 'hidden'
+                  }}
+                >
+                  <CardContent
+                    sx={{
+                      pt: 1.5,
+                      px: 1.5,
+                      pb: 0,
+                      '&:last-child': { pb: 0 },
+                      flex: 1,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      minHeight: 0,
+                      height: '100%',
+                      boxSizing: 'border-box',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    <Typography variant="subtitle1" sx={{ mb: 0.75, flexShrink: 0 }}>
+                      Erkennungs-Details
+                    </Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.35, mb: 1.25, flexShrink: 0 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                        Gerät: <strong>{selectedDetection.device?.name || 'Unbekannt'}</strong>
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                        Zeitstempel: <strong>{new Date(selectedDetection.processedAt).toLocaleString()}</strong>
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                        Verarbeitungszeit: <strong>{selectedDetection.processingTime != null && selectedDetection.processingTime !== '' ? `${(Number(selectedDetection.processingTime) / 1000).toFixed(2)} s` : 'N/A'}</strong>
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                        Modell: <strong>{selectedDetection.model?.name || 'N/A'}</strong>
+                      </Typography>
+                      {selectedDetection.temperature !== null && selectedDetection.temperature !== undefined && (
+                        <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                          Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
                         </Typography>
                       )}
-                    </CardContent>
-                  </Card>
-              )}
+                    </Box>
 
-              {/* Zoomed Image nur anzeigen wenn Zoom > 1 (sonst nur 1 Bild) */}
+                    {resolveShootActive(selectedDetection).known && (
+                      <Box sx={{ mb: 1.25, flexShrink: 0 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.25, lineHeight: 1.35 }}>
+                          Schuss-Aktionen
+                        </Typography>
+                        <ShootActiveIcons detection={selectedDetection} size="medium" />
+                        {selectedDetection.shootActive?.water && selectedDetection.watertank === false && (
+                          <Typography variant="caption" color="error" display="block" sx={{ mt: 0.25 }}>
+                            Wassertank war leer — Wasser-Schuss vermutlich wirkungslos
+                          </Typography>
+                        )}
+                        {selectedDetection.shootActive?.water && selectedDetection.watertank === true && (
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                            Wassertank OK
+                          </Typography>
+                        )}
+                      </Box>
+                    )}
+
+                    {(nearestAtPosition.before || nearestAtPosition.after) && (
+                      <Box display="flex" flexWrap="wrap" gap={1} sx={{ mb: 1.25, flexShrink: 0 }}>
+                        {nearestAtPosition.before && (
+                          <Chip
+                            icon={<ArrowBackIcon />}
+                            label={formatTimeDiffAtPosition(nearestAtPosition.before.diffSeconds, 'before')}
+                            size="small"
+                            variant="outlined"
+                            color="info"
+                          />
+                        )}
+                        {nearestAtPosition.after && (
+                          <Chip
+                            icon={<ArrowForwardIcon />}
+                            label={formatTimeDiffAtPosition(nearestAtPosition.after.diffSeconds, 'after')}
+                            size="small"
+                            variant="outlined"
+                            color="info"
+                          />
+                        )}
+                      </Box>
+                    )}
+
+                    {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
+                      <Box sx={{ mb: 1.25, flexShrink: 0 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.35, lineHeight: 1.35 }}>
+                          Kamera-Position (Routenpunkt, Zoom)
+                        </Typography>
+                        <FormControl size="small" fullWidth disabled={cameraPositionSaving}>
+                          <Select
+                            value={(() => {
+                              const rot = selectedDetection.camera_position.rotation;
+                              const tilt = selectedDetection.camera_position.tilt;
+                              const idx = deviceRouteCoordinates.findIndex(
+                                (c) => (c.rotation == null ? rot == null : c.rotation === rot) &&
+                                  (c.tilt == null ? tilt == null : c.tilt === tilt)
+                              );
+                              return idx >= 0 ? idx : 'current';
+                            })()}
+                            onChange={handleCameraPositionChange}
+                            displayEmpty
+                            MenuProps={{
+                              PaperProps: { sx: { maxHeight: 400 } }
+                            }}
+                            renderValue={(v) => {
+                              if (v === 'current') {
+                                const r = selectedDetection.camera_position.rotation;
+                                const t = selectedDetection.camera_position.tilt;
+                                const z = selectedDetection.zoom_factor ?? 1;
+                                return `Aktuell: R: ${r}° / T: ${t}° / Zoom: ${z}x`;
+                              }
+                              const c = deviceRouteCoordinates[v];
+                              if (!c) return '';
+                              const imgSrc = c.image
+                                ? (c.image.startsWith('data:') ? c.image : `data:image/jpeg;base64,${c.image}`)
+                                : null;
+                              const zoomStr = c.zoom != null ? ` / Zoom: ${c.zoom}x` : '';
+                              return (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  {imgSrc && (
+                                    <Box
+                                      component="img"
+                                      src={imgSrc}
+                                      alt=""
+                                      sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
+                                    />
+                                  )}
+                                  <span>Position {Number(v) + 1}: R: {c.rotation ?? '-'}° / T: {c.tilt ?? '-'}°{zoomStr}</span>
+                                </Box>
+                              );
+                            }}
+                          >
+                            <MenuItem value="current">
+                              Aktuell: R: {selectedDetection.camera_position.rotation}° / T: {selectedDetection.camera_position.tilt}° / Zoom: {(selectedDetection.zoom_factor ?? 1)}x
+                            </MenuItem>
+                            {deviceRouteCoordinates.map((coord, idx) => {
+                              const imgSrc = coord.image
+                                ? (coord.image.startsWith('data:') ? coord.image : `data:image/jpeg;base64,${coord.image}`)
+                                : null;
+                              const zoomStr = coord.zoom != null ? ` / Zoom: ${coord.zoom}x` : '';
+                              return (
+                                <MenuItem key={idx} value={idx}>
+                                  <ListItemIcon sx={{ minWidth: 56 }}>
+                                    {imgSrc ? (
+                                      <Box
+                                        component="img"
+                                        src={imgSrc}
+                                        alt=""
+                                        sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
+                                      />
+                                    ) : (
+                                      <Box sx={{ width: 48, height: 36, bgcolor: 'action.hover', borderRadius: 0.5 }} />
+                                    )}
+                                  </ListItemIcon>
+                                  <ListItemText
+                                    primary={`Position ${idx + 1}: R: ${coord.rotation ?? '-'}° / T: ${coord.tilt ?? '-'}°${zoomStr}`}
+                                  />
+                                </MenuItem>
+                              );
+                            })}
+                          </Select>
+                        </FormControl>
+                      </Box>
+                    )}
+
+                    <Box sx={{ mb: 1.25, flexShrink: 0 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.35, lineHeight: 1.35 }}>
+                        FOV-Kalibrierung
+                      </Typography>
+                      {(() => {
+                        const cal = selectedDetection.fovCalibration;
+                        if (!hasFovCalibration(cal)) {
+                          return (
+                            <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                              Keine Kalibrierung gespeichert
+                            </Typography>
+                          );
+                        }
+                        const chip = fovCalibrationChipProps(cal);
+                        const dRot = (cal.finalPose && cal.scanPose)
+                          ? Number(cal.finalPose.rotation) - Number(cal.scanPose.rotation)
+                          : null;
+                        const dTilt = (cal.finalPose && cal.scanPose)
+                          ? Number(cal.finalPose.tilt) - Number(cal.scanPose.tilt)
+                          : null;
+                        const dH = (cal.fovH != null && cal.fovSollH != null)
+                          ? Number(cal.fovH) - Number(cal.fovSollH)
+                          : null;
+                        const dV = (cal.fovV != null && cal.fovSollV != null)
+                          ? Number(cal.fovV) - Number(cal.fovSollV)
+                          : null;
+                        return (
+                          <Box>
+                            <Box display="flex" flexWrap="wrap" gap={0.75} alignItems="center" sx={{ mb: 0.5 }}>
+                              <Chip size="small" {...chip} />
+                              {cal.converged === true && (
+                                <Chip size="small" label="konvergiert" color="success" variant="outlined" />
+                              )}
+                              {cal.converged === false && (
+                                <Chip size="small" label="nicht konvergiert" color="warning" variant="outlined" />
+                              )}
+                              {cal.waypointNumber != null && (
+                                <Chip size="small" label={`Pos ${cal.waypointNumber}`} variant="outlined" />
+                              )}
+                            </Box>
+                            <Typography variant="body2" sx={{ lineHeight: 1.35 }}>
+                              FOV Ist
+                              {cal.fovH != null ? ` H ${Number(cal.fovH).toFixed(1)}°` : ' H —'}
+                              {cal.fovV != null ? ` / V ${Number(cal.fovV).toFixed(1)}°` : ' / V —'}
+                            </Typography>
+                            {(cal.fovSollH != null || cal.fovSollV != null) && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.35 }}>
+                                Soll
+                                {cal.fovSollH != null ? ` H ${Number(cal.fovSollH).toFixed(1)}°` : ''}
+                                {cal.fovSollV != null ? ` / V ${Number(cal.fovSollV).toFixed(1)}°` : ''}
+                                {dH != null ? ` · ΔH ${dH.toFixed(1)}°` : ''}
+                                {dV != null ? ` ΔV ${dV.toFixed(1)}°` : ''}
+                              </Typography>
+                            )}
+                            {(fmtPoseDeg(cal.scanPose) || fmtPoseDeg(cal.finalPose)) && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.35 }}>
+                                Pose
+                                {fmtPoseDeg(cal.scanPose) ? ` ${fmtPoseDeg(cal.scanPose)}` : ''}
+                                {fmtPoseDeg(cal.finalPose) ? ` → ${fmtPoseDeg(cal.finalPose)}` : ''}
+                                {(dRot != null || dTilt != null)
+                                  ? ` · ΔR ${dRot != null ? dRot.toFixed(1) : '—'}° / ΔT ${dTilt != null ? dTilt.toFixed(1) : '—'}°`
+                                  : ''}
+                              </Typography>
+                            )}
+                            {cal.offsetPx && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.35 }}>
+                                Offset {Number(cal.offsetPx.x).toFixed(1)} / {Number(cal.offsetPx.y).toFixed(1)} px
+                              </Typography>
+                            )}
+                            {cal.residualPx && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.35 }}>
+                                Residual {Number(cal.residualPx.x).toFixed(1)} / {Number(cal.residualPx.y).toFixed(1)} px
+                              </Typography>
+                            )}
+                            {cal.at && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.35 }}>
+                                Kalibriert: {new Date(cal.at).toLocaleString()}
+                              </Typography>
+                            )}
+                          </Box>
+                        );
+                      })()}
+                    </Box>
+
+                    <Box
+                      sx={{
+                        flex: 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        minHeight: 0
+                      }}
+                    >
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5, lineHeight: 1.35, flexShrink: 0 }}>
+                        Erkannte Objekte
+                      </Typography>
+                      <Box
+                        sx={{
+                          flex: 1,
+                          minHeight: 72,
+                          overflowY: 'auto',
+                          pr: 0.5,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 1
+                        }}
+                      >
+                        {selectedDetection.detections?.map((detection, index) => (
+                          <Card
+                            key={index}
+                            variant="outlined"
+                            sx={{
+                              p: 1.25,
+                              flexShrink: 0,
+                              borderWidth: detection.is_target_bird ? 2 : 1,
+                              borderColor: detection.is_target_bird ? 'primary.main' : 'divider'
+                            }}
+                          >
+                            <Box display="flex" alignItems="center" gap={1} flexWrap="wrap" sx={{ mb: 0.5 }}>
+                              <Chip label={`${detection.class}`} size="small" color="primary" />
+                              <Chip
+                                label={`${(detection.confidence * 100).toFixed(1)}%`}
+                                size="small"
+                                color="success"
+                                variant="outlined"
+                              />
+                              {detection.is_target_bird && (
+                                <Chip label="Zielvogel" size="small" color="primary" />
+                              )}
+                              {detection.size_category && (
+                                <Chip label={detection.size_category} size="small" variant="outlined" />
+                              )}
+                            </Box>
+                            {(detection.esp_rot != null || detection.esp_tilt != null) && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.3 }}>
+                                Move: Rot {detection.esp_rot ?? '–'}°, Tilt {detection.esp_tilt ?? '–'}°
+                              </Typography>
+                            )}
+                            {detection.bbox && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.3 }}>
+                                BBox: {detection.bbox.x},{detection.bbox.y} · {detection.bbox.width}×{detection.bbox.height} px
+                              </Typography>
+                            )}
+                            {detection.position && (
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.3 }}>
+                                Zentrum: ({detection.position.center_x?.toFixed(1)}, {detection.position.center_y?.toFixed(1)})
+                                {' · '}
+                                Rel: {(detection.position.width * 100)?.toFixed(1)}% × {(detection.position.height * 100)?.toFixed(1)}%
+                              </Typography>
+                            )}
+                          </Card>
+                        ))}
+                      </Box>
+                    </Box>
+                  </CardContent>
+                </Card>
+                  </Box>
+                </Box>
+                {selectedDetection.image?.url && selectedDetection.image_info?.original_size && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mt: 1 }}
+                  >
+                    Größe: {selectedDetection.image_info.original_size.width} x{' '}
+                    {selectedDetection.image_info.original_size.height}
+                  </Typography>
+                )}
+              </Grid>
+
+              {/* Zoomed image below the Original | Details row */}
               {selectedDetection.zoomed_image?.url && ((Number(selectedDetection.zoom_factor) || 1) > 1) && (
+                <Grid item xs={12} md={7}>
                   <Card>
                     <CardContent>
                       <Typography variant="subtitle1" gutterBottom>
@@ -1323,7 +1727,6 @@ const Detections = () => {
                             const imgWidth = selectedDetection.image_info.zoomed_size.width || 1;
                             const imgHeight = selectedDetection.image_info.zoomed_size.height || 1;
 
-                            // position.* sind Pixel-Koordinaten relativ zum gezoomten Bild
                             const bboxWidth = width || 0;
                             const bboxHeight = height || 0;
                             const bboxLeft = (center_x || 0) - bboxWidth / 2;
@@ -1366,382 +1769,67 @@ const Detections = () => {
                       )}
                     </CardContent>
                   </Card>
+                </Grid>
               )}
 
-              {/* Foto vor Vertreibung (Aim-Pose, vor Schuss) */}
-              {Array.isArray(selectedDetection.preShootPhotos)
-                && selectedDetection.preShootPhotos.map((photo, idx) => {
-                  const src = photo?.image?.url;
-                  if (!src) return null;
-                  const titleParts = [
-                    'Foto vor Vertreibung',
-                    photo.cameraName || photo.cameraType,
-                    photo.role === 'master' ? 'Master' : photo.role === 'slave' ? 'Slave' : null
-                  ].filter(Boolean);
-                  return (
-                    <Card key={photo.cameraId || `pre-shoot-${idx}`}>
-                      <CardContent>
-                        <Typography variant="subtitle1" gutterBottom>
-                          {titleParts.join(' · ')}
-                        </Typography>
-                        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-                          <Box
-                            component="img"
-                            src={src}
-                            alt={photo.cameraName || 'Pre-Shoot'}
-                            sx={{
-                              display: 'block',
-                              maxWidth: '100%',
-                              height: 'auto',
-                              border: '1px solid #e0e0e0',
-                              borderRadius: 1,
-                              backgroundColor: '#000'
-                            }}
-                          />
-                        </Box>
-                        {(photo.pose?.rotation != null || photo.pose?.tilt != null) && (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            display="block"
-                            sx={{ mt: 1 }}
-                          >
-                            Pose: Rot {photo.pose?.rotation ?? '–'}° / Tilt {photo.pose?.tilt ?? '–'}°
-                          </Typography>
-                        )}
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-                </Box>
-              </Grid>
-
-              {/* Right: Detection Details */}
-              <Grid item xs={12} md={5}>
-                <Card sx={{ position: { md: 'sticky' }, top: { md: 8 } }}>
-                  <CardContent>
-                    <Typography variant="subtitle1" gutterBottom>
-                      Erkennungs-Details
-                    </Typography>
+              {/* Bottom: Master | Slave camera stills */}
+              {(() => {
+                const pre = Array.isArray(selectedDetection.preShootPhotos) ? selectedDetection.preShootPhotos : [];
+                const scan = Array.isArray(selectedDetection.scanPhotos) ? selectedDetection.scanPhotos : [];
+                const masterPhotos = [
+                  ...pre.filter((p) => p?.role === 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' })),
+                  ...scan.filter((p) => p?.role === 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' }))
+                ];
+                const slavePhotos = [
+                  ...scan.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' })),
+                  ...pre.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' }))
+                ];
+                if (!masterPhotos.length && !slavePhotos.length) return null;
+                return (
+                  <Grid item xs={12}>
                     <Grid container spacing={2}>
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary">
-                          Gerät: <strong>{selectedDetection.device?.name || 'Unbekannt'}</strong>
+                      <Grid item xs={12} md={6}>
+                        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                          Master
                         </Typography>
-                      </Grid>
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary">
-                          Zeitstempel: <strong>{new Date(selectedDetection.processedAt).toLocaleString()}</strong>
-                        </Typography>
-                      </Grid>
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary">
-                          Verarbeitungszeit: <strong>{selectedDetection.processingTime != null && selectedDetection.processingTime !== '' ? `${(Number(selectedDetection.processingTime) / 1000).toFixed(2)} s` : 'N/A'}</strong>
-                        </Typography>
-                      </Grid>
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary">
-                          Modell: <strong>{selectedDetection.model?.name || 'N/A'}</strong>
-                        </Typography>
-                      </Grid>
-                      {selectedDetection.temperature !== null && selectedDetection.temperature !== undefined && (
-                        <Grid item xs={12}>
+                        {masterPhotos.length === 0 ? (
                           <Typography variant="body2" color="text.secondary">
-                            Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
+                            Keine zusätzlichen Master-Fotos
                           </Typography>
-                        </Grid>
-                      )}
-                      {resolveShootActive(selectedDetection).known && (
-                        <Grid item xs={12}>
-                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                            Schuss-Aktionen
-                          </Typography>
-                          <ShootActiveIcons detection={selectedDetection} size="medium" />
-                          {selectedDetection.shootActive?.water && selectedDetection.watertank === false && (
-                            <Typography variant="caption" color="error" display="block" sx={{ mt: 0.5 }}>
-                              Wassertank war leer — Wasser-Schuss vermutlich wirkungslos
-                            </Typography>
-                          )}
-                          {selectedDetection.shootActive?.water && selectedDetection.watertank === true && (
-                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                              Wassertank OK
-                            </Typography>
-                          )}
-                        </Grid>
-                      )}
-                      {(nearestAtPosition.before || nearestAtPosition.after) && (
-                        <Grid item xs={12}>
-                          <Box display="flex" flexWrap="wrap" gap={1}>
-                            {nearestAtPosition.before && (
-                              <Chip
-                                icon={<ArrowBackIcon />}
-                                label={formatTimeDiffAtPosition(nearestAtPosition.before.diffSeconds, 'before')}
-                                size="small"
-                                variant="outlined"
-                                color="info"
-                              />
-                            )}
-                            {nearestAtPosition.after && (
-                              <Chip
-                                icon={<ArrowForwardIcon />}
-                                label={formatTimeDiffAtPosition(nearestAtPosition.after.diffSeconds, 'after')}
-                                size="small"
-                                variant="outlined"
-                                color="info"
-                              />
-                            )}
-                          </Box>
-                        </Grid>
-                      )}
-                      {selectedDetection.camera_position && selectedDetection.camera_position.rotation !== undefined && selectedDetection.camera_position.tilt !== undefined && (
-                        <Grid item xs={12}>
-                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                            Kamera-Position (Routenpunkt, Zoom)
-                          </Typography>
-                          <FormControl size="small" fullWidth disabled={cameraPositionSaving}>
-                            <Select
-                              value={(() => {
-                                const rot = selectedDetection.camera_position.rotation;
-                                const tilt = selectedDetection.camera_position.tilt;
-                                const idx = deviceRouteCoordinates.findIndex(
-                                  (c) => (c.rotation == null ? rot == null : c.rotation === rot) &&
-                                    (c.tilt == null ? tilt == null : c.tilt === tilt)
-                                );
-                                return idx >= 0 ? idx : 'current';
-                              })()}
-                              onChange={handleCameraPositionChange}
-                              displayEmpty
-                              MenuProps={{
-                                PaperProps: { sx: { maxHeight: 400 } }
-                              }}
-                              renderValue={(v) => {
-                                if (v === 'current') {
-                                  const r = selectedDetection.camera_position.rotation;
-                                  const t = selectedDetection.camera_position.tilt;
-                                  const z = selectedDetection.zoom_factor ?? 1;
-                                  return `Aktuell: R: ${r}° / T: ${t}° / Zoom: ${z}x`;
-                                }
-                                const c = deviceRouteCoordinates[v];
-                                if (!c) return '';
-                                const imgSrc = c.image
-                                  ? (c.image.startsWith('data:') ? c.image : `data:image/jpeg;base64,${c.image}`)
-                                  : null;
-                                const zoomStr = c.zoom != null ? ` / Zoom: ${c.zoom}x` : '';
-                                return (
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    {imgSrc && (
-                                      <Box
-                                        component="img"
-                                        src={imgSrc}
-                                        alt=""
-                                        sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
-                                      />
-                                    )}
-                                    <span>Position {Number(v) + 1}: R: {c.rotation ?? '-'}° / T: {c.tilt ?? '-'}°{zoomStr}</span>
-                                  </Box>
-                                );
-                              }}
-                            >
-                              <MenuItem value="current">
-                                Aktuell: R: {selectedDetection.camera_position.rotation}° / T: {selectedDetection.camera_position.tilt}° / Zoom: {(selectedDetection.zoom_factor ?? 1)}x
-                              </MenuItem>
-                              {deviceRouteCoordinates.map((coord, idx) => {
-                                const imgSrc = coord.image
-                                  ? (coord.image.startsWith('data:') ? coord.image : `data:image/jpeg;base64,${coord.image}`)
-                                  : null;
-                                const zoomStr = coord.zoom != null ? ` / Zoom: ${coord.zoom}x` : '';
-                                return (
-                                  <MenuItem key={idx} value={idx}>
-                                    <ListItemIcon sx={{ minWidth: 56 }}>
-                                      {imgSrc ? (
-                                        <Box
-                                          component="img"
-                                          src={imgSrc}
-                                          alt=""
-                                          sx={{ width: 48, height: 36, objectFit: 'cover', borderRadius: 0.5 }}
-                                        />
-                                      ) : (
-                                        <Box sx={{ width: 48, height: 36, bgcolor: 'action.hover', borderRadius: 0.5 }} />
-                                      )}
-                                    </ListItemIcon>
-                                    <ListItemText
-                                      primary={`Position ${idx + 1}: R: ${coord.rotation ?? '-'}° / T: ${coord.tilt ?? '-'}°${zoomStr}`}
-                                    />
-                                  </MenuItem>
-                                );
-                              })}
-                            </Select>
-                          </FormControl>
-                        </Grid>
-                      )}
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                          FOV-Kalibrierung
-                        </Typography>
-                        {(() => {
-                          const cal = selectedDetection.fovCalibration;
-                          if (!hasFovCalibration(cal)) {
-                            return (
-                              <Typography variant="body2" color="text.secondary">
-                                Keine Kalibrierung gespeichert
-                              </Typography>
-                            );
-                          }
-                          const chip = fovCalibrationChipProps(cal);
-                          const dRot = (cal.finalPose && cal.scanPose)
-                            ? Number(cal.finalPose.rotation) - Number(cal.scanPose.rotation)
-                            : null;
-                          const dTilt = (cal.finalPose && cal.scanPose)
-                            ? Number(cal.finalPose.tilt) - Number(cal.scanPose.tilt)
-                            : null;
-                          const dH = (cal.fovH != null && cal.fovSollH != null)
-                            ? Number(cal.fovH) - Number(cal.fovSollH)
-                            : null;
-                          const dV = (cal.fovV != null && cal.fovSollV != null)
-                            ? Number(cal.fovV) - Number(cal.fovSollV)
-                            : null;
-                          return (
-                            <Box>
-                              <Box display="flex" flexWrap="wrap" gap={0.75} alignItems="center" sx={{ mb: 0.75 }}>
-                                <Chip size="small" {...chip} />
-                                {cal.converged === true && (
-                                  <Chip size="small" label="konvergiert" color="success" variant="outlined" />
-                                )}
-                                {cal.converged === false && (
-                                  <Chip size="small" label="nicht konvergiert" color="warning" variant="outlined" />
-                                )}
-                                {cal.waypointNumber != null && (
-                                  <Chip size="small" label={`Pos ${cal.waypointNumber}`} variant="outlined" />
-                                )}
-                              </Box>
-                              <Typography variant="body2">
-                                FOV Ist
-                                {cal.fovH != null ? ` H ${Number(cal.fovH).toFixed(1)}°` : ' H —'}
-                                {cal.fovV != null ? ` / V ${Number(cal.fovV).toFixed(1)}°` : ' / V —'}
-                              </Typography>
-                              {(cal.fovSollH != null || cal.fovSollV != null) && (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  Soll
-                                  {cal.fovSollH != null ? ` H ${Number(cal.fovSollH).toFixed(1)}°` : ''}
-                                  {cal.fovSollV != null ? ` / V ${Number(cal.fovSollV).toFixed(1)}°` : ''}
-                                  {dH != null ? ` · ΔH ${dH.toFixed(1)}°` : ''}
-                                  {dV != null ? ` ΔV ${dV.toFixed(1)}°` : ''}
-                                </Typography>
-                              )}
-                              {(fmtPoseDeg(cal.scanPose) || fmtPoseDeg(cal.finalPose)) && (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  Pose
-                                  {fmtPoseDeg(cal.scanPose) ? ` ${fmtPoseDeg(cal.scanPose)}` : ''}
-                                  {fmtPoseDeg(cal.finalPose) ? ` → ${fmtPoseDeg(cal.finalPose)}` : ''}
-                                  {(dRot != null || dTilt != null)
-                                    ? ` · ΔR ${dRot != null ? dRot.toFixed(1) : '—'}° / ΔT ${dTilt != null ? dTilt.toFixed(1) : '—'}°`
-                                    : ''}
-                                </Typography>
-                              )}
-                              {cal.offsetPx && (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  Offset {Number(cal.offsetPx.x).toFixed(1)} / {Number(cal.offsetPx.y).toFixed(1)} px
-                                </Typography>
-                              )}
-                              {cal.residualPx && (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  Residual {Number(cal.residualPx.x).toFixed(1)} / {Number(cal.residualPx.y).toFixed(1)} px
-                                </Typography>
-                              )}
-                              {cal.at && (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  Kalibriert: {new Date(cal.at).toLocaleString()}
-                                </Typography>
-                              )}
-                            </Box>
-                          );
-                        })()}
+                        ) : (
+                          masterPhotos.map((photo, idx) => (
+                            <CompanionPhotoCard
+                              key={`master-${photo.cameraId || idx}-${photo._kind}`}
+                              photo={photo}
+                              titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
+                              cardKey={`master-${idx}`}
+                            />
+                          ))
+                        )}
                       </Grid>
-                      <Grid item xs={12}>
-                        <Typography variant="body2" color="text.secondary" gutterBottom>
-                          Erkannte Objekte:
+                      <Grid item xs={12} md={6}>
+                        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                          Slave
                         </Typography>
-                        <Box display="flex" flexDirection="column" gap={1.5}>
-                          {selectedDetection.detections?.map((detection, index) => (
-                            <Card
-                              key={index}
-                              variant="outlined"
-                              sx={{
-                                p: 1.5,
-                                borderWidth: detection.is_target_bird ? 2 : 1,
-                                borderColor: detection.is_target_bird ? 'primary.main' : 'divider'
-                              }}
-                            >
-                              <Grid container spacing={1}>
-                                <Grid item xs={12}>
-                                  <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
-                                    <Chip
-                                      label={`${detection.class}`}
-                                      size="small"
-                                      color="primary"
-                                    />
-                                    <Chip
-                                      label={`${(detection.confidence * 100).toFixed(1)}%`}
-                                      size="small"
-                                      color="success"
-                                      variant="outlined"
-                                    />
-                                    {detection.is_target_bird && (
-                                      <Chip label="Zielvogel" size="small" color="primary" />
-                                    )}
-                                    {detection.size_category && (
-                                      <Chip
-                                        label={detection.size_category}
-                                        size="small"
-                                        variant="outlined"
-                                      />
-                                    )}
-                                  </Box>
-                                </Grid>
-                                {(detection.esp_rot != null || detection.esp_tilt != null) && (
-                                  <Grid item xs={12}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      Move: Rot {detection.esp_rot ?? '–'}°, Tilt {detection.esp_tilt ?? '–'}°
-                                    </Typography>
-                                  </Grid>
-                                )}
-                                {detection.bbox && (
-                                  <Grid item xs={12}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      Position (BBox): x={detection.bbox.x}, y={detection.bbox.y}
-                                    </Typography>
-                                  </Grid>
-                                )}
-                                {detection.bbox && (
-                                  <Grid item xs={12}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      Größe (BBox): {detection.bbox.width} × {detection.bbox.height} px
-                                    </Typography>
-                                  </Grid>
-                                )}
-                                {detection.position && (
-                                  <Grid item xs={12}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      Zentrum: ({detection.position.center_x?.toFixed(1)}, {detection.position.center_y?.toFixed(1)})
-                                    </Typography>
-                                  </Grid>
-                                )}
-                                {detection.position && (
-                                  <Grid item xs={12}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      Rel. Größe: {(detection.position.width * 100)?.toFixed(1)}% × {(detection.position.height * 100)?.toFixed(1)}%
-                                    </Typography>
-                                  </Grid>
-                                )}
-                              </Grid>
-                            </Card>
-                          ))}
-                        </Box>
+                        {slavePhotos.length === 0 ? (
+                          <Typography variant="body2" color="text.secondary">
+                            Keine Slave-Fotos
+                          </Typography>
+                        ) : (
+                          slavePhotos.map((photo, idx) => (
+                            <CompanionPhotoCard
+                              key={`slave-${photo.cameraId || idx}-${photo._kind}`}
+                              photo={photo}
+                              titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
+                              cardKey={`slave-${idx}`}
+                            />
+                          ))
+                        )}
                       </Grid>
                     </Grid>
-                  </CardContent>
-                </Card>
-              </Grid>
+                  </Grid>
+                );
+              })()}
             </Grid>
           )}
         </DialogContent>

@@ -42,6 +42,7 @@ router.post('/detection', async (req, res) => {
       shootActive,
       shoot_active,
       watertank,
+      scanPhotos,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -173,6 +174,28 @@ router.post('/detection', async (req, res) => {
       if (image_info) {
         detectionData.image_info = image_info;
       }
+    }
+
+    if (Array.isArray(scanPhotos) && scanPhotos.length > 0) {
+      detectionData.scanPhotos = scanPhotos.map((p, idx) => {
+        const imageUrl = p.image || p.imageUrl || p.url;
+        if (!imageUrl || typeof imageUrl !== 'string') return null;
+        return {
+          cameraId: p.cameraId || '',
+          cameraName: p.cameraName || '',
+          cameraType: p.cameraType || 'unknown',
+          role: p.role || 'slave',
+          image: {
+            url: imageUrl,
+            filename: p.filename || `scan_${deviceId}_${Date.now()}_${idx}.jpg`,
+            size: imageUrl.length
+          },
+          pose: p.pose && (p.pose.rotation != null || p.pose.tilt != null)
+            ? { rotation: p.pose.rotation, tilt: p.pose.tilt }
+            : undefined,
+          capturedAt: p.capturedAt ? new Date(p.capturedAt) : new Date()
+        };
+      }).filter(Boolean);
     }
     
     const detection = new Detection(detectionData);

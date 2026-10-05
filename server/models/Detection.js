@@ -145,6 +145,26 @@ const detectionSchema = new mongoose.Schema({
     type: Boolean,
     default: undefined
   },
+  // Slave (etc.) stills at scan/route pose when detection was saved (no YOLO)
+  scanPhotos: [{
+    cameraId: String,
+    cameraName: String,
+    cameraType: String,
+    role: String,
+    image: {
+      url: String,
+      filename: String,
+      size: Number
+    },
+    pose: {
+      rotation: Number,
+      tilt: Number
+    },
+    capturedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   // Stills at aim pose, before shoot/deterrence (Foto vor Vertreibung)
   preShootPhotos: [{
     cameraId: String,

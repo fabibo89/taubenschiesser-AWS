@@ -314,7 +314,7 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank fovCalibration preShootPhotos.cameraName preShootPhotos.role')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank fovCalibration preShootPhotos.cameraName preShootPhotos.role scanPhotos.cameraName scanPhotos.role')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)

@@ -2159,6 +2159,11 @@ class HardwareMonitor:
                 zoom_factor,
             )
 
+            # Slave stills at scan pose (evidence only — no YOLO on these)
+            scan_photos = await self.capture_scan_photos(device, pose=camera_position)
+            if scan_photos:
+                logger.info(f"📷 Attaching {len(scan_photos)} scan companion photo(s) to detection")
+
             # Prepare detailed detection data
             detection_data = {
                 "deviceId": device_id,
@@ -2176,6 +2181,7 @@ class HardwareMonitor:
                 "camera_position": camera_position,  # Add camera position (rotation/tilt)
                 "shotFired": shot_fired,  # Whether monitor was armed and shot was fired for this detection
                 "shootActive": shoot_active,
+                "scanPhotos": scan_photos,
                 "timestamp": datetime.now().isoformat()
             }
 
@@ -2636,6 +2642,126 @@ class HardwareMonitor:
         query_params.append(f"resolution={resolution_param}")
         return f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
 
+    def _slave_cameras(self, device: Dict) -> list:
+        """Non-master cameras from cameras[] (scan companion stills)."""
+        cameras = device.get('cameras') or []
+        if not isinstance(cameras, list):
+            return []
+        return [
+            c for c in cameras
+            if isinstance(c, dict) and (c.get('role') or 'slave') != 'master'
+        ]
+
+    async def _capture_camera_frame(
+        self,
+        cam: Dict,
+        zoom_factor: float = 1.0,
+    ) -> Optional[np.ndarray]:
+        """Capture one still from a cameras[] entry (HTTP still / Tapo / direct)."""
+        cam_type = (cam.get('type') or '').lower()
+        cam_name = cam.get('name') or cam_type or 'Kamera'
+
+        if cam_type in ('raspberry-pi', 'esp32-p4'):
+            if cam_type == 'esp32-p4':
+                pi_cfg = cam.get('esp32P4') or cam.get('raspberryPi') or {}
+            else:
+                pi_cfg = cam.get('raspberryPi') or cam.get('esp32P4') or {}
+            image_url = self._build_http_still_url(pi_cfg, zoom_factor=zoom_factor)
+            if not image_url:
+                logger.warning(f"Capture skip {cam_name}: HTTP still IP not configured")
+                return None
+            logger.info(f"📷 Capture ({cam_name}): {image_url}")
+            return await self.capture_frame_from_http(image_url)
+
+        if cam_type == 'tapo':
+            tapo = cam.get('tapo') or {}
+            tapo_ip = tapo.get('ip')
+            tapo_user = tapo.get('username')
+            tapo_pass = tapo.get('password')
+            tapo_stream = tapo.get('stream') or 'stream1'
+            if not (tapo_ip and tapo_user and tapo_pass):
+                logger.warning(f"Capture skip {cam_name}: Tapo config incomplete")
+                return None
+            rtsp_url = f"rtsp://{tapo_user}:{tapo_pass}@{tapo_ip}:554/{tapo_stream}"
+            logger.info(f"📷 Capture Tapo ({cam_name}): {tapo_ip}/{tapo_stream}")
+            return await self.capture_frame(rtsp_url, device_id=None)
+
+        if cam_type == 'direct':
+            rtsp_url = (cam.get('directUrl') or '').strip()
+            if not rtsp_url:
+                logger.warning(f"Capture skip {cam_name}: no directUrl")
+                return None
+            logger.info(f"📷 Capture direct RTSP ({cam_name})")
+            return await self.capture_frame(rtsp_url, device_id=None)
+
+        logger.info(f"Capture skip {cam_name}: type={cam_type} not supported")
+        return None
+
+    async def _collect_camera_photos(
+        self,
+        device: Dict,
+        cams: list,
+        *,
+        pose: Optional[Dict] = None,
+        zoom_factor: float = 1.0,
+        event_name: str = 'companion_capture',
+        event_label: str = 'Foto',
+    ) -> list:
+        """Capture stills from camera entries → list of photo payloads for API."""
+        photos = []
+        for cam in cams:
+            if not isinstance(cam, dict):
+                continue
+            cam_type = (cam.get('type') or '').lower()
+            cam_id = cam.get('id') or ''
+            cam_name = cam.get('name') or cam_type or 'Kamera'
+            role = cam.get('role') or 'slave'
+
+            await self.send_monitor_event(device, event_name, {
+                'message': f'{event_label}: {cam_name}',
+                'camera': cam_type,
+                'camera_id': cam_id,
+                'camera_name': cam_name,
+            })
+
+            frame = await self._capture_camera_frame(cam, zoom_factor=zoom_factor)
+            if frame is None:
+                logger.warning(f"{event_label} capture failed for {cam_name}")
+                continue
+
+            _, buffer = cv2.imencode('.jpg', frame)
+            image_b64 = base64.b64encode(buffer).decode('utf-8')
+            photos.append({
+                'cameraId': cam_id,
+                'cameraName': cam_name,
+                'cameraType': cam_type,
+                'role': role,
+                'image': f'data:image/jpeg;base64,{image_b64}',
+                'pose': pose or {},
+                'capturedAt': datetime.now().isoformat(),
+            })
+        return photos
+
+    async def capture_scan_photos(
+        self,
+        device: Dict,
+        pose: Optional[Dict] = None,
+    ) -> list:
+        """Slave stills at current scan/route pose (no YOLO), for detection evidence."""
+        slaves = self._slave_cameras(device)
+        if not slaves:
+            return []
+        zoom_factor = self.get_route_zoom_factor(device)
+        logger.info(f"📷 Scan companion capture: {len(slaves)} slave camera(s)")
+        return await self._collect_camera_photos(
+            device,
+            slaves,
+            pose=pose,
+            zoom_factor=zoom_factor,
+            event_name='scan_capture',
+            event_label='Scan-Foto',
+        )
+
     async def capture_pre_shoot_photos(
         self,
         device: Dict,
@@ -2650,77 +2776,14 @@ class HardwareMonitor:
             logger.warning("Pre-shoot photos skipped: no detection_id")
             return
 
-        photos = []
-        for cam in cams:
-            cam_type = (cam.get('type') or '').lower()
-            cam_id = cam.get('id') or ''
-            cam_name = cam.get('name') or cam_type or 'Kamera'
-            role = cam.get('role') or 'slave'
-
-            frame = None
-            await self.send_monitor_event(device, 'pre_shoot_capture', {
-                'message': f'Foto vor Vertreibung: {cam_name}',
-                'camera': cam_type,
-                'camera_id': cam_id,
-                'camera_name': cam_name,
-            })
-
-            if cam_type in ('raspberry-pi', 'esp32-p4'):
-                if cam_type == 'esp32-p4':
-                    pi_cfg = cam.get('esp32P4') or cam.get('raspberryPi') or {}
-                else:
-                    pi_cfg = cam.get('raspberryPi') or cam.get('esp32P4') or {}
-                # At aim pose: use configured resolution (no route-zoom upscale)
-                image_url = self._build_http_still_url(pi_cfg, zoom_factor=1.0)
-                if not image_url:
-                    logger.warning(
-                        f"Pre-shoot skip {cam_name}: HTTP still IP not configured"
-                    )
-                    continue
-                logger.info(f"📷 Pre-shoot capture ({cam_name}): {image_url}")
-                frame = await self.capture_frame_from_http(image_url)
-            elif cam_type == 'tapo':
-                tapo = cam.get('tapo') or {}
-                tapo_ip = tapo.get('ip')
-                tapo_user = tapo.get('username')
-                tapo_pass = tapo.get('password')
-                tapo_stream = tapo.get('stream') or 'stream1'
-                if not (tapo_ip and tapo_user and tapo_pass):
-                    logger.warning(f"Pre-shoot skip {cam_name}: Tapo config incomplete")
-                    continue
-                rtsp_url = f"rtsp://{tapo_user}:{tapo_pass}@{tapo_ip}:554/{tapo_stream}"
-                logger.info(f"📷 Pre-shoot capture Tapo ({cam_name}): {tapo_ip}/{tapo_stream}")
-                # No device_id → direct OpenCV (device-image is master-only)
-                frame = await self.capture_frame(rtsp_url, device_id=None)
-            elif cam_type == 'direct':
-                rtsp_url = (cam.get('directUrl') or '').strip()
-                if not rtsp_url:
-                    logger.warning(f"Pre-shoot skip {cam_name}: no directUrl")
-                    continue
-                logger.info(f"📷 Pre-shoot capture direct RTSP ({cam_name})")
-                frame = await self.capture_frame(rtsp_url, device_id=None)
-            else:
-                logger.info(
-                    f"Pre-shoot skip {cam_name}: type={cam_type} not supported"
-                )
-                continue
-
-            if frame is None:
-                logger.warning(f"Pre-shoot capture failed for {cam_name}")
-                continue
-
-            _, buffer = cv2.imencode('.jpg', frame)
-            image_b64 = base64.b64encode(buffer).decode('utf-8')
-            photos.append({
-                'cameraId': cam_id,
-                'cameraName': cam_name,
-                'cameraType': cam_type,
-                'role': role,
-                'image': f'data:image/jpeg;base64,{image_b64}',
-                'pose': pose or {},
-                'capturedAt': datetime.now().isoformat(),
-            })
-
+        photos = await self._collect_camera_photos(
+            device,
+            cams,
+            pose=pose,
+            zoom_factor=1.0,
+            event_name='pre_shoot_capture',
+            event_label='Foto vor Vertreibung',
+        )
         if not photos:
             return
 
