@@ -61,9 +61,11 @@ const detectionSchema = new mongoose.Schema({
     },
     esp_rot: Number,
     esp_tilt: Number,
-    is_target_bird: Boolean
+    is_target_bird: Boolean,
+    bird_id: String
   }],
   target_bird: {
+    bird_id: String,
     class: String,
     confidence: Number,
     bbox: {
@@ -78,10 +80,82 @@ const detectionSchema = new mongoose.Schema({
       width: Number,
       height: Number
     },
+    camera_source: {
+      type: String,
+      enum: ['tapo', 'raspberry-pi', 'local', 'both', 'unknown', 'direct', null],
+      default: undefined
+    },
     esp_rot: Number,
     esp_tilt: Number,
     is_target_bird: Boolean
   },
+  // One entry per bird in the image. Tinder reviews only role "main".
+  birds: [{
+    bird_id: { type: String, required: true },
+    role: { type: String, enum: ['main', 'side'], required: true },
+    camera_source: {
+      type: String,
+      enum: ['tapo', 'raspberry-pi', 'local', 'both', 'unknown', 'direct'],
+      default: 'unknown'
+    },
+    bbox: {
+      x: Number,
+      y: Number,
+      width: Number,
+      height: Number
+    },
+    position: {
+      center_x: Number,
+      center_y: Number,
+      width: Number,
+      height: Number
+    },
+    review: {
+      status: {
+        type: String,
+        enum: ['confirmed_pigeon', 'no_pigeon', null],
+        default: null
+      },
+      source: String,
+      at: Date
+    },
+    origin_run_id: String
+  }],
+  // Append-only model passes. The capture-time pass has run_id "live".
+  model_runs: [{
+    run_id: { type: String, required: true },
+    kind: { type: String, enum: ['live', 'replay'], default: 'live' },
+    at: Date,
+    image: { type: String, default: 'zoomed_image' },
+    model: {
+      name: String,
+      version: String,
+      confidence_threshold: Number,
+      iou_threshold: Number
+    },
+    boxes: [{
+      bird_id: String,
+      class: String,
+      confidence: Number,
+      bbox: {
+        x: Number,
+        y: Number,
+        width: Number,
+        height: Number
+      },
+      position: {
+        center_x: Number,
+        center_y: Number,
+        width: Number,
+        height: Number
+      },
+      camera_source: {
+        type: String,
+        enum: ['tapo', 'raspberry-pi', 'local', 'both', 'unknown', 'direct', null]
+      },
+      iou_to_bird: Number
+    }]
+  }],
   processedAt: {
     type: Date,
     default: Date.now

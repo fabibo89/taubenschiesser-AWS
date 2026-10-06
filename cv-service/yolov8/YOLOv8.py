@@ -8,20 +8,23 @@ from yolov8.utils import xywh2xyxy, nms, draw_detections
 
 class YOLOv8:
 
-    def __init__(self, path, conf_thres=0.7, iou_thres=0.5):
+    def __init__(self, path, conf_thres=0.7, iou_thres=0.5, providers=None, sess_options=None):
         self.conf_threshold = conf_thres
         self.iou_threshold = iou_thres
 
         # Initialize model
-        self.initialize_model(path)
+        self.initialize_model(path, providers=providers, sess_options=sess_options)
 
     def __call__(self, image):
         return self.detect_objects(image)
 
-    def initialize_model(self, path):
-        self.session = onnxruntime.InferenceSession(path,
-                                                    providers=['CUDAExecutionProvider',
-                                                               'CPUExecutionProvider'])
+    def initialize_model(self, path, providers=None, sess_options=None):
+        kwargs = {
+            'providers': providers or ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        }
+        if sess_options is not None:
+            kwargs['sess_options'] = sess_options
+        self.session = onnxruntime.InferenceSession(path, **kwargs)
         # Get model info
         self.get_input_details()
         self.get_output_details()

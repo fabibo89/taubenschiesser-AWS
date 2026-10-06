@@ -17,6 +17,8 @@ import PositionPreview from './components/PositionPreview';
 import RouteDetections from './components/RouteDetections';
 import PanoramaScan from './components/PanoramaScan';
 import ShootTest from './components/ShootTest';
+import Models from './components/Models';
+import ModelCreate from './components/ModelCreate';
 import Layout from './components/Layout';
 
 function AppContent() {
@@ -60,6 +62,8 @@ function AppContent() {
           <Route path="/route-detections" element={<RouteDetections />} />
           <Route path="/panorama" element={<PanoramaScan />} />
           <Route path="/shoot-test" element={<ShootTest />} />
+          <Route path="/models" element={<Models />} />
+          <Route path="/modell-erstellen" element={<ModelCreate />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>

@@ -176,9 +176,16 @@ async def get_config():
         model_name = get_yolo_model_display_name()
     elif cv_service_config["service"] == "rekognition":
         model_name = "AWS Rekognition"
+    input_width = None
+    input_height = None
+    if yolov8_detector is not None:
+        input_width = int(getattr(yolov8_detector, "input_width", 0) or 0) or None
+        input_height = int(getattr(yolov8_detector, "input_height", 0) or 0) or None
     return {
         "service": cv_service_config["service"],
         "model_name": model_name,
+        "input_width": input_width,
+        "input_height": input_height,
         "aws_region": cv_service_config["aws_region"],
         "aws_configured": bool(cv_service_config["aws_access_key"] and cv_service_config["aws_secret_key"])
     }

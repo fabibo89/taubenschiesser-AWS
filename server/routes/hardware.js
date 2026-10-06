@@ -4,6 +4,7 @@ const Detection = require('../models/Detection');
 const Device = require('../models/Device');
 const logger = require('../utils/logger');
 const deviceTelemetryCache = require('../utils/deviceTelemetryCache');
+const { attachLiveBirdLayer } = require('../utils/detectionBirds');
 const router = express.Router();
 
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
@@ -198,6 +199,7 @@ router.post('/detection', async (req, res) => {
       }).filter(Boolean);
     }
     
+    attachLiveBirdLayer(detectionData);
     const detection = new Detection(detectionData);
     
     await detection.save();

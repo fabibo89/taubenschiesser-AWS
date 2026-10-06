@@ -29,7 +29,9 @@ import {
   Preview as PreviewIcon,
   Route as RouteIcon,
   Panorama as PanoramaIcon,
-  GpsFixed as ShootTestIcon
+  GpsFixed as ShootTestIcon,
+  Memory as ModelsIcon,
+  ModelTraining as ModelCreateIcon
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -60,11 +62,13 @@ const Layout = ({ children }) => {
     handleProfileMenuClose();
   };
 
-  const menuItems = [
+  const primaryMenuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
-    { text: 'Geräte', icon: <DevicesIcon />, path: '/devices' },
     { text: 'Erkennungen', icon: <VisibilityIcon />, path: '/detections' },
     { text: 'Tauben-Tinder', icon: <FavoriteIcon />, path: '/tauben-tinder' },
+  ];
+
+  const toolMenuItems = [
     { text: 'Hardware Monitor', icon: <MonitorIcon />, path: '/monitor' },
     { text: 'Position Vorschau', icon: <PreviewIcon />, path: '/position-preview' },
     { text: 'Tauben auf der Route', icon: <RouteIcon />, path: '/route-detections' },
@@ -72,6 +76,25 @@ const Layout = ({ children }) => {
     { text: 'Shoot-Test / FOV', icon: <ShootTestIcon />, path: '/shoot-test' },
     { text: 'Bildanalyse', icon: <UploadIcon />, path: '/upload' },
   ];
+
+  const bottomMenuItems = [
+    { text: 'Geräte', icon: <DevicesIcon />, path: '/devices' },
+    { text: 'Modelle', icon: <ModelsIcon />, path: '/models' },
+    { text: 'Modell erstellen', icon: <ModelCreateIcon />, path: '/modell-erstellen' },
+  ];
+
+  const renderMenuItems = (items) =>
+    items.map((item) => (
+      <ListItem
+        button
+        key={item.text}
+        onClick={() => navigate(item.path)}
+        selected={location.pathname === item.path}
+      >
+        <ListItemIcon>{item.icon}</ListItemIcon>
+        <ListItemText primary={item.text} />
+      </ListItem>
+    ));
 
   const drawer = (
     <Box>
@@ -84,17 +107,11 @@ const Layout = ({ children }) => {
       </Toolbar>
       <Divider />
       <List>
-        {menuItems.map((item) => (
-          <ListItem
-            button
-            key={item.text}
-            onClick={() => navigate(item.path)}
-            selected={location.pathname === item.path}
-          >
-            <ListItemIcon>{item.icon}</ListItemIcon>
-            <ListItemText primary={item.text} />
-          </ListItem>
-        ))}
+        {renderMenuItems(primaryMenuItems)}
+        <Divider sx={{ my: 1 }} />
+        {renderMenuItems(toolMenuItems)}
+        <Divider sx={{ my: 1 }} />
+        {renderMenuItems(bottomMenuItems)}
       </List>
     </Box>
   );

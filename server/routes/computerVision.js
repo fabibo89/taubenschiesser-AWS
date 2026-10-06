@@ -7,6 +7,7 @@ const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { findDuplicateGroups } = require('../utils/duplicateDetections');
+const { applyMainReview, attachLiveBirdLayer } = require('../utils/detectionBirds');
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
 
 /** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
@@ -186,9 +187,9 @@ router.post('/detect', upload.single('image'), async (req, res) => {
     logger.info(`CV service response status: ${cvResponse.status}`);
 
     const detections = cvResponse.data.detections || [];
-    
+
     // Save detection to database
-    const detection = new Detection({
+    const detection = new Detection(attachLiveBirdLayer({
       device: device._id,
       image: {
         url: cvResponse.data.image_url,
@@ -197,8 +198,9 @@ router.post('/detect', upload.single('image'), async (req, res) => {
       },
       detections: detections,
       processingTime: cvResponse.data.processing_time,
-      model: cvResponse.data.model
-    });
+      model: cvResponse.data.model,
+      processedAt: new Date()
+    }));
 
     await detection.save();
 
@@ -983,11 +985,13 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     };
     
     if (action === 'unclassified') {
-      detection.classification_status = null;
-      detection.classifiedAt = null;
+      applyMainReview(detection, { status: null });
     } else {
-      detection.classification_status = statusMap[action] || null;
-      detection.classifiedAt = new Date();
+      applyMainReview(detection, {
+        status: statusMap[action] || null,
+        source: 'tinder',
+        at: new Date()
+      });
     }
     await detection.save();
 

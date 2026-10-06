@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "id": "yolo26m",
+      "name": "YOLO26m",
+      "role": "live",
+      "artifacts": [
+        {
+          "runtime": "onnx",
+          "file": "yolo26m.onnx"
+        }
+      ],
+      "tests": []
+    },
+    {
+      "id": "yolov8l",
+      "name": "YOLOv8l",
+      "role": "replay",
+      "artifacts": [
+        {
+          "runtime": "onnx",
+          "file": "yolov8l.onnx"
+        }
+      ],
+      "tests": []
+    }
+  ]
+}

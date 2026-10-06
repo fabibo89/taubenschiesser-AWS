@@ -1282,12 +1282,8 @@ class HardwareMonitor:
                     logger.warning(f"Could not resolve hostname {pi_ip}: {e}, using as-is")
                     resolved_ip = pi_ip
             
-            # Detection capture: always use configured square/resolution from device settings.
-            # When route zoom > 1, request base×zoom so local crop still leaves ~base pixels.
-            zoom_factor = self.get_route_zoom_factor(device)
-            resolution_param = self._resolution_query_for_capture(
-                pi_resolution, pi_square, zoom_factor
-            )
+            # Camera returns the device resolution. Zoom stays on the waypoint images.
+            resolution_param = self._device_resolution_param(pi_resolution)
 
             # Build URL with query parameters (flip, angle, square, resolution)
             base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
@@ -1350,6 +1346,12 @@ class HardwareMonitor:
             return max(1.0, zoom)
         except (TypeError, ValueError):
             return 1.0
+
+    @staticmethod
+    def _device_resolution_param(resolution) -> str:
+        """Resolution query for the camera. The configured device value, unchanged."""
+        text = str(resolution).strip() if resolution is not None else ''
+        return text or str(DETECTION_INPUT_SIZE)
 
     @staticmethod
     def _parse_resolution_side(resolution, default: int = DETECTION_INPUT_SIZE) -> int:
@@ -1489,35 +1491,99 @@ class HardwareMonitor:
             return True
         return bool(cfg.get('square'))
 
+    def _http_still_config(self, device: Dict, camera_source: str) -> Optional[Dict]:
+        source = (camera_source or '').lower()
+        camera = device.get('camera') or {}
+        cam_type = (camera.get('type') or '').lower()
+        is_http_still = (
+            source in ('raspberry-pi', 'esp32-p4')
+            or 'esp32' in source
+            or cam_type in ('raspberry-pi', 'esp32-p4')
+        )
+        if not is_http_still:
+            return None
+        if source == 'esp32-p4' or cam_type == 'esp32-p4' or 'esp32' in source:
+            return camera.get('esp32P4') or camera.get('raspberryPi') or {}
+        return camera.get('raspberryPi') or camera.get('esp32P4') or {}
+
+    def _device_capture_side(self, device: Dict, camera_source: str) -> int:
+        """Pixel side length stored for a detection. Comes from the device camera setting."""
+        cfg = self._http_still_config(device, camera_source)
+        if not cfg:
+            return DETECTION_INPUT_SIZE
+        return self._parse_resolution_side(cfg.get('resolution'), DETECTION_INPUT_SIZE)
+
+    async def get_model_input_size(self) -> Tuple[int, int]:
+        """Input size declared by the loaded production model. Falls back to 640."""
+        now = time.time()
+        cached = getattr(self, '_model_input_size', None)
+        if cached and now - cached[0] < 60:
+            return cached[1], cached[2]
+        width, height = DETECTION_INPUT_SIZE, DETECTION_INPUT_SIZE
+        try:
+            timeout = aiohttp.ClientTimeout(total=2)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{self.cv_service_url}/config") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get('input_width') and data.get('input_height'):
+                            width = max(1, int(data['input_width']))
+                            height = max(1, int(data['input_height']))
+        except Exception as exc:
+            logger.debug(f"Model input size unavailable, using {width}x{height}: {exc}")
+        self._model_input_size = (now, width, height)
+        return width, height
+
+    @staticmethod
+    def _resize_for_model(frame: np.ndarray, model_w: int, model_h: int) -> np.ndarray:
+        height, width = frame.shape[:2]
+        if width == model_w and height == model_h:
+            return frame
+        interp = cv2.INTER_AREA if width > model_w or height > model_h else cv2.INTER_LINEAR
+        return cv2.resize(frame, (model_w, model_h), interpolation=interp)
+
+    @staticmethod
+    def _scale_detections_to_saved(detections: List[Dict], src_w: int, src_h: int, dst_w: int, dst_h: int) -> List[Dict]:
+        """Map boxes from the model-sized frame back onto the saved device-resolution image."""
+        if not detections or src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0:
+            return detections
+        scale_x = dst_w / float(src_w)
+        scale_y = dst_h / float(src_h)
+        if scale_x == 1 and scale_y == 1:
+            return detections
+        for det in detections:
+            bbox = det.get('bbox')
+            if isinstance(bbox, dict):
+                for key, scale in (('x', scale_x), ('width', scale_x), ('y', scale_y), ('height', scale_y)):
+                    if bbox.get(key) is not None:
+                        bbox[key] = float(bbox[key]) * scale
+            position = det.get('position')
+            if isinstance(position, dict):
+                for key, scale in (('center_x', scale_x), ('width', scale_x), ('center_y', scale_y), ('height', scale_y)):
+                    if position.get(key) is not None:
+                        position[key] = float(position[key]) * scale
+        return detections
+
     async def process_single_camera(self, device: Dict, original_frame: np.ndarray, camera_source: str, camera_label: str = None):
         """Process a single camera frame (Tapo or Raspberry Pi) for detection."""
         try:
             height, width = original_frame.shape[:2]
             logger.info(f"✅ Frame captured successfully from {camera_source}: {width}x{height} pixels")
 
-            zoom_factor = self.get_route_zoom_factor(device)
-            use_square = self._device_square_setting(device, camera_source)
-            detection_original, zoomed_frame = self.prepare_detection_frames(
-                original_frame, zoom_factor, square=use_square
-            )
-            det_h, det_w = detection_original.shape[:2]
-            zoom_h, zoom_w = zoomed_frame.shape[:2]
             logger.info(
-                f"🎯 Detection prep ({camera_source}): capture {width}x{height} → "
-                f"working {det_w}x{det_h} (square={use_square}, 640×zoom={zoom_factor:g}) → "
-                f"zoomed {zoom_w}x{zoom_h}"
+                f"🎯 Detection frame ({camera_source}): {width}x{height} "
+                f"(device resolution, no crop)"
             )
 
-            # Live monitor / DB use detection-sized frames (not full camera res)
-            _, buffer = cv2.imencode('.jpg', detection_original)
+            _, buffer = cv2.imencode('.jpg', original_frame)
             original_image_base64 = base64.b64encode(buffer).decode('utf-8')
 
             event_data = {
-                'width': det_w,
-                'height': det_h,
+                'width': width,
+                'height': height,
                 'capture_width': width,
                 'capture_height': height,
-                'zoom_factor': zoom_factor,
+                'zoom_factor': 1.0,
                 'image': f"data:image/jpeg;base64,{original_image_base64}",
                 'camera': camera_source
             }
@@ -1526,28 +1592,12 @@ class HardwareMonitor:
 
             await self.send_monitor_event(device, 'image_captured', event_data)
 
-            if zoomed_frame is not detection_original:
-                _, zoom_buffer = cv2.imencode('.jpg', zoomed_frame)
-                zoomed_image_base64 = base64.b64encode(zoom_buffer).decode('utf-8')
-
-                zoom_event_data = {
-                    'width': zoom_w,
-                    'height': zoom_h,
-                    'zoom_factor': zoom_factor,
-                    'image': f"data:image/jpeg;base64,{zoomed_image_base64}",
-                    'camera': camera_source
-                }
-                if camera_label:
-                    zoom_event_data['camera_label'] = camera_label
-
-                await self.send_monitor_event(device, 'image_zoomed', zoom_event_data)
-
             await self.send_monitor_event(device, 'analyzing', {
                 'message': f'Analyzing image with CV service ({camera_source})',
                 'camera': camera_source
             })
             await self.analyze_frame_for_birds(
-                device, detection_original, zoomed_frame, camera_source
+                device, original_frame, original_frame, camera_source
             )
 
         except Exception as e:
@@ -1662,8 +1712,14 @@ class HardwareMonitor:
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
             device_id = device.get('_id') or device.get('deviceId')
             
-            # Use zoomed frame for better detection
-            _, buffer = cv2.imencode('.jpg', zoomed_frame)
+            # Saved frame stays at device resolution. The model only sees a scaled copy.
+            model_w, model_h = await self.get_model_input_size()
+            saved_h, saved_w = zoomed_frame.shape[:2]
+            model_frame = self._resize_for_model(zoomed_frame, model_w, model_h)
+            logger.info(
+                f"🎯 Model input ({camera_source}): saved {saved_w}x{saved_h} → model {model_w}x{model_h}"
+            )
+            _, buffer = cv2.imencode('.jpg', model_frame)
             
             cv_request_url = f"{self.cv_service_url}/detect_birds_optimized"
             logger.info(f"🔍 Sending frame to CV service (device: {device_ip}, camera: {camera_source}) URL: {cv_request_url}")
@@ -1685,6 +1741,9 @@ class HardwareMonitor:
                         # Log CV service response details
                         bird_count = result.get('bird_count', 0)
                         detections = result.get('detections', [])
+                        sent_h, sent_w = model_frame.shape[:2]
+                        self._scale_detections_to_saved(detections, sent_w, sent_h, saved_w, saved_h)
+                        result['detections'] = detections
                         _pt_raw = result.get('processing_time', 0)
                         try:
                             processing_time_ms = float(_pt_raw or 0)
@@ -2629,9 +2688,7 @@ class HardwareMonitor:
             except socket.gaierror:
                 resolved_ip = pi_ip
 
-        resolution_param = self._resolution_query_for_capture(
-            pi_resolution, pi_square, zoom_factor
-        )
+        resolution_param = self._device_resolution_param(pi_resolution)
         base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
         query_params = []
         if pi_flip:

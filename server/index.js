@@ -67,6 +67,7 @@ app.use('/api/device-control', require('./routes/deviceControl'));
 app.use('/api/device-image', require('./routes/deviceImage'));
 app.use('/api/stream', require('./routes/stream'));
 app.use('/api/cv', cvRoutes);
+app.use('/api/models', require('./routes/models'));
 app.use('/api/users', userRoutes);
 app.use('/api/hardware', require('./routes/hardware'));
 app.use('/api/iot', require('./routes/iot'));
