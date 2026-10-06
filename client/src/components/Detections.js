@@ -1772,18 +1772,42 @@ const Detections = () => {
                 </Grid>
               )}
 
-              {/* Bottom: Master | Slave camera stills */}
+              {/* Bottom: Master | Slave camera stills (1:1 — mirror Original as Master·Scan when needed) */}
               {(() => {
                 const pre = Array.isArray(selectedDetection.preShootPhotos) ? selectedDetection.preShootPhotos : [];
                 const scan = Array.isArray(selectedDetection.scanPhotos) ? selectedDetection.scanPhotos : [];
-                const masterPhotos = [
-                  ...pre.filter((p) => p?.role === 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' })),
-                  ...scan.filter((p) => p?.role === 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' }))
-                ];
+                const masterScanStored = scan.filter((p) => p?.role === 'master' && p?.image?.url);
+                const masterPre = pre.filter((p) => p?.role === 'master' && p?.image?.url);
                 const slavePhotos = [
                   ...scan.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' })),
                   ...pre.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' }))
                 ];
+                const masterPhotos = [
+                  ...masterScanStored.map((p) => ({ ...p, _kind: 'scan' })),
+                  ...masterPre.map((p) => ({ ...p, _kind: 'pre' }))
+                ];
+                // For 1:1 Master|Slave: show Original again under Master when slaves
+                // (or other companions) exist but no dedicated master scanPhoto was stored.
+                const hasCompanions = slavePhotos.length > 0 || masterPre.length > 0 || masterScanStored.length > 0;
+                if (
+                  hasCompanions &&
+                  !masterScanStored.length &&
+                  selectedDetection.image?.url
+                ) {
+                  masterPhotos.unshift({
+                    _kind: 'scan',
+                    role: 'master',
+                    cameraName: selectedDetection.camera_source || 'Master',
+                    cameraType: selectedDetection.camera_source || 'master',
+                    image: { url: selectedDetection.image.url },
+                    pose: selectedDetection.camera_position
+                      ? {
+                          rotation: selectedDetection.camera_position.rotation,
+                          tilt: selectedDetection.camera_position.tilt
+                        }
+                      : undefined
+                  });
+                }
                 if (!masterPhotos.length && !slavePhotos.length) return null;
                 return (
                   <Grid item xs={12}>

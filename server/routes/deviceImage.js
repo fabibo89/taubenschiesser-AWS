@@ -38,9 +38,26 @@ router.get('/:deviceId', async (req, res) => {
     const format = (req.query.format === 'json') ? 'json' : 'jpeg';
 
     const sourceParam = typeof req.query.source === 'string' ? req.query.source.trim() : '';
-    const cameraSource = (sourceParam === 'raspberry-pi' || sourceParam === 'tapo')
+    const cameraSource = (sourceParam === 'raspberry-pi' || sourceParam === 'tapo' || sourceParam === 'esp32-p4')
       ? sourceParam
       : undefined;
+    const cameraId = typeof req.query.cameraId === 'string' ? req.query.cameraId.trim() : '';
+
+    // Snapshot of a specific cameras[] slot (slave or master)
+    if (cameraId) {
+      const list = Array.isArray(device.cameras) ? device.cameras : [];
+      const cam = list.find((c) => c && String(c.id) === cameraId);
+      if (!cam) {
+        return res.status(404).json({ error: `Camera ${cameraId} not found on device` });
+      }
+      const imageBase64 = await hardwareHelper.captureFrameFromCameraEntry(device, cam);
+      const buf = Buffer.from(imageBase64, 'base64');
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      return res.end(buf);
+    }
 
     // 1) Preferred: use centralized helper (supports raspberry-pi + rtsp/tapo/dual)
     try {

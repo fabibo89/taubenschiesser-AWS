@@ -661,6 +661,46 @@ class HardwareHelper {
   }
 
   /**
+   * Capture a still from a specific cameras[] entry (master or slave).
+   */
+  async captureFrameFromCameraEntry(device, cam, options = {}) {
+    if (!cam) {
+      throw new Error('No camera entry');
+    }
+    const type = cam.type;
+    const fakeDevice = {
+      _id: device._id,
+      id: device.id,
+      name: device.name,
+      camera: {
+        type,
+        tapo: cam.tapo,
+        raspberryPi: cam.raspberryPi,
+        esp32P4: cam.esp32P4,
+        rtspUrl: cam.directUrl || cam.rtspUrl,
+        directUrl: cam.directUrl,
+        useLocalImage: cam.useLocalImage,
+        localImagePath: cam.localImagePath
+      },
+      getRtspUrl() {
+        if (type === 'tapo' && cam.tapo?.ip && cam.tapo?.username && cam.tapo?.password) {
+          const stream = cam.tapo.stream || 'stream1';
+          return `rtsp://${cam.tapo.username}:${cam.tapo.password}@${cam.tapo.ip}:554/${stream}`;
+        }
+        if (type === 'direct') {
+          return cam.directUrl || null;
+        }
+        return null;
+      },
+      getImageUrl() {
+        return null;
+      }
+    };
+    const cameraSource = isHttpStillType(type) ? type : undefined;
+    return this.captureFrame(fakeDevice, { ...options, cameraSource });
+  }
+
+  /**
    * Cleanup - close all MQTT connections
    */
   cleanup() {
