@@ -443,11 +443,124 @@ function applyMainReview(doc, { status, source = 'tinder', at = new Date() } = {
   return doc;
 }
 
+/**
+ * Review a single side bird. Does not change classification_status / main.
+ */
+function applySideReview(doc, { birdId, status, source = 'side-review', at = new Date() } = {}) {
+  if (!doc || !birdId) return null;
+  attachLiveBirdLayer(doc);
+  const bird = (doc.birds || []).find((entry) => entry.role === 'side' && entry.bird_id === birdId);
+  if (!bird) return null;
+  const normalized = REVIEW_STATUSES.has(status) ? status : null;
+  const when = normalized ? (at ? new Date(at) : new Date()) : null;
+  bird.review = {
+    status: normalized,
+    source: normalized ? source : null,
+    at: when
+  };
+  if (typeof doc.markModified === 'function') {
+    doc.markModified('birds');
+  }
+  return bird;
+}
+
+/**
+ * Accept a replay box without bird_id as a new side bird, or reject it via box.review.
+ * Returns { box, bird, created }.
+ */
+function applyNewBoxReview(doc, {
+  modelName,
+  boxIndex,
+  action,
+  source = 'new-review',
+  at = new Date()
+} = {}) {
+  if (!doc || !modelName || !Number.isInteger(boxIndex) || boxIndex < 0) return null;
+  attachLiveBirdLayer(doc);
+  if (!Array.isArray(doc.birds)) doc.birds = [];
+  const run = (doc.model_runs || []).find((entry) => entry?.model?.name === modelName);
+  if (!run || !Array.isArray(run.boxes) || !run.boxes[boxIndex]) return null;
+  const box = run.boxes[boxIndex];
+  if (box.bird_id) return null;
+
+  const status = action === 'confirm_pigeon' ? 'confirmed_pigeon' : 'no_pigeon';
+  const when = at ? new Date(at) : new Date();
+  let bird = null;
+  let created = false;
+
+  if (status === 'confirmed_pigeon') {
+    const allocateId = nextBirdId(doc.birds);
+    const birdId = allocateId();
+    const bbox = copyBbox(box.bbox) || bboxFrom(box);
+    const position = copyPosition(box.position) || (bbox ? positionFromBbox(bbox) : undefined);
+    bird = {
+      bird_id: birdId,
+      role: 'side',
+      camera_source: cameraSourceOf(box, 'unknown'),
+      bbox: bbox || undefined,
+      position,
+      review: { status, source, at: when },
+      origin_run_id: run.run_id || `replay-${modelName}`
+    };
+    doc.birds.push(bird);
+    box.bird_id = birdId;
+    created = true;
+  }
+
+  box.review = { status, source, at: when };
+
+  if (typeof doc.markModified === 'function') {
+    doc.markModified('birds');
+    doc.markModified('model_runs');
+  }
+  return { box, bird, created, status };
+}
+
+/**
+ * Undo applyNewBoxReview using a previous snapshot.
+ */
+function restoreNewBoxReview(doc, {
+  modelName,
+  boxIndex,
+  previous = {}
+} = {}) {
+  if (!doc || !modelName || !Number.isInteger(boxIndex) || boxIndex < 0) return null;
+  attachLiveBirdLayer(doc);
+  const run = (doc.model_runs || []).find((entry) => entry?.model?.name === modelName);
+  if (!run || !Array.isArray(run.boxes) || !run.boxes[boxIndex]) return null;
+  const box = run.boxes[boxIndex];
+
+  const createdBirdId = previous.createdBirdId || null;
+  if (createdBirdId && Array.isArray(doc.birds)) {
+    doc.birds = doc.birds.filter((bird) => bird.bird_id !== createdBirdId);
+  }
+
+  box.bird_id = previous.bird_id || undefined;
+  if (previous.bird_id == null || previous.bird_id === '') {
+    box.bird_id = undefined;
+  }
+  const prevReview = previous.boxReview || { status: null, source: null, at: null };
+  box.review = {
+    status: prevReview.status ?? null,
+    source: prevReview.source ?? null,
+    at: prevReview.at ? new Date(prevReview.at) : null
+  };
+
+  if (typeof doc.markModified === 'function') {
+    doc.markModified('birds');
+    doc.markModified('model_runs');
+  }
+  return box;
+}
+
 module.exports = {
   LIVE_RUN_ID,
   hasLiveRun,
   attachLiveBirdLayer,
   applyMainReview,
+  applySideReview,
+  applyNewBoxReview,
+  restoreNewBoxReview,
   appendReplayRun,
   sameBird,
   isBirdClass

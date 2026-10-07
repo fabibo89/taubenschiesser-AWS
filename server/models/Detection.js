@@ -153,7 +153,16 @@ const detectionSchema = new mongoose.Schema({
         type: String,
         enum: ['tapo', 'raspberry-pi', 'local', 'both', 'unknown', 'direct', null]
       },
-      iou_to_bird: Number
+      iou_to_bird: Number,
+      review: {
+        status: {
+          type: String,
+          enum: ['confirmed_pigeon', 'no_pigeon', null],
+          default: null
+        },
+        source: String,
+        at: Date
+      }
     }]
   }],
   processedAt: {

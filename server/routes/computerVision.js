@@ -7,7 +7,7 @@ const Device = require('../models/Device');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { findDuplicateGroups } = require('../utils/duplicateDetections');
-const { applyMainReview, attachLiveBirdLayer } = require('../utils/detectionBirds');
+const { applyMainReview, attachLiveBirdLayer, applySideReview } = require('../utils/detectionBirds');
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
 
 /** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
@@ -122,8 +122,18 @@ router.post('/detect', upload.single('image'), async (req, res) => {
         return res.json({
           success: true,
           detections: [
-            { class: 'bird', confidence: 0.95, bbox: [100, 100, 200, 200] },
-            { class: 'person', confidence: 0.87, bbox: [300, 150, 150, 300] }
+            {
+              class: 'bird',
+              confidence: 0.95,
+              bbox: { x: 100, y: 100, width: 200, height: 200 },
+              bbox_original: { x: 200, y: 200, width: 200, height: 200 }
+            },
+            {
+              class: 'person',
+              confidence: 0.87,
+              bbox: { x: 300, y: 150, width: 150, height: 300 },
+              bbox_original: { x: 375, y: 300, width: 150, height: 300 }
+            }
           ],
           detection_count: 2,
           processing_time: 150,
@@ -251,12 +261,26 @@ router.post('/detect', upload.single('image'), async (req, res) => {
   }
 });
 
+// Parse HTML date input (YYYY-MM-DD) as local calendar day bounds.
+function parseQueryDay(dateStr, endOfDay) {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+  if (endOfDay) return new Date(y, mo, d, 23, 59, 59, 999);
+  return new Date(y, mo, d, 0, 0, 0, 0);
+}
+
 // Get detection history
 router.get('/detections', authenticateToken, async (req, res) => {
   try {
     const { deviceId, page = 1, limit = 20, classificationStatus, rotation, tilt, dateFrom, dateTo } = req.query;
-    const skip = (page - 1) * limit;
     const limitNum = Math.min(parseInt(limit, 10) || 20, 1000);
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const skip = (pageNum - 1) * limitNum;
 
     // Get all devices owned by user for filtering
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
@@ -267,29 +291,40 @@ router.get('/detections', authenticateToken, async (req, res) => {
     };
 
     if (deviceId) {
-      const isMongoId = /^[a-fA-F0-9]{24}$/.test(deviceId);
-      const device = await Device.findOne(
-        isMongoId ? { _id: deviceId, owner: req.user.userId } : { deviceId, owner: req.user.userId }
-      );
-      if (!device) {
-        return res.status(404).json({ error: 'Device not found' });
+      const deviceIdStr = String(Array.isArray(deviceId) ? deviceId[0] : deviceId).trim();
+      if (deviceIdStr) {
+        const isMongoId = /^[a-fA-F0-9]{24}$/.test(deviceIdStr);
+        const device = await Device.findOne(
+          isMongoId ? { _id: deviceIdStr, owner: req.user.userId } : { deviceId: deviceIdStr, owner: req.user.userId }
+        );
+        if (!device) {
+          // Unknown device filter → empty result (not 404), so the UI can keep filtering by date etc.
+          return res.json({
+            detections: [],
+            pagination: {
+              page: pageNum,
+              limit: limitNum,
+              total: 0,
+              pages: 0
+            }
+          });
+        }
+        query.device = device._id;
       }
-      query.device = device._id;
     }
 
-    // Filter by date range
-    if (dateFrom || dateTo) {
+    // Filter by date range (accept first value if arrays)
+    const fromRaw = Array.isArray(dateFrom) ? dateFrom[0] : dateFrom;
+    const toRaw = Array.isArray(dateTo) ? dateTo[0] : dateTo;
+    if (fromRaw || toRaw) {
+      const from = fromRaw ? parseQueryDay(fromRaw, false) : null;
+      const to = toRaw ? parseQueryDay(toRaw, true) : null;
+      if ((fromRaw && !from) || (toRaw && !to)) {
+        return res.status(400).json({ error: 'Invalid dateFrom/dateTo (expected YYYY-MM-DD)' });
+      }
       query.processedAt = {};
-      if (dateFrom) {
-        const from = new Date(dateFrom);
-        from.setHours(0, 0, 0, 0);
-        query.processedAt.$gte = from;
-      }
-      if (dateTo) {
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-        query.processedAt.$lte = to;
-      }
+      if (from) query.processedAt.$gte = from;
+      if (to) query.processedAt.$lte = to;
     }
 
     // Filter by classification status
@@ -314,7 +349,7 @@ router.get('/detections', authenticateToken, async (req, res) => {
       }
     }
 
-    // Lean list: image_info for bbox scaling; exclude image/zoomed_image (base64 URLs would make response 100MB+)
+    // Lean list: no image payloads, no CV angle enrichment (that blocked filters for minutes when CV was slow/down).
     const detections = await Detection.find(query)
       .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank fovCalibration preShootPhotos.cameraName preShootPhotos.role scanPhotos.cameraName scanPhotos.role')
       .sort({ processedAt: -1 })
@@ -322,16 +357,12 @@ router.get('/detections', authenticateToken, async (req, res) => {
       .limit(limitNum)
       .populate('device', 'name deviceId type camera');
 
-    for (const d of detections) {
-      await enrichDetectionForResponse(d, d.device);
-    }
-
     const total = await Detection.countDocuments(query);
 
     res.json({
       detections,
       pagination: {
-        page: parseInt(page, 10) || 1,
+        page: pageNum,
         limit: limitNum,
         total,
         pages: Math.ceil(total / limitNum)
@@ -402,7 +433,7 @@ router.get('/detections/nearest-at-position', authenticateToken, async (req, res
 
     const devices = await Device.find({ owner: req.user.userId }).select('_id');
     const deviceIds = devices.map(d => d._id.toString());
-    if (!deviceIds.includes(deviceId)) {
+    if (!deviceIds.includes(String(deviceId))) {
       return res.status(403).json({ error: 'Device not found or access denied' });
     }
 
@@ -856,6 +887,9 @@ router.get('/detections/statistics/hourly', authenticateToken, async (req, res) 
 // Get detection images only (lightweight; used by Tauben-Tinder + Erkennungen thumbnails)
 router.get('/detections/:id/image', authenticateToken, async (req, res) => {
   try {
+    if (!/^[a-fA-F0-9]{24}$/.test(String(req.params.id || ''))) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
     const detection = await Detection.findById(req.params.id)
       .select('device image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info')
       .populate('device', 'owner');
@@ -878,6 +912,9 @@ router.get('/detections/:id/image', authenticateToken, async (req, res) => {
 // Get single detection
 router.get('/detections/:id', authenticateToken, async (req, res) => {
   try {
+    if (!/^[a-fA-F0-9]{24}$/.test(String(req.params.id || ''))) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
     const detection = await Detection.findById(req.params.id)
       .populate('device', 'name deviceId type owner camera');
     
@@ -1002,6 +1039,64 @@ router.patch('/detections/:id/classify', authenticateToken, async (req, res) => 
     });
   } catch (error) {
     logger.error('Classify detection error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * Review one bird on a detection (main or side).
+ * Side "no_pigeon" is stored on birds[].review — the bird stays in birds[].
+ * Body: { birdId, status: 'confirmed_pigeon' | 'no_pigeon' | null }
+ */
+router.patch('/detections/:id/bird-review', authenticateToken, async (req, res) => {
+  try {
+    const birdId = typeof req.body?.birdId === 'string' ? req.body.birdId.trim() : '';
+    const rawStatus = req.body?.status;
+    const status = rawStatus === 'confirmed_pigeon' || rawStatus === 'no_pigeon' ? rawStatus : null;
+
+    if (!birdId) {
+      return res.status(400).json({ error: 'birdId required' });
+    }
+
+    const detection = await Detection.findById(req.params.id)
+      .populate('device', 'owner camera');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    attachLiveBirdLayer(detection);
+    const bird = (detection.birds || []).find((b) => b && b.bird_id === birdId);
+    if (!bird) {
+      return res.status(404).json({ error: 'Bird not found on detection' });
+    }
+
+    if (bird.role === 'main') {
+      applyMainReview(detection, {
+        status,
+        source: 'detections-ui',
+        at: status ? new Date() : null
+      });
+    } else {
+      const updated = applySideReview(detection, {
+        birdId,
+        status,
+        source: 'detections-ui',
+        at: status ? new Date() : null
+      });
+      if (!updated) {
+        return res.status(404).json({ error: 'Side bird not found' });
+      }
+    }
+
+    await detection.save();
+    await enrichDetectionForResponse(detection, detection.device);
+    res.json({ detection });
+  } catch (error) {
+    logger.error('Bird review error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

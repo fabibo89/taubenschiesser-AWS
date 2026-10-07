@@ -13,6 +13,18 @@
       "tests": []
     },
     {
+      "id": "yolo26l",
+      "name": "YOLO26l",
+      "role": "replay",
+      "artifacts": [
+        {
+          "runtime": "onnx",
+          "file": "yolo26l.onnx"
+        }
+      ],
+      "tests": []
+    },
+    {
       "id": "yolov8l",
       "name": "YOLOv8l",
       "role": "replay",

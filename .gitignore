@@ -77,9 +77,13 @@ device-config.json
 *.pt
 *.pth
 
+# YOLO training export zips
+server/exports/
+
 # Misc
 .cache/
 coverage/
 .pytest_cache/
 
 Cursor.code-workspace
+backups/

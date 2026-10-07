@@ -39,11 +39,13 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Rate limiting - more permissive for hardware monitor
+// Rate limiting — in local/dev aus (sonst 429 bei Polling/Swipe/Stats)
+const isDev = process.env.NODE_ENV !== 'production';
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 1000, // limit each IP to 1000 requests per windowMs (increased for hardware monitor)
   skip: (req) => {
+    if (isDev) return true;
     // Skip rate limiting for service tokens
     const authHeader = req.headers['authorization'];
     if (authHeader && authHeader.includes('hardware-monitor-service-token')) {
