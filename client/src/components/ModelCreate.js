@@ -629,7 +629,7 @@ const ModelCreate = () => {
     }
     checkEspHealth();
     return undefined;
-  }, [tab, selectedEspTarget?.id, checkEspHealth]);
+  }, [tab, selectedEspTarget, checkEspHealth]);
 
   const uploadOta = async () => {
     if (!selectedEspTarget || !otaFile) return;
