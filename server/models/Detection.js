@@ -113,7 +113,7 @@ const detectionSchema = new mongoose.Schema({
     review: {
       status: {
         type: String,
-        enum: ['confirmed_pigeon', 'no_pigeon', null],
+        enum: ['confirmed_pigeon', 'no_pigeon', 'too_far', null],
         default: null
       },
       source: String,
@@ -157,7 +157,7 @@ const detectionSchema = new mongoose.Schema({
       review: {
         status: {
           type: String,
-          enum: ['confirmed_pigeon', 'no_pigeon', null],
+          enum: ['confirmed_pigeon', 'no_pigeon', 'too_far', null],
           default: null
         },
         source: String,
@@ -195,7 +195,7 @@ const detectionSchema = new mongoose.Schema({
   },
   classification_status: {
     type: String,
-    enum: ['unclassified', 'confirmed_pigeon', 'no_pigeon', null],
+    enum: ['unclassified', 'confirmed_pigeon', 'no_pigeon', 'too_far', null],
     default: null
   },
   classifiedAt: {
@@ -211,6 +211,20 @@ const detectionSchema = new mongoose.Schema({
     tilt: {
       type: Number  // Tilt (-180 bis 180 Grad)
     }
+  },
+  /**
+   * Who drove save/shoot when cloud YOLO and ESP-P4 both saw the frame.
+   * cloud = master (default); esp = only P4 found birds (cloud empty/miss).
+   */
+  detection_authority: {
+    type: String,
+    enum: ['cloud', 'esp'],
+    default: 'cloud'
+  },
+  /** Shadow / parallel ESP-P4 /detect results (who saw what). */
+  esp_parallel: {
+    type: mongoose.Schema.Types.Mixed,
+    default: undefined
   },
   // Bei Hardware-Monitor: ob bei dieser Detection geschossen wurde (Monitor war scharf)
   shotFired: {

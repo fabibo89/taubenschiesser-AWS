@@ -124,6 +124,21 @@ class HardwareMonitor:
         # MQTT listener for receiving messages
         self.mqtt_listener = None
         self.loop = None
+
+    @staticmethod
+    def device_layout(device: Optional[Dict]) -> str:
+        layout = (device or {}).get('deviceLayout') or 'separate'
+        if layout not in ('cam_only', 'motion_only', 'separate', 'combined'):
+            return 'separate'
+        return layout
+
+    @classmethod
+    def layout_has_motion(cls, device: Optional[Dict]) -> bool:
+        return cls.device_layout(device) in ('motion_only', 'separate', 'combined')
+
+    @classmethod
+    def layout_has_cameras(cls, device: Optional[Dict]) -> bool:
+        return cls.device_layout(device) in ('cam_only', 'separate', 'combined')
         
     async def load_user_mqtt_settings(self, user_id):
         """Load MQTT settings for a specific user"""
@@ -435,6 +450,7 @@ class HardwareMonitor:
         """Process a single Taubenschiesser device"""
         try:
             device_id = device.get('_id') or device.get('deviceId')
+            layout = self.device_layout(device)
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
@@ -442,7 +458,15 @@ class HardwareMonitor:
             logger.info(f"🔍 Processing device {device_ip} (ID: {device_id})")
             # Log only essential device info
             actions = device.get('actions', {})
-            logger.info(f"📋 Device: {device.get('name', 'Unknown')} | IP: {device_ip} | Status: {device.get('status', 'unknown')} | Mode: {actions.get('mode', 'unknown')}")
+            logger.info(
+                f"📋 Device: {device.get('name', 'Unknown')} | IP: {device_ip} | "
+                f"Status: {device.get('status', 'unknown')} | Mode: {actions.get('mode', 'unknown')} | "
+                f"Layout: {layout}"
+            )
+
+            if not self.layout_has_motion(device):
+                logger.info(f"📷 Layout cam_only — skip motion/shoot loop for device {device_id}")
+                return
             
             if not device_ip:
                 logger.warning("❌ No device IP found")
@@ -1092,6 +1116,13 @@ class HardwareMonitor:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None
+
+            if not self.layout_has_cameras(device):
+                logger.info(f"🎯 Layout motion_only — skip image analysis for {device_ip}")
+                if from_completed_move:
+                    await self._dyn_wait_after_move_analysis(device)
+                    return True
+                return False
             
             # Send event: Starting analysis
             await self.send_monitor_event(device, 'analysis_started', {
@@ -1703,9 +1734,314 @@ class HardwareMonitor:
         except Exception as e:
             logger.error(f"Error applying zoom to frame: {e}")
             return frame
-    
+
+    def _esp_parallel_detect_targets(self, device: Dict) -> List[Dict]:
+        """ESP-P4 cameras with parallelDetect=true (shadow on-device inference)."""
+        targets: List[Dict] = []
+
+        def _maybe_add(cam: Optional[Dict], cfg: Optional[Dict], fallback_name: str = 'ESP-P4'):
+            if not isinstance(cfg, dict) or not cfg.get('parallelDetect'):
+                return
+            ip = (cfg.get('ip') or '').strip()
+            if not ip:
+                return
+            port = int(cfg.get('port') or 8080)
+            endpoint = (cfg.get('detectEndpoint') or '/detect').strip() or '/detect'
+            if not endpoint.startswith('/'):
+                endpoint = '/' + endpoint
+            targets.append({
+                'camera_id': (cam or {}).get('id'),
+                'name': (cam or {}).get('name') or fallback_name,
+                'url': f'http://{ip}:{port}{endpoint}',
+            })
+
+        cameras = device.get('cameras') if isinstance(device.get('cameras'), list) else []
+        for cam in cameras:
+            if not isinstance(cam, dict):
+                continue
+            if cam.get('type') != 'esp32-p4' or cam.get('enabled') is False:
+                continue
+            _maybe_add(cam, cam.get('esp32P4') or {}, cam.get('name') or 'ESP-P4')
+
+        if not targets:
+            legacy = device.get('camera') if isinstance(device.get('camera'), dict) else {}
+            if legacy.get('type') == 'esp32-p4':
+                _maybe_add(legacy, legacy.get('esp32P4') or {}, 'ESP-P4')
+
+        return targets
+
+    async def _post_esp_parallel_detect(self, target: Dict, jpeg_bytes: bytes) -> Dict:
+        """POST JPEG to ESP-P4 /detect (alongside cloud). Results stored; P4-only can drive shoot."""
+        url = target.get('url')
+        started = time.monotonic()
+        out = {
+            'camera_id': target.get('camera_id'),
+            'name': target.get('name'),
+            'url': url,
+            'ok': False,
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=8)
+            form = aiohttp.FormData()
+            form.add_field('image', jpeg_bytes, filename='frame.jpg', content_type='image/jpeg')
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, data=form) as resp:
+                    body_text = await resp.text()
+                    out['status'] = resp.status
+                    out['latency_ms'] = int((time.monotonic() - started) * 1000)
+                    if resp.status != 200:
+                        out['error'] = body_text[:200]
+                        logger.warning(
+                            f"ESP parallel detect HTTP {resp.status} @ {url}: {out['error']}"
+                        )
+                        return out
+                    try:
+                        data = json.loads(body_text)
+                    except Exception:
+                        out['error'] = 'invalid JSON'
+                        return out
+                    birds = data.get('birds') if isinstance(data, dict) else None
+                    count = data.get('count') if isinstance(data, dict) else None
+                    if count is None and isinstance(birds, list):
+                        count = len(birds)
+                    out['ok'] = bool(isinstance(data, dict) and data.get('ok', True))
+                    out['count'] = int(count or 0)
+                    out['birds'] = birds if isinstance(birds, list) else []
+                    out['backend'] = data.get('backend') if isinstance(data, dict) else None
+                    out['model'] = data.get('model') if isinstance(data, dict) else None
+                    out['total_ms'] = data.get('total_ms') if isinstance(data, dict) else None
+                    logger.info(
+                        f"ESP parallel detect @ {url}: count={out['count']} "
+                        f"latency={out['latency_ms']}ms model={out.get('model')}"
+                    )
+                    return out
+        except Exception as e:
+            out['latency_ms'] = int((time.monotonic() - started) * 1000)
+            out['error'] = str(e)
+            logger.warning(f"ESP parallel detect failed @ {url}: {e}")
+            return out
+
+    async def _run_esp_parallel_detects(self, device: Dict, jpeg_bytes: bytes) -> List[Dict]:
+        targets = self._esp_parallel_detect_targets(device)
+        if not targets:
+            return []
+        # Cap JPEG for P4 recv limit (400KB)
+        payload = jpeg_bytes
+        if len(payload) > 380_000:
+            logger.warning(
+                f"ESP parallel detect JPEG {len(payload)} bytes > 380KB — skipping resize path; "
+                "P4 may reject"
+            )
+        results = await asyncio.gather(
+            *[self._post_esp_parallel_detect(t, payload) for t in targets],
+            return_exceptions=True,
+        )
+        out: List[Dict] = []
+        for t, r in zip(targets, results):
+            if isinstance(r, Exception):
+                out.append({
+                    'camera_id': t.get('camera_id'),
+                    'name': t.get('name'),
+                    'url': t.get('url'),
+                    'ok': False,
+                    'error': str(r),
+                })
+            else:
+                out.append(r)
+        return out
+
+    async def _await_esp_parallel(
+        self,
+        task: Optional[asyncio.Task],
+        timeout_s: float = 3.0,
+        abandon_on_timeout: bool = True,
+    ) -> Optional[List[Dict]]:
+        if task is None:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.info(f"ESP parallel detect still running after {timeout_s:.0f}s")
+            if abandon_on_timeout:
+                async def _finish_later():
+                    try:
+                        results = await task
+                        logger.info(f"ESP parallel detect (late): {results}")
+                    except Exception as e:
+                        logger.warning(f"ESP parallel detect (late) failed: {e}")
+
+                asyncio.create_task(_finish_later())
+            return [{'ok': False, 'error': 'timeout', 'pending': True}]
+        except Exception as e:
+            logger.warning(f"ESP parallel detect await failed: {e}")
+            return [{'ok': False, 'error': str(e)}]
+
+    @staticmethod
+    def _esp_parallel_is_pending(esp_parallel: Optional[List[Dict]]) -> bool:
+        if not isinstance(esp_parallel, list) or not esp_parallel:
+            return False
+        return any(isinstance(e, dict) and e.get('pending') for e in esp_parallel)
+
+    def _esp_parallel_hits_only(self, esp_parallel: Optional[List[Dict]]) -> Optional[List[Dict]]:
+        """Keep only ESP results that actually found birds (for storage alongside cloud)."""
+        if not isinstance(esp_parallel, list):
+            return None
+        hits = []
+        for ep in esp_parallel:
+            if not isinstance(ep, dict) or ep.get('pending'):
+                continue
+            try:
+                count = int(ep.get('count') or 0)
+            except (TypeError, ValueError):
+                count = len(ep.get('birds') or []) if isinstance(ep.get('birds'), list) else 0
+            if count > 0:
+                hits.append(ep)
+        return hits or None
+
+    async def _ensure_esp_parallel_for_cloud_hit(
+        self,
+        task: Optional[asyncio.Task],
+        esp_parallel: Optional[List[Dict]],
+        extra_wait_s: float = 10.0,
+    ) -> Optional[List[Dict]]:
+        """Cloud hit: wait for P4 if still pending, then return only P4 hits to store."""
+        if task is None:
+            return self._esp_parallel_hits_only(esp_parallel)
+        if self._esp_parallel_is_pending(esp_parallel) or esp_parallel is None:
+            logger.info(
+                f"Cloud hit — waiting up to {extra_wait_s:.0f}s more for ESP-P4 result before save"
+            )
+            esp_parallel = await self._await_esp_parallel(
+                task, timeout_s=extra_wait_s, abandon_on_timeout=True
+            )
+        hits = self._esp_parallel_hits_only(esp_parallel)
+        if hits:
+            logger.info(f"Cloud + P4 both hit — storing {len(hits)} ESP result(s) on detection")
+        else:
+            logger.info("Cloud hit — P4 had no birds (or timeout); esp_parallel not stored")
+        return hits
+
+    @staticmethod
+    def _esp_bird_box_to_xyxy(bird: Dict, img_w: int, img_h: int) -> Optional[Tuple[float, float, float, float]]:
+        """ESP /detect bird → pixel xyxy in the JPEG that was posted (usually model-sized)."""
+        try:
+            x1 = float(bird.get('x1'))
+            y1 = float(bird.get('y1'))
+            x2 = float(bird.get('x2'))
+            y2 = float(bird.get('y2'))
+        except (TypeError, ValueError):
+            return None
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        looks_pixel = x2 > 1.5 or y2 > 1.5 or x1 > 1.5 or y1 > 1.5
+        if not looks_pixel:
+            if img_w <= 0 or img_h <= 0:
+                return None
+            x1 *= img_w
+            x2 *= img_w
+            y1 *= img_h
+            y2 *= img_h
+        return x1, y1, x2, y2
+
+    def _esp_birds_to_detections(
+        self,
+        esp_result: Dict,
+        src_w: int,
+        src_h: int,
+        dst_w: int,
+        dst_h: int,
+        camera_source: str = 'unknown',
+    ) -> List[Dict]:
+        """Map ESP bird boxes onto the saved zoomed frame (same space as cloud detections)."""
+        birds = esp_result.get('birds') if isinstance(esp_result, dict) else None
+        if not isinstance(birds, list):
+            return []
+        scale_x = (dst_w / float(src_w)) if src_w > 0 else 1.0
+        scale_y = (dst_h / float(src_h)) if src_h > 0 else 1.0
+        out: List[Dict] = []
+        for bird in birds:
+            if not isinstance(bird, dict):
+                continue
+            xyxy = self._esp_bird_box_to_xyxy(bird, src_w, src_h)
+            if not xyxy:
+                continue
+            x1, y1, x2, y2 = xyxy
+            x = x1 * scale_x
+            y = y1 * scale_y
+            w = max(0.0, (x2 - x1) * scale_x)
+            h = max(0.0, (y2 - y1) * scale_y)
+            try:
+                conf = float(bird.get('score', bird.get('confidence', 0)) or 0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            out.append({
+                'class': bird.get('class') or 'bird',
+                'confidence': conf,
+                'bbox': {'x': x, 'y': y, 'width': w, 'height': h},
+                'position': {
+                    'center_x': x + w / 2.0,
+                    'center_y': y + h / 2.0,
+                    'width': w,
+                    'height': h,
+                },
+                'camera_source': camera_source,
+                'source_model': 'esp',
+            })
+        return out
+
+    @staticmethod
+    def _best_esp_parallel_hit(esp_parallel: Optional[List[Dict]]) -> Optional[Dict]:
+        """Pick the ESP result with the most birds (ok + count > 0)."""
+        if not isinstance(esp_parallel, list):
+            return None
+        best = None
+        best_count = 0
+        for ep in esp_parallel:
+            if not isinstance(ep, dict) or ep.get('pending'):
+                continue
+            if ep.get('ok') is False and not ep.get('birds'):
+                continue
+            try:
+                count = int(ep.get('count') or 0)
+            except (TypeError, ValueError):
+                count = len(ep.get('birds') or []) if isinstance(ep.get('birds'), list) else 0
+            if count > best_count:
+                best = ep
+                best_count = count
+        return best if best_count > 0 else None
+
+    def _esp_result_as_cv(
+        self,
+        esp_result: Dict,
+        src_w: int,
+        src_h: int,
+        dst_w: int,
+        dst_h: int,
+        camera_source: str,
+    ) -> Dict:
+        dets = self._esp_birds_to_detections(esp_result, src_w, src_h, dst_w, dst_h, camera_source)
+        confs = [float(d.get('confidence') or 0) for d in dets]
+        latency = esp_result.get('total_ms')
+        if latency is None:
+            latency = esp_result.get('latency_ms')
+        try:
+            processing_time = float(latency or 0)
+        except (TypeError, ValueError):
+            processing_time = 0.0
+        return {
+            'detections': dets,
+            'bird_count': len(dets),
+            'birds_found': len(dets) > 0,
+            'confidence_level': max(confs) if confs else 0.0,
+            'processing_time': processing_time,
+            'service': f"esp:{esp_result.get('backend') or 'espdet'}",
+            'model': esp_result.get('model'),
+        }
+
     async def analyze_frame_for_birds(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, camera_source: str = 'unknown'):
-        """Analyze frame for birds and trigger shoot if found"""
+        """Analyze frame for birds and trigger shoot if found (cloud master, ESP-P4 fallback)."""
         try:
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
@@ -1720,6 +2056,18 @@ class HardwareMonitor:
                 f"🎯 Model input ({camera_source}): saved {saved_w}x{saved_h} → model {model_w}x{model_h}"
             )
             _, buffer = cv2.imencode('.jpg', model_frame)
+            jpeg_bytes = buffer.tobytes()
+
+            esp_targets = self._esp_parallel_detect_targets(device)
+            esp_task = None
+            if esp_targets:
+                logger.info(
+                    f"ESP parallel detect: {len(esp_targets)} target(s) "
+                    f"alongside cloud YOLO ({camera_source})"
+                )
+                esp_task = asyncio.create_task(
+                    self._run_esp_parallel_detects(device, jpeg_bytes)
+                )
             
             cv_request_url = f"{self.cv_service_url}/detect_birds_optimized"
             logger.info(f"🔍 Sending frame to CV service (device: {device_ip}, camera: {camera_source}) URL: {cv_request_url}")
@@ -1727,7 +2075,7 @@ class HardwareMonitor:
             # Send to CV service with timeout
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()
-                data.add_field('file', buffer.tobytes(), filename='camera.jpg', content_type='image/jpeg')
+                data.add_field('file', jpeg_bytes, filename='camera.jpg', content_type='image/jpeg')
                 
                 timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout for CV analysis
                 async with session.post(
@@ -1737,6 +2085,10 @@ class HardwareMonitor:
                 ) as response:
                     if response.status == 200:
                         result = await response.json()
+                        # Don't abandon yet — if cloud hits we may wait longer for P4 before save.
+                        esp_parallel = await self._await_esp_parallel(
+                            esp_task, timeout_s=3.0, abandon_on_timeout=False
+                        )
                         
                         # Log CV service response details
                         bird_count = result.get('bird_count', 0)
@@ -1807,19 +2159,121 @@ class HardwareMonitor:
                                 image_info, zoom_factor, current_rotation, current_tilt, camera_source,
                             )
 
-                        birds_found_flag = result.get('birds_found', False)
-                        if birds_found_flag and bird_count > 0:
-                            analysis_msg = (
-                                f'Analyse: {bird_count} Vögel erkannt ({camera_source}, '
-                                f'{processing_time_sec:.2f}s)'
+                        cloud_birds_flag = bool(result.get('birds_found', False)) and (
+                            bird_count > 0 or has_bird_class
+                        )
+                        # Cloud miss + ESP still pending → wait longer so P4-only can still save/shoot.
+                        if (
+                            not cloud_birds_flag
+                            and esp_task is not None
+                            and self._esp_parallel_is_pending(esp_parallel)
+                        ):
+                            logger.info("Cloud empty — waiting longer for ESP-P4 before P4-only decision")
+                            esp_parallel = await self._await_esp_parallel(
+                                esp_task, timeout_s=10.0, abandon_on_timeout=True
                             )
-                        elif birds_found_flag:
+
+                        esp_best = self._best_esp_parallel_hit(esp_parallel)
+                        esp_count = int(esp_best.get('count') or 0) if esp_best else 0
+
+                        # Cloud is master; P4-only still counts as a hit for save/shoot.
+                        detection_authority = None
+                        save_result = None
+                        if cloud_birds_flag:
+                            detection_authority = 'cloud'
+                            save_result = result
+                        elif esp_best and esp_count > 0:
+                            detection_authority = 'esp'
+                            save_result = self._esp_result_as_cv(
+                                esp_best, sent_w, sent_h, saved_w, saved_h, camera_source
+                            )
+                            # Aim angles for shoot from P4 boxes
+                            esp_dets = save_result.get('detections') or []
+                            esp_target = max(
+                                (d for d in esp_dets if d.get('class') == 'bird'),
+                                key=lambda d: d.get('confidence', 0),
+                                default=None,
+                            )
+                            if esp_target is not None:
+                                esp_target['camera_source'] = camera_source
+                                image_info = {
+                                    'zoomed_size': {
+                                        'width': zoomed_frame.shape[1],
+                                        'height': zoomed_frame.shape[0],
+                                    },
+                                    'original_size': {
+                                        'width': original_frame.shape[1],
+                                        'height': original_frame.shape[0],
+                                    },
+                                }
+                                self.last_image_info = image_info
+                                current_rotation, current_tilt = 0.0, 0.0
+                                if device_ip and device_ip in self.device_positions:
+                                    pos = self.device_positions[device_ip]
+                                    current_rotation = float(pos.get('rot') or 0)
+                                    current_tilt = float(pos.get('tilt') or 0)
+                                else:
+                                    actions = device.get('actions', {})
+                                    if actions.get('mode') == 'route':
+                                        route_coordinates = actions.get('route', {}).get('coordinates', [])
+                                        route_index = self.get_arrived_route_index(
+                                            device_ip, len(route_coordinates)
+                                        ) if device_ip else 0
+                                        if route_index < len(route_coordinates):
+                                            current_rotation = float(
+                                                route_coordinates[route_index].get('rotation') or 0
+                                            )
+                                            current_tilt = float(
+                                                route_coordinates[route_index].get('tilt') or 0
+                                            )
+                                            current_rotation, current_tilt = self.apply_position_inversion(
+                                                device, int(current_rotation), int(current_tilt)
+                                            )
+                                zoom_factor = 1.0
+                                actions = device.get('actions', {})
+                                if actions.get('mode') == 'route' and device_ip:
+                                    route_coordinates = actions.get('route', {}).get('coordinates', [])
+                                    route_index = self.get_arrived_route_index(
+                                        device_ip, len(route_coordinates)
+                                    )
+                                    if route_index < len(route_coordinates):
+                                        zoom_factor = float(
+                                            route_coordinates[route_index].get('zoom') or 1.0
+                                        )
+                                self._enrich_detections_esp_angles(
+                                    device,
+                                    esp_dets,
+                                    esp_target,
+                                    image_info,
+                                    zoom_factor,
+                                    current_rotation,
+                                    current_tilt,
+                                    camera_source,
+                                )
+                                target_bird_for_event = esp_target
+
+                        birds_found_flag = detection_authority is not None
+                        act_bird_count = (
+                            (save_result or {}).get('bird_count', bird_count)
+                            if birds_found_flag
+                            else bird_count
+                        )
+                        if detection_authority == 'cloud':
                             analysis_msg = (
-                                f'Analyse: Vögel erkannt ({camera_source}, {processing_time_sec:.2f}s)'
+                                f'Analyse: {act_bird_count} Vögel (Cloud-Master'
+                                + (f', P4={esp_count}' if esp_parallel is not None else '')
+                                + f', {camera_source}, {processing_time_sec:.2f}s)'
+                            )
+                        elif detection_authority == 'esp':
+                            analysis_msg = (
+                                f'Analyse: {act_bird_count} Vögel (nur P4, Cloud leer, '
+                                f'{camera_source})'
                             )
                         else:
                             analysis_msg = (
-                                f'Analyse: 0 Vögel ({camera_source}, {processing_time_sec:.2f}s)'
+                                f'Analyse: 0 Vögel ({camera_source}, {processing_time_sec:.2f}s'
+                                + (f', P4={esp_count}' if esp_parallel is not None else '')
+                                + ')'
                             )
 
                         # IMPORTANT: Update dynamic wait threshold BEFORE emitting cv_analysis_complete.
@@ -1851,20 +2305,38 @@ class HardwareMonitor:
                         # Send CV analysis result event (detections include esp_rot, esp_tilt, is_target_bird)
                         # Same anchor as following device_waiting: start of post-analysis wait (not last move).
                         wait_started_at = self._iso_utc_z(None)
-                        await self.send_monitor_event(device, 'cv_analysis_complete', {
-                            'bird_count': bird_count,
-                            'detections': detections,
+                        event_detections = (
+                            (save_result or {}).get('detections', detections)
+                            if detection_authority == 'esp'
+                            else detections
+                        )
+                        event_payload = {
+                            'bird_count': act_bird_count if birds_found_flag else bird_count,
+                            'detections': event_detections,
                             'target_bird': target_bird_for_event,
                             'processing_time': processing_time_ms,
                             'processing_time_sec': processing_time_sec,
                             'birds_found': birds_found_flag,
-                            'confidence_level': result.get('confidence_level', 0),
-                            'total_objects': len(detections),
+                            'detection_authority': detection_authority,
+                            'confidence_level': (save_result or result).get('confidence_level', 0),
+                            'total_objects': len(event_detections or []),
                             'objects_by_class': all_objects,
                             'camera': camera_source,
                             'message': analysis_msg,
                             'wait_started_at': wait_started_at,
-                        })
+                        }
+                        if esp_parallel is not None:
+                            event_payload['esp_parallel'] = esp_parallel
+                            for ep in esp_parallel:
+                                if not isinstance(ep, dict):
+                                    continue
+                                logger.info(
+                                    f"ESP∥ cloud={bird_count} birds vs "
+                                    f"{ep.get('name')}: count={ep.get('count')} "
+                                    f"ok={ep.get('ok')} err={ep.get('error')} "
+                                    f"authority={detection_authority or 'none'}"
+                                )
+                        await self.send_monitor_event(device, 'cv_analysis_complete', event_payload)
                         
                         # Log detections only if objects found
                         if detections:
@@ -1876,26 +2348,50 @@ class HardwareMonitor:
                         else:
                             logger.info(f"🤖 CV Analysis ({camera_source}): No objects detected (processing time: {processing_time_sec:.2f}s)")
                         
-                        if birds_found_flag:
-                            confidence = result.get('confidence_level', 0)
+                        if birds_found_flag and save_result is not None:
+                            confidence = save_result.get('confidence_level', 0)
                             monitor_armed = device.get('monitorArmed', False)
                             action_msg = "save+shoot" if monitor_armed else "save only (monitor not armed)"
-                            logger.info(f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): {action_msg} because birds_found=True, detections classes={detection_classes}, bird_count={bird_count}, max confidence: {confidence:.2f}")
+                            logger.info(
+                                f"🦅 BIRDS DETECTED on device {device_ip} ({camera_source}): "
+                                f"{action_msg} authority={detection_authority}, "
+                                f"cloud={bird_count}, p4={esp_count}, confidence={confidence:.2f}"
+                            )
                             
                             # Send bird detection event
                             await self.send_monitor_event(device, 'birds_detected', {
-                                'bird_count': bird_count,
+                                'bird_count': act_bird_count,
                                 'confidence': confidence,
-                                'message': f'{bird_count} birds detected with confidence {confidence:.2f} ({camera_source})',
+                                'detection_authority': detection_authority,
+                                'message': (
+                                    f'{act_bird_count} birds via {detection_authority} '
+                                    f'(cloud={bird_count}, p4={esp_count}) ({camera_source})'
+                                ),
                                 'camera': camera_source,
                                 'wait_started_at': wait_started_at,
                             })
                             # Warte-Status sofort — vor DB/Schuss (kann viele Sekunden dauern)
                             await self._emit_device_waiting_snapshot(device)
+
+                            # Cloud master: still wait for P4; store esp_parallel only if P4 also hit.
+                            esp_to_store = esp_parallel
+                            if detection_authority == 'cloud':
+                                esp_to_store = await self._ensure_esp_parallel_for_cloud_hit(
+                                    esp_task, esp_parallel, extra_wait_s=10.0
+                                )
+                            elif detection_authority == 'esp':
+                                esp_to_store = esp_parallel
                             
                             # Save detection to database (with shotFired=monitor_armed)
                             target_bird, detection_id = await self.save_detection_to_db(
-                                device, original_frame, zoomed_frame, result, camera_source, shot_fired=monitor_armed
+                                device,
+                                original_frame,
+                                zoomed_frame,
+                                save_result,
+                                camera_source,
+                                shot_fired=monitor_armed,
+                                detection_authority=detection_authority,
+                                esp_parallel=esp_to_store,
                             )
 
                             taub_cfg = device.get('taubenschiesser', {}) if isinstance(device.get('taubenschiesser'), dict) else {}
@@ -1922,13 +2418,47 @@ class HardwareMonitor:
                             await self._emit_device_waiting_snapshot(device)
                     else:
                         logger.error(f"❌ CV analysis failed for device {device_ip} ({camera_source}): HTTP {response.status}")
-                        await self.send_monitor_event(device, 'error', {
-                            'message': f'CV analysis failed: HTTP {response.status}',
-                            'camera': camera_source
-                        })
+                        esp_parallel = await self._await_esp_parallel(esp_task, timeout_s=3.0)
+                        esp_best = self._best_esp_parallel_hit(esp_parallel)
+                        if esp_best:
+                            src_h, src_w = model_frame.shape[:2]
+                            save_result = self._esp_result_as_cv(
+                                esp_best, src_w, src_h, saved_w, saved_h, camera_source
+                            )
+                            monitor_armed = device.get('monitorArmed', False)
+                            logger.warning(
+                                f"🦅 Cloud CV failed HTTP {response.status} — "
+                                f"falling back to P4 ({esp_best.get('count')} birds)"
+                            )
+                            if device_ip:
+                                self.device_dynamic_wait_threshold[device_ip] = 0
+                            await self._emit_device_waiting_snapshot(device)
+                            target_bird, detection_id = await self.save_detection_to_db(
+                                device,
+                                original_frame,
+                                zoomed_frame,
+                                save_result,
+                                camera_source,
+                                shot_fired=monitor_armed,
+                                detection_authority='esp',
+                                esp_parallel=esp_parallel,
+                            )
+                            if monitor_armed:
+                                await self.trigger_shoot(
+                                    device, target_bird=target_bird, detection_id=detection_id
+                                )
+                        else:
+                            await self.send_monitor_event(device, 'error', {
+                                'message': f'CV analysis failed: HTTP {response.status}',
+                                'camera': camera_source
+                            })
                         
         except Exception as e:
             logger.error(f"Error analyzing frame for birds ({camera_source}): {e}")
+            try:
+                await self._await_esp_parallel(locals().get('esp_task'), timeout_s=1.0)
+            except Exception:
+                pass
             await self.send_monitor_event(device, 'error', {
                 'message': f'CV analysis error: {str(e)}',
                 'camera': camera_source
@@ -2120,7 +2650,17 @@ class HardwareMonitor:
             logger.error(f"Error saving combined detection: {e}")
             return None, None
     
-    async def save_detection_to_db(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, cv_result: Dict, camera_source: str = 'unknown', shot_fired: bool = False):
+    async def save_detection_to_db(
+        self,
+        device: Dict,
+        original_frame: np.ndarray,
+        zoomed_frame: np.ndarray,
+        cv_result: Dict,
+        camera_source: str = 'unknown',
+        shot_fired: bool = False,
+        detection_authority: str = 'cloud',
+        esp_parallel: Optional[List[Dict]] = None,
+    ):
         """Save detection to database via API. Returns (target_bird, detection_id)."""
         try:
             device_id = device.get('_id') or device.get('deviceId')
@@ -2241,6 +2781,8 @@ class HardwareMonitor:
                 "shotFired": shot_fired,  # Whether monitor was armed and shot was fired for this detection
                 "shootActive": shoot_active,
                 "scanPhotos": scan_photos,
+                "detection_authority": detection_authority if detection_authority in ('cloud', 'esp') else 'cloud',
+                "esp_parallel": esp_parallel,
                 "timestamp": datetime.now().isoformat()
             }
 
@@ -2429,6 +2971,10 @@ class HardwareMonitor:
         If postShotFovCalibrate is enabled, run image-match FOV sample onto Detection after shoot.
         """
         try:
+            if not self.layout_has_motion(device):
+                logger.info("📷 Layout cam_only — skip shoot")
+                return
+
             # Get IP from taubenschiesser.ip (nested structure)
             taubenschiesser_config = device.get('taubenschiesser', {})
             device_ip = taubenschiesser_config.get('ip') if isinstance(taubenschiesser_config, dict) else None

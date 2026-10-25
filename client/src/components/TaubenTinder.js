@@ -28,6 +28,26 @@ import {
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+import { detectionSourceLabels } from '../utils/detectionSources';
+
+function DetectionSourceChips({ detection }) {
+  const labels = detectionSourceLabels(detection);
+  if (!labels.length) return null;
+  return (
+    <>
+      {labels.map((item) => (
+        <Tooltip key={item.key} title={item.title}>
+          <Chip
+            size="small"
+            label={item.label}
+            color={item.key === 'master' ? 'primary' : 'secondary'}
+            variant={item.key === 'master' ? 'filled' : 'outlined'}
+          />
+        </Tooltip>
+      ))}
+    </>
+  );
+}
 
 function formatTimeDiff(seconds, direction) {
   if (seconds < 60) {
@@ -785,6 +805,7 @@ const TaubenTinder = () => {
                 variant="outlined"
                 color="primary"
               />
+              <DetectionSourceChips detection={currentDetection} />
               <ShootActiveIcons detection={currentDetection} />
               {(nearestAtPosition.before || nearestAtPosition.after) && (
                 <>

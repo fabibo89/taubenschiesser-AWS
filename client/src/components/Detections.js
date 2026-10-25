@@ -25,7 +25,10 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  Tooltip
+  Tooltip,
+  Tabs,
+  Tab,
+  Paper
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -48,6 +51,30 @@ import {
 import { DataGrid } from '@mui/x-data-grid';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+import { detectionSourceLabels } from '../utils/detectionSources';
+
+function DetectionSourceChips({ detection, size = 'small' }) {
+  const labels = detectionSourceLabels(detection);
+  if (!labels.length) {
+    return (
+      <Typography variant="caption" color="text.secondary">—</Typography>
+    );
+  }
+  return (
+    <Box display="inline-flex" flexWrap="wrap" gap={0.5} alignItems="center">
+      {labels.map((item) => (
+        <Tooltip key={item.key} title={item.title}>
+          <Chip
+            size={size}
+            label={item.label}
+            color={item.key === 'master' ? 'primary' : 'secondary'}
+            variant={item.key === 'master' ? 'filled' : 'outlined'}
+          />
+        </Tooltip>
+      ))}
+    </Box>
+  );
+}
 
 function formatDeltaSeconds(sec) {
   const n = Math.max(0, Math.round(Number(sec) || 0));
@@ -277,7 +304,13 @@ function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
     if (detectionId && imageUrl === undefined) onLoadRequest(detectionId);
   }, [detectionId, imageUrl, onLoadRequest]);
 
-  if (typeof imageUrl === 'string' && imageUrl) {
+  if (imageUrl === 'loading' || imageUrl === undefined) {
+    return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
+  }
+  if (imageUrl === null || imageUrl === '') {
+    return <Typography variant="caption" color="text.secondary">Kein Bild</Typography>;
+  }
+  if (typeof imageUrl === 'string') {
     return (
       <Box
         component="img"
@@ -296,13 +329,7 @@ function ThumbnailCell({ detectionId, imageUrl, onLoadRequest, onOpenDialog }) {
       />
     );
   }
-  if (imageUrl === 'loading') {
-    return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
-  }
-  if (imageUrl === null) {
-    return <Typography variant="caption" color="text.secondary">Kein Bild</Typography>;
-  }
-  return <Typography variant="caption" color="text.secondary">Lädt…</Typography>;
+  return <Typography variant="caption" color="text.secondary">Kein Bild</Typography>;
 }
 
 function CompanionPhotoCard({ photo, titlePrefix, cardKey }) {
@@ -344,6 +371,467 @@ function CompanionPhotoCard({ photo, titlePrefix, cardKey }) {
   );
 }
 
+const MODEL_RUN_BOX_COLORS = ['#2196f3', '#4caf50', '#ff9800', '#9c27b0', '#00bcd4', '#e91e63'];
+
+/** Master/Slave scan + pre-shoot companions (mirrors Original as Master·Scan when needed). */
+function buildCompanionPhotoGroups(detection) {
+  const pre = Array.isArray(detection?.preShootPhotos) ? detection.preShootPhotos : [];
+  const scan = Array.isArray(detection?.scanPhotos) ? detection.scanPhotos : [];
+  const masterScanStored = scan.filter((p) => p?.role === 'master' && p?.image?.url);
+  const masterPre = pre.filter((p) => p?.role === 'master' && p?.image?.url);
+  const slavePhotos = [
+    ...scan.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' })),
+    ...pre.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' }))
+  ];
+  const masterPhotos = [
+    ...masterScanStored.map((p) => ({ ...p, _kind: 'scan' })),
+    ...masterPre.map((p) => ({ ...p, _kind: 'pre' }))
+  ];
+  const hasCompanions = slavePhotos.length > 0 || masterPre.length > 0 || masterScanStored.length > 0;
+  if (hasCompanions && !masterScanStored.length && detection?.image?.url) {
+    masterPhotos.unshift({
+      _kind: 'scan',
+      role: 'master',
+      cameraName: detection.camera_source || 'Master',
+      cameraType: detection.camera_source || 'master',
+      image: { url: detection.image.url },
+      pose: detection.camera_position
+        ? {
+            rotation: detection.camera_position.rotation,
+            tilt: detection.camera_position.tilt
+          }
+        : undefined
+    });
+  }
+  return { masterPhotos, slavePhotos };
+}
+
+/** All model runs for the Modelle tab (live + replay). */
+function getModelRunsForTab(detection) {
+  return (Array.isArray(detection?.model_runs) ? detection.model_runs : []).filter(Boolean);
+}
+
+const OVERVIEW_BOX = {
+  confirmed: '#00e676',
+  rejected: '#ff1744',
+  unknown: '#9e9e9e'
+};
+
+/** Border style for Übersicht overlays: Main thicker; color by bird review / classification. */
+function getOverviewDetectionBoxStyle(doc, det) {
+  const mainBirdId =
+    doc?.birds?.find((b) => b?.role === 'main')?.bird_id
+    || doc?.target_bird?.bird_id
+    || null;
+  const isMain = Boolean(
+    det?.is_target_bird
+    || (mainBirdId && det?.bird_id && det.bird_id === mainBirdId)
+  );
+
+  let reviewStatus = null;
+  if (det?.bird_id && Array.isArray(doc?.birds)) {
+    const bird = doc.birds.find((b) => b && b.bird_id === det.bird_id);
+    reviewStatus = bird?.review?.status || null;
+  }
+  if (!reviewStatus && isMain) {
+    const cs = doc?.classification_status;
+    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon') reviewStatus = cs;
+  }
+
+  let color = OVERVIEW_BOX.unknown;
+  if (reviewStatus === 'confirmed_pigeon') color = OVERVIEW_BOX.confirmed;
+  else if (reviewStatus === 'no_pigeon') color = OVERVIEW_BOX.rejected;
+
+  return {
+    border: `${isMain ? 4 : 2}px solid ${color}`,
+    pointerEvents: 'none',
+    boxSizing: 'border-box'
+  };
+}
+
+function birdReviewStatus(bird, doc) {
+  const fromBird = bird?.review?.status;
+  if (fromBird === 'confirmed_pigeon' || fromBird === 'no_pigeon') return fromBird;
+  if (bird?.role === 'main') {
+    const cs = doc?.classification_status;
+    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon') return cs;
+  }
+  return null;
+}
+
+function birdBoxForOverlay(bird, detection) {
+  if (bird?.bbox && bird.bbox.x != null) return bird.bbox;
+  const det = (detection?.detections || []).find((d) => d && d.bird_id && d.bird_id === bird?.bird_id);
+  if (det?.bbox && det.bbox.x != null) return det.bbox;
+  return null;
+}
+
+function birdOverlayPercents(bbox, detection) {
+  if (!bbox || !detection?.image_info?.original_size) return null;
+  const imgWidth = detection.image_info.original_size.width || 1;
+  const imgHeight = detection.image_info.original_size.height || 1;
+  let adjX = bbox.x;
+  let adjY = bbox.y;
+  if (detection.zoomed_image?.url && detection.image_info?.zoomed_size) {
+    const zoomWidth = detection.image_info.zoomed_size.width || imgWidth;
+    const zoomHeight = detection.image_info.zoomed_size.height || imgHeight;
+    adjX = (imgWidth - zoomWidth) / 2 + bbox.x;
+    adjY = (imgHeight - zoomHeight) / 2 + bbox.y;
+  }
+  return {
+    left: (adjX / imgWidth) * 100,
+    top: (adjY / imgHeight) * 100,
+    width: ((bbox.width || 0) / imgWidth) * 100,
+    height: ((bbox.height || 0) / imgHeight) * 100
+  };
+}
+
+function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId }) {
+  const birds = Array.isArray(detection?.birds) ? detection.birds.filter(Boolean) : [];
+  const sorted = [...birds].sort((a, b) => {
+    if (a.role === 'main' && b.role !== 'main') return -1;
+    if (b.role === 'main' && a.role !== 'main') return 1;
+    return String(a.bird_id || '').localeCompare(String(b.bird_id || ''));
+  });
+
+  const setStatus = async (birdId, status) => {
+    if (!detection?._id || !birdId) return;
+    setSavingBirdId(birdId);
+    try {
+      const response = await axios.patch(`/api/cv/detections/${detection._id}/bird-review`, {
+        birdId,
+        status
+      });
+      if (response.data?.detection) onUpdated(response.data.detection);
+      toast.success(status === 'confirmed_pigeon' ? 'Als Taube gespeichert' : status === 'no_pigeon' ? 'Als keine Taube gespeichert' : 'Review zurückgesetzt');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Speichern fehlgeschlagen');
+    } finally {
+      setSavingBirdId(null);
+    }
+  };
+
+  if (!sorted.length) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+        Noch keine Vogel-Einträge. Nach dem ersten Speichern (oder Tinder) erscheinen Main/Side hier.
+      </Typography>
+    );
+  }
+
+  const imgUrl = detection?.image?.url;
+  const hasSize = Boolean(detection?.image_info?.original_size);
+
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Nummern auf dem Foto entsprechen der Tabelle. Abgelehnte Nebentauben bleiben in der Liste —
+        sie fallen nicht aus den Vögeln raus.
+      </Typography>
+
+      {imgUrl && (
+        <Box
+          sx={{
+            position: 'relative',
+            display: 'inline-block',
+            maxWidth: '100%',
+            mb: 2.5,
+            border: '1px solid #e0e0e0',
+            borderRadius: 1,
+            overflow: 'hidden',
+            backgroundColor: '#000',
+            lineHeight: 0
+          }}
+        >
+          <Box
+            component="img"
+            src={imgUrl}
+            alt="Vögel"
+            sx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
+          />
+          {hasSize && sorted.map((bird, index) => {
+            const n = index + 1;
+            const bbox = birdBoxForOverlay(bird, detection);
+            const pct = birdOverlayPercents(bbox, detection);
+            if (!pct) return null;
+            const status = birdReviewStatus(bird, detection);
+            const isMain = bird.role === 'main';
+            const color = status === 'confirmed_pigeon'
+              ? OVERVIEW_BOX.confirmed
+              : status === 'no_pigeon'
+                ? OVERVIEW_BOX.rejected
+                : OVERVIEW_BOX.unknown;
+            return (
+              <Box
+                key={`bird-overlay-${bird.bird_id}`}
+                sx={{
+                  position: 'absolute',
+                  left: `${pct.left}%`,
+                  top: `${pct.top}%`,
+                  width: `${pct.width}%`,
+                  height: `${pct.height}%`,
+                  border: `${isMain ? 4 : 2}px solid ${color}`,
+                  pointerEvents: 'none',
+                  boxSizing: 'border-box'
+                }}
+              >
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    transform: 'translate(-15%, -15%)',
+                    minWidth: 22,
+                    height: 22,
+                    px: 0.5,
+                    borderRadius: '50%',
+                    bgcolor: color,
+                    color: '#fff',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    lineHeight: '22px',
+                    textAlign: 'center',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.45)'
+                  }}
+                >
+                  {n}
+                </Box>
+              </Box>
+            );
+          })}
+        </Box>
+      )}
+
+      <Grid container spacing={2}>
+        {sorted.map((bird, index) => {
+          const n = index + 1;
+          const status = birdReviewStatus(bird, detection);
+          const isMain = bird.role === 'main';
+          const busy = savingBirdId === bird.bird_id;
+          const color = status === 'confirmed_pigeon'
+            ? OVERVIEW_BOX.confirmed
+            : status === 'no_pigeon'
+              ? OVERVIEW_BOX.rejected
+              : OVERVIEW_BOX.unknown;
+          return (
+            <Grid item xs={12} md={6} key={bird.bird_id}>
+              <Paper variant="outlined" sx={{ p: 2, borderColor: color, borderWidth: isMain ? 2 : 1 }}>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', mb: 1.5 }}>
+                  <Box
+                    sx={{
+                      minWidth: 28,
+                      height: 28,
+                      borderRadius: '50%',
+                      bgcolor: color,
+                      color: '#fff',
+                      fontSize: 14,
+                      fontWeight: 700,
+                      lineHeight: '28px',
+                      textAlign: 'center',
+                      flexShrink: 0
+                    }}
+                  >
+                    {n}
+                  </Box>
+                  <Chip
+                    size="small"
+                    label={isMain ? 'Main' : 'Side'}
+                    color={isMain ? 'primary' : 'default'}
+                    variant={isMain ? 'filled' : 'outlined'}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {bird.bird_id}
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={
+                      status === 'confirmed_pigeon'
+                        ? 'Taube'
+                        : status === 'no_pigeon'
+                          ? 'Keine Taube'
+                          : 'Offen'
+                    }
+                    sx={{
+                      bgcolor: status === 'confirmed_pigeon'
+                        ? 'rgba(0,230,118,0.15)'
+                        : status === 'no_pigeon'
+                          ? 'rgba(255,23,68,0.12)'
+                          : undefined,
+                      borderColor: color
+                    }}
+                    variant="outlined"
+                  />
+                </Box>
+                {bird.bbox && (
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                    BBox {Math.round(bird.bbox.x)},{Math.round(bird.bbox.y)} · {Math.round(bird.bbox.width)}×{Math.round(bird.bbox.height)}
+                  </Typography>
+                )}
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                  <Button
+                    size="small"
+                    variant={status === 'confirmed_pigeon' ? 'contained' : 'outlined'}
+                    color="success"
+                    disabled={busy}
+                    startIcon={<FavoriteIcon />}
+                    onClick={() => setStatus(bird.bird_id, 'confirmed_pigeon')}
+                  >
+                    Taube
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={status === 'no_pigeon' ? 'contained' : 'outlined'}
+                    color="error"
+                    disabled={busy}
+                    startIcon={<CancelIcon />}
+                    onClick={() => setStatus(bird.bird_id, 'no_pigeon')}
+                  >
+                    Keine Taube
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={status == null ? 'contained' : 'outlined'}
+                    disabled={busy}
+                    onClick={() => setStatus(bird.bird_id, null)}
+                  >
+                    Offen
+                  </Button>
+                  {busy && <CircularProgress size={20} sx={{ ml: 1 }} />}
+                </Box>
+              </Paper>
+            </Grid>
+          );
+        })}
+      </Grid>
+    </Box>
+  );
+}
+
+function ModelRunOverlayCard({ detection, run, color }) {
+  const preferZoomed = run?.image === 'zoomed_image' && detection?.zoomed_image?.url;
+  const imgSrc = preferZoomed
+    ? detection.zoomed_image.url
+    : (detection?.image?.url || detection?.zoomed_image?.url);
+  const size = preferZoomed
+    ? detection?.image_info?.zoomed_size
+    : detection?.image_info?.original_size;
+  const boxes = Array.isArray(run?.boxes) ? run.boxes : [];
+  const modelName = run?.model?.name || run?.run_id || 'Modell';
+  const imgW = size?.width || 1;
+  const imgH = size?.height || 1;
+  const mainBirdId =
+    detection?.birds?.find((b) => b?.role === 'main')?.bird_id
+    || detection?.target_bird?.bird_id
+    || null;
+  const MAIN_BIRD_COLOR = '#00e676';
+
+  const confLabel = (box) => {
+    if (box?.confidence == null) return '';
+    const conf = Number(box.confidence);
+    if (!Number.isFinite(conf)) return '';
+    return ` ${(conf <= 1 ? conf * 100 : conf).toFixed(0)}%`;
+  };
+
+  const isMainBox = (box) => {
+    if (mainBirdId && box?.bird_id && box.bird_id === mainBirdId) return true;
+    if (!mainBirdId && box?.is_target_bird) return true;
+    return false;
+  };
+
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, mb: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+            {modelName}
+          </Typography>
+          <Chip size="small" label={run.kind || 'replay'} variant="outlined" />
+          <Chip size="small" label={`${boxes.length} Box(en)`} />
+          {run.at && (
+            <Typography variant="caption" color="text.secondary">
+              {new Date(run.at).toLocaleString()}
+            </Typography>
+          )}
+        </Box>
+        {!imgSrc ? (
+          <Typography variant="body2" color="text.secondary">
+            Kein Bild für diesen Lauf vorhanden.
+          </Typography>
+        ) : (
+          <Box
+            sx={{
+              position: 'relative',
+              display: 'inline-block',
+              maxWidth: '100%',
+              border: '1px solid #e0e0e0',
+              borderRadius: 1,
+              overflow: 'hidden',
+              backgroundColor: '#000',
+              lineHeight: 0
+            }}
+          >
+            <Box
+              component="img"
+              src={imgSrc}
+              alt={modelName}
+              sx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
+            />
+            {size && boxes.map((box, idx) => {
+              const b = box?.bbox;
+              if (!b || b.x == null || b.y == null) return null;
+              const main = isMainBox(box);
+              const boxColor = main ? MAIN_BIRD_COLOR : color;
+              return (
+                <Box
+                  key={`${run.run_id}-box-${idx}`}
+                  sx={{
+                    position: 'absolute',
+                    left: `${(b.x / imgW) * 100}%`,
+                    top: `${(b.y / imgH) * 100}%`,
+                    width: `${((b.width || 0) / imgW) * 100}%`,
+                    height: `${((b.height || 0) / imgH) * 100}%`,
+                    border: `2px solid ${boxColor}`,
+                    pointerEvents: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                  title={`${main ? 'Main · ' : ''}${box.class || 'bird'}${confLabel(box)}`}
+                />
+              );
+            })}
+          </Box>
+        )}
+        {boxes.length > 0 && (
+          <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+            {boxes.map((box, idx) => {
+              const main = isMainBox(box);
+              const boxColor = main ? MAIN_BIRD_COLOR : color;
+              return (
+                <Chip
+                  key={`${run.run_id}-chip-${idx}`}
+                  size="small"
+                  sx={{
+                    borderColor: boxColor,
+                    ...(main
+                      ? {
+                          backgroundColor: 'rgba(0, 230, 118, 0.2)',
+                          color: '#1b5e20',
+                          fontWeight: 600,
+                          border: `1px solid ${MAIN_BIRD_COLOR}`
+                        }
+                      : {})
+                  }}
+                  variant="outlined"
+                  label={`${main ? 'Main · ' : ''}${box.class || 'bird'}${confLabel(box)}`}
+                />
+              );
+            })}
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 const Detections = () => {
   const [detections, setDetections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -366,6 +854,8 @@ const Detections = () => {
   const [imageDialogOpen, setImageDialogOpen] = useState(false);
   const [selectedDetection, setSelectedDetection] = useState(null);
   const [selectedDetectionLoading, setSelectedDetectionLoading] = useState(false);
+  const [detailTab, setDetailTab] = useState(0);
+  const [birdReviewSavingId, setBirdReviewSavingId] = useState(null);
   const [deviceRouteCoordinates, setDeviceRouteCoordinates] = useState([]);
   const [cameraPositionSaving, setCameraPositionSaving] = useState(false);
   const [nearestAtPosition, setNearestAtPosition] = useState({ before: null, after: null });
@@ -455,7 +945,7 @@ const Detections = () => {
     }
     const processedAt = typeof d.processedAt === 'string' ? d.processedAt : d.processedAt?.toISO?.() ?? new Date(d.processedAt).toISOString();
     axios.get('/api/cv/detections/nearest-at-position', {
-      params: { deviceId, rotation: pos.rotation, tilt: pos.tilt, processedAt }
+      params: { deviceId: String(deviceId), rotation: pos.rotation, tilt: pos.tilt, processedAt }
     })
       .then((res) => setNearestAtPosition({ before: res.data.before || null, after: res.data.after || null }))
       .catch(() => setNearestAtPosition({ before: null, after: null }));
@@ -484,15 +974,20 @@ const Detections = () => {
     }
   };
 
+  const detectionsFetchSeqRef = useRef(0);
+
   const fetchDetections = useCallback(async () => {
+    const seq = ++detectionsFetchSeqRef.current;
+
     try {
       setLoading(true);
       const params = new URLSearchParams({
-        page: pagination.page + 1,
-        limit: pagination.pageSize
+        page: String(pagination.page + 1),
+        limit: String(pagination.pageSize)
       });
-      
-      if (filters.deviceId) params.append('deviceId', filters.deviceId);
+
+      const deviceId = (filters.deviceId || '').trim();
+      if (deviceId) params.append('deviceId', deviceId);
       if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
       if (filters.dateTo) params.append('dateTo', filters.dateTo);
       if (filters.classificationStatus) params.append('classificationStatus', filters.classificationStatus);
@@ -503,16 +998,30 @@ const Detections = () => {
       }
 
       const response = await axios.get(`/api/cv/detections?${params}`);
-      setDetections(response.data.detections);
+      // Ignore stale responses (date/filter changed while request was in flight)
+      if (seq !== detectionsFetchSeqRef.current) return;
+
+      setDetections(response.data.detections || []);
       setPagination(prev => ({
         ...prev,
-        total: response.data.pagination.total
+        total: response.data.pagination?.total || 0
       }));
       setImageByDetectionId({});
     } catch (error) {
+      if (seq !== detectionsFetchSeqRef.current) return;
       console.error('Error fetching detections:', error);
+      const status = error.response?.status;
+      // Don't spam for empty/not-found filter edge cases
+      if (status && status < 500) {
+        setDetections([]);
+        setPagination(prev => ({ ...prev, total: 0 }));
+        return;
+      }
+      toast.error(error.response?.data?.error || 'Fehler beim Laden der Erkennungen');
     } finally {
-      setLoading(false);
+      if (seq === detectionsFetchSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [filters, pagination.page, pagination.pageSize]);
 
@@ -534,6 +1043,7 @@ const Detections = () => {
 
   const handleOpenImageDialog = async (detection) => {
     setImageDialogOpen(true);
+    setDetailTab(0);
     setSelectedDetectionLoading(true);
     setSelectedDetection(null);
     try {
@@ -553,6 +1063,7 @@ const Detections = () => {
     setSelectedDetection(null);
     setSelectedDetectionLoading(false);
     setDeviceRouteCoordinates([]);
+    setDetailTab(0);
   };
 
   const handleCameraPositionChange = async (e) => {
@@ -794,6 +1305,13 @@ const Detections = () => {
       )
     },
     {
+      field: 'detection_authority',
+      headerName: 'Erkennung',
+      width: 140,
+      sortable: false,
+      renderCell: (params) => <DetectionSourceChips detection={params.row} />
+    },
+    {
       field: 'detections',
       headerName: 'Erkannte Objekte',
       width: 200,
@@ -878,11 +1396,14 @@ const Detections = () => {
               onChange={(e) => {
                 const v = e.target.value;
                 if (!v) {
-                  setFilters((prev) => ({ ...prev, cameraPosition: '' }));
+                  // Clearing position also clears deviceId set by this dropdown
+                  setFilters((prev) => ({ ...prev, cameraPosition: '', deviceId: '' }));
                   setPagination((prev) => ({ ...prev, page: 0 }));
                   return;
                 }
-                const [deviceId, pos] = v.split(':');
+                const colon = v.indexOf(':');
+                const deviceId = colon >= 0 ? v.slice(0, colon) : '';
+                const pos = colon >= 0 ? v.slice(colon + 1) : '';
                 if (deviceId && pos) {
                   setFilters((prev) => ({ ...prev, deviceId, cameraPosition: pos }));
                   setPagination((prev) => ({ ...prev, page: 0 }));
@@ -1092,6 +1613,14 @@ const Detections = () => {
                 Filter anwenden
               </Button>
             </Grid>
+            {(filters.dateFrom || filters.dateTo) && (
+              <Grid item xs={12}>
+                <Typography variant="body2" color="text.secondary">
+                  Zeitraum: {filters.dateFrom || '…'} → {filters.dateTo || '…'}
+                  {pagination.total != null ? ` · ${pagination.total.toLocaleString('de-DE')} Treffer` : ''}
+                </Typography>
+              </Grid>
+            )}
             <Grid item xs={12} sm={6} md={3}>
               <Button
                 variant="outlined"
@@ -1225,14 +1754,36 @@ const Detections = () => {
               <CircularProgress />
             </Box>
           ) : selectedDetection && (
-            <Grid
-              container
-              spacing={2}
+            <Box
               sx={{
                 opacity: selectedDetectionLoading ? 0.55 : 1,
                 pointerEvents: selectedDetectionLoading ? 'none' : 'auto',
                 transition: 'opacity 0.15s ease'
               }}
+            >
+              {(() => {
+                const companions = buildCompanionPhotoGroups(selectedDetection);
+                const cameraCount = companions.masterPhotos.length + companions.slavePhotos.length;
+                const modelRuns = getModelRunsForTab(selectedDetection);
+                const birdCount = Array.isArray(selectedDetection.birds) ? selectedDetection.birds.length : 0;
+                return (
+                  <Tabs
+                    value={detailTab}
+                    onChange={(_, v) => setDetailTab(v)}
+                    sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
+                  >
+                    <Tab label="Übersicht" />
+                    <Tab label={birdCount > 0 ? `Vögel (${birdCount})` : 'Vögel'} />
+                    <Tab label={cameraCount > 0 ? `Kameras (${cameraCount})` : 'Kameras'} />
+                    <Tab label={modelRuns.length > 0 ? `Modelle (${modelRuns.length})` : 'Modelle'} />
+                  </Tabs>
+                );
+              })()}
+
+              {detailTab === 0 && (
+            <Grid
+              container
+              spacing={2}
             >
               {/* Top block: in-flow image defines height; details panel pinned to image edges on md+ */}
               <Grid item xs={12}>
@@ -1317,10 +1868,7 @@ const Detections = () => {
                                   top: `${topPct}%`,
                                   width: `${widthPct}%`,
                                   height: `${heightPct}%`,
-                                  border: '2px solid #ff1744',
-                                  boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
-                                  pointerEvents: 'none',
-                                  boxSizing: 'border-box'
+                                  ...getOverviewDetectionBoxStyle(selectedDetection, detection)
                                 }}
                               />
                             );
@@ -1385,6 +1933,12 @@ const Detections = () => {
                       <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
                         Modell: <strong>{selectedDetection.model?.name || 'N/A'}</strong>
                       </Typography>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.5 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                          Erkennung:
+                        </Typography>
+                        <DetectionSourceChips detection={selectedDetection} />
+                      </Box>
                       {selectedDetection.temperature !== null && selectedDetection.temperature !== undefined && (
                         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.35 }}>
                           Temperatur: <strong>{selectedDetection.temperature.toFixed(1)}°C</strong>
@@ -1746,10 +2300,7 @@ const Detections = () => {
                                   top: `${topPct}%`,
                                   width: `${wPct}%`,
                                   height: `${hPct}%`,
-                                  border: '2px solid #ff1744',
-                                  boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
-                                  pointerEvents: 'none',
-                                  boxSizing: 'border-box'
+                                  ...getOverviewDetectionBoxStyle(selectedDetection, detection)
                                 }}
                               />
                             );
@@ -1772,89 +2323,111 @@ const Detections = () => {
                 </Grid>
               )}
 
-              {/* Bottom: Master | Slave camera stills (1:1 — mirror Original as Master·Scan when needed) */}
-              {(() => {
-                const pre = Array.isArray(selectedDetection.preShootPhotos) ? selectedDetection.preShootPhotos : [];
-                const scan = Array.isArray(selectedDetection.scanPhotos) ? selectedDetection.scanPhotos : [];
-                const masterScanStored = scan.filter((p) => p?.role === 'master' && p?.image?.url);
-                const masterPre = pre.filter((p) => p?.role === 'master' && p?.image?.url);
-                const slavePhotos = [
-                  ...scan.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'scan' })),
-                  ...pre.filter((p) => p?.role !== 'master' && p?.image?.url).map((p) => ({ ...p, _kind: 'pre' }))
-                ];
-                const masterPhotos = [
-                  ...masterScanStored.map((p) => ({ ...p, _kind: 'scan' })),
-                  ...masterPre.map((p) => ({ ...p, _kind: 'pre' }))
-                ];
-                // For 1:1 Master|Slave: show Original again under Master when slaves
-                // (or other companions) exist but no dedicated master scanPhoto was stored.
-                const hasCompanions = slavePhotos.length > 0 || masterPre.length > 0 || masterScanStored.length > 0;
-                if (
-                  hasCompanions &&
-                  !masterScanStored.length &&
-                  selectedDetection.image?.url
-                ) {
-                  masterPhotos.unshift({
-                    _kind: 'scan',
-                    role: 'master',
-                    cameraName: selectedDetection.camera_source || 'Master',
-                    cameraType: selectedDetection.camera_source || 'master',
-                    image: { url: selectedDetection.image.url },
-                    pose: selectedDetection.camera_position
-                      ? {
-                          rotation: selectedDetection.camera_position.rotation,
-                          tilt: selectedDetection.camera_position.tilt
+              {/* Bottom companions moved to Kameras tab */}
+            </Grid>
+              )}
+
+              {detailTab === 1 && (
+                <BirdsReviewPanel
+                  detection={selectedDetection}
+                  savingBirdId={birdReviewSavingId}
+                  setSavingBirdId={setBirdReviewSavingId}
+                  onUpdated={(next) => {
+                    setSelectedDetection(next);
+                    setDetections((prev) => prev.map((d) => (
+                      d._id === next._id
+                        ? {
+                          ...d,
+                          classification_status: next.classification_status,
+                          classifiedAt: next.classifiedAt,
+                          birds: next.birds,
+                          target_bird: next.target_bird
                         }
-                      : undefined
-                  });
+                        : d
+                    )));
+                  }}
+                />
+              )}
+
+              {detailTab === 2 && (() => {
+                const { masterPhotos, slavePhotos } = buildCompanionPhotoGroups(selectedDetection);
+                if (!masterPhotos.length && !slavePhotos.length) {
+                  return (
+                    <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                      Keine zusätzlichen Kamera-Fotos (Scan / vor Vertreibung) für diese Erkennung.
+                    </Typography>
+                  );
                 }
-                if (!masterPhotos.length && !slavePhotos.length) return null;
                 return (
-                  <Grid item xs={12}>
-                    <Grid container spacing={2}>
-                      <Grid item xs={12} md={6}>
-                        <Typography variant="subtitle1" sx={{ mb: 1 }}>
-                          Master
+                  <Grid container spacing={2}>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                        Master
+                      </Typography>
+                      {masterPhotos.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Keine zusätzlichen Master-Fotos
                         </Typography>
-                        {masterPhotos.length === 0 ? (
-                          <Typography variant="body2" color="text.secondary">
-                            Keine zusätzlichen Master-Fotos
-                          </Typography>
-                        ) : (
-                          masterPhotos.map((photo, idx) => (
-                            <CompanionPhotoCard
-                              key={`master-${photo.cameraId || idx}-${photo._kind}`}
-                              photo={photo}
-                              titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
-                              cardKey={`master-${idx}`}
-                            />
-                          ))
-                        )}
-                      </Grid>
-                      <Grid item xs={12} md={6}>
-                        <Typography variant="subtitle1" sx={{ mb: 1 }}>
-                          Slave
+                      ) : (
+                        masterPhotos.map((photo, idx) => (
+                          <CompanionPhotoCard
+                            key={`master-${photo.cameraId || idx}-${photo._kind}`}
+                            photo={photo}
+                            titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
+                            cardKey={`master-${idx}`}
+                          />
+                        ))
+                      )}
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                        Slave
+                      </Typography>
+                      {slavePhotos.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Keine Slave-Fotos
                         </Typography>
-                        {slavePhotos.length === 0 ? (
-                          <Typography variant="body2" color="text.secondary">
-                            Keine Slave-Fotos
-                          </Typography>
-                        ) : (
-                          slavePhotos.map((photo, idx) => (
-                            <CompanionPhotoCard
-                              key={`slave-${photo.cameraId || idx}-${photo._kind}`}
-                              photo={photo}
-                              titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
-                              cardKey={`slave-${idx}`}
-                            />
-                          ))
-                        )}
-                      </Grid>
+                      ) : (
+                        slavePhotos.map((photo, idx) => (
+                          <CompanionPhotoCard
+                            key={`slave-${photo.cameraId || idx}-${photo._kind}`}
+                            photo={photo}
+                            titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
+                            cardKey={`slave-${idx}`}
+                          />
+                        ))
+                      )}
                     </Grid>
                   </Grid>
                 );
               })()}
-            </Grid>
+
+              {detailTab === 3 && (() => {
+                const modelRuns = getModelRunsForTab(selectedDetection);
+                if (!modelRuns.length) {
+                  return (
+                    <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                      Noch keine Modell-Läufe für diese Erkennung.
+                    </Typography>
+                  );
+                }
+                return (
+                  <Box>
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                      Live- und Replay-Läufe mit Boxen auf dem jeweiligen Bild.
+                    </Typography>
+                    {modelRuns.map((run, idx) => (
+                      <ModelRunOverlayCard
+                        key={run.run_id || `run-${idx}`}
+                        detection={selectedDetection}
+                        run={run}
+                        color={MODEL_RUN_BOX_COLORS[idx % MODEL_RUN_BOX_COLORS.length]}
+                      />
+                    ))}
+                  </Box>
+                );
+              })()}
+            </Box>
           )}
         </DialogContent>
         <DialogActions>

@@ -73,6 +73,26 @@ function resolutionOptions(square) {
   return square ? RESOLUTION_SQUARE : RESOLUTION_RECT;
 }
 
+const DEVICE_LAYOUT_OPTIONS = [
+  { value: 'cam_only', label: 'Nur Cam' },
+  { value: 'motion_only', label: 'Nur Bewegung' },
+  { value: 'separate', label: 'Bewegung & Cam separat' },
+  { value: 'combined', label: 'Bewegung & Cam in einem Gerät' }
+];
+
+function layoutLabel(layout) {
+  return DEVICE_LAYOUT_OPTIONS.find((o) => o.value === layout)?.label
+    || DEVICE_LAYOUT_OPTIONS.find((o) => o.value === 'separate').label;
+}
+
+function layoutHasMotion(layout) {
+  return layout === 'motion_only' || layout === 'separate' || layout === 'combined';
+}
+
+function layoutHasCameras(layout) {
+  return layout === 'cam_only' || layout === 'separate' || layout === 'combined';
+}
+
 function normalizeResolutionForSquare(resolution, square) {
   const opts = resolutionOptions(square);
   const cur = resolution == null || resolution === ''
@@ -108,6 +128,7 @@ const Devices = () => {
   const [routeDeviceId, setRouteDeviceId] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
+    deviceLayout: 'separate',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
     taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
     ...emptyCameraForm()
@@ -168,6 +189,7 @@ const Devices = () => {
       const camState = ensureFormCameras(device);
       setFormData({
         name: device.name,
+        deviceLayout: device.deviceLayout || 'separate',
         location: device.location || { name: '', coordinates: { lat: 0, lng: 0 } },
         taubenschiesser: {
           ip: device.taubenschiesser?.ip || '',
@@ -190,6 +212,7 @@ const Devices = () => {
       setEditingDevice(null);
       setFormData({
         name: '',
+        deviceLayout: 'separate',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
         taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
         ...emptyCameraForm()
@@ -251,6 +274,74 @@ const Devices = () => {
       role: c.id === id ? 'master' : 'slave',
       enabled: true
     })));
+  };
+
+  const setDeviceLayout = (nextLayout) => {
+    setFormData((prev) => {
+      const layout = DEVICE_LAYOUT_OPTIONS.some((o) => o.value === nextLayout)
+        ? nextLayout
+        : 'separate';
+      let next = { ...prev, deviceLayout: layout };
+      if (layout === 'combined') {
+        let cameras = [...(prev.cameras || [])];
+        if (cameras.length === 0) {
+          cameras = [createCameraEntry('esp32-p4', 'master', 'ESP-P4')];
+        }
+        const ip = (prev.taubenschiesser?.ip || '').trim();
+        if (ip) {
+          cameras = cameras.map((c) => {
+            if (c.role !== 'master') return c;
+            if (c.type === 'esp32-p4') {
+              return { ...c, esp32P4: { ...(c.esp32P4 || defaultEsp32P4()), ip } };
+            }
+            if (c.type === 'raspberry-pi') {
+              return { ...c, raspberryPi: { ...(c.raspberryPi || defaultRaspberryPi()), ip } };
+            }
+            if (c.type === 'tapo') {
+              return { ...c, tapo: { ...(c.tapo || defaultTapo()), ip } };
+            }
+            return c;
+          });
+        }
+        cameras = normalizeRole(cameras);
+        next = {
+          ...next,
+          cameras,
+          camera: legacyCameraFromCameras(cameras, prev.camera)
+        };
+      }
+      return next;
+    });
+  };
+
+  const setSharedDeviceIp = (ip) => {
+    setFormData((prev) => {
+      const cameras = (prev.cameras || []).map((c) => {
+        if (c.role !== 'master' && (prev.cameras || []).some((x) => x.role === 'master')) {
+          return c;
+        }
+        const isMaster = c.role === 'master'
+          || !(prev.cameras || []).some((x) => x.role === 'master');
+        if (!isMaster) return c;
+        if (c.type === 'esp32-p4') {
+          return { ...c, esp32P4: { ...(c.esp32P4 || defaultEsp32P4()), ip } };
+        }
+        if (c.type === 'raspberry-pi') {
+          return { ...c, raspberryPi: { ...(c.raspberryPi || defaultRaspberryPi()), ip } };
+        }
+        if (c.type === 'tapo') {
+          return { ...c, tapo: { ...(c.tapo || defaultTapo()), ip } };
+        }
+        return c;
+      });
+      const normalized = normalizeRole(cameras);
+      return {
+        ...prev,
+        taubenschiesser: { ...prev.taubenschiesser, ip },
+        cameras: normalized,
+        camera: legacyCameraFromCameras(normalized, prev.camera)
+      };
+    });
   };
 
   const handleCloseDialog = () => {
@@ -365,18 +456,36 @@ const Devices = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const layout = formData.deviceLayout || 'separate';
+    if (layoutHasMotion(layout) && !(formData.taubenschiesser?.ip || '').trim()) {
+      toast.error(layout === 'combined'
+        ? 'Geräte-IP ist erforderlich'
+        : 'Taubenschiesser-IP ist erforderlich');
+      return;
+    }
+    if (layoutHasCameras(layout) && !(formData.cameras || []).length) {
+      toast.error('Mindestens eine Kamera ist erforderlich');
+      return;
+    }
+    const payload = { ...formData, deviceLayout: layout };
+    if (layout === 'motion_only') {
+      payload.cameras = [];
+    }
+    if (layout === 'cam_only') {
+      payload.taubenschiesser = { ...payload.taubenschiesser, ip: '' };
+    }
     try {
       if (editingDevice) {
-        await axios.put(`/api/devices/${editingDevice._id}`, formData);
+        await axios.put(`/api/devices/${editingDevice._id}`, payload);
         toast.success('Gerät erfolgreich aktualisiert');
       } else {
-        await axios.post('/api/devices', formData);
+        await axios.post('/api/devices', payload);
         toast.success('Gerät erfolgreich erstellt');
       }
       fetchDevices();
       handleCloseDialog();
     } catch (error) {
-      toast.error('Fehler beim Speichern des Geräts');
+      toast.error(error.response?.data?.error || 'Fehler beim Speichern des Geräts');
     }
   };
 
@@ -442,6 +551,18 @@ const Devices = () => {
           label={params.value}
           size="small"
           color={getStatusColor(params.value)}
+        />
+      )
+    },
+    {
+      field: 'deviceLayout',
+      headerName: 'Layout',
+      width: 170,
+      renderCell: (params) => (
+        <Chip
+          label={layoutLabel(params.value || 'separate')}
+          size="small"
+          variant="outlined"
         />
       )
     },
@@ -570,6 +691,25 @@ const Devices = () => {
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               required
             />
+            <FormControl fullWidth margin="dense">
+              <InputLabel id="device-layout-label">Geräte-Layout</InputLabel>
+              <Select
+                labelId="device-layout-label"
+                label="Geräte-Layout"
+                value={formData.deviceLayout || 'separate'}
+                onChange={(e) => setDeviceLayout(e.target.value)}
+              >
+                {DEVICE_LAYOUT_OPTIONS.map((o) => (
+                  <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              {formData.deviceLayout === 'cam_only' && 'Nur Kameras — kein Shooter/Bewegung.'}
+              {formData.deviceLayout === 'motion_only' && 'Nur Shooter-ESP — keine Kameras.'}
+              {formData.deviceLayout === 'combined' && 'Eine IP für Bewegung und Kamera (typisch ESP-P4).'}
+              {(formData.deviceLayout === 'separate' || !formData.deviceLayout) && 'Shooter und Kameras getrennt (bisheriges Standard-Setup).'}
+            </Typography>
             <TextField
               margin="dense"
               label="Standort"
@@ -581,19 +721,30 @@ const Devices = () => {
                 location: { ...formData.location, name: e.target.value }
               })}
             />
-            {/* Taubenschiesser Configuration */}
+            {/* Motion / Taubenschiesser Configuration */}
+            {layoutHasMotion(formData.deviceLayout) && (
+            <>
             <TextField
               margin="dense"
-              label="Taubenschiesser IP"
+              label={formData.deviceLayout === 'combined' ? 'Geräte-IP' : 'Taubenschiesser IP'}
               fullWidth
               variant="outlined"
               value={formData.taubenschiesser.ip}
-              onChange={(e) => setFormData({
-                ...formData,
-                taubenschiesser: { ...formData.taubenschiesser, ip: e.target.value }
-              })}
+              onChange={(e) => {
+                if (formData.deviceLayout === 'combined') {
+                  setSharedDeviceIp(e.target.value);
+                } else {
+                  setFormData({
+                    ...formData,
+                    taubenschiesser: { ...formData.taubenschiesser, ip: e.target.value }
+                  });
+                }
+              }}
               placeholder="192.168.1.100"
               required
+              helperText={formData.deviceLayout === 'combined'
+                ? 'Wird auch als Master-Kamera-IP übernommen'
+                : undefined}
             />
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 1.5, flexWrap: 'wrap' }}>
               <TextField
@@ -772,8 +923,11 @@ const Devices = () => {
                 </Typography>
               </Alert>
             </Box>
+            </>
+            )}
 
             {/* Multi-camera Configuration */}
+            {layoutHasCameras(formData.deviceLayout) && (
             <Box sx={{ mt: 2, mb: 1 }}>
               <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
                 <Typography variant="subtitle1">Kameras</Typography>
@@ -886,9 +1040,15 @@ const Devices = () => {
                           size="small"
                           label="Kamera IP"
                           fullWidth
-                          value={cam.tapo?.ip || ''}
+                          value={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? (formData.taubenschiesser.ip || '')
+                            : (cam.tapo?.ip || '')}
                           onChange={(e) => updateCameraNested(cam.id, 'tapo', { ip: e.target.value })}
                           placeholder="192.168.1.101"
+                          disabled={formData.deviceLayout === 'combined' && cam.role === 'master'}
+                          helperText={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? 'IP kommt vom Geräte-Layout (ein Gerät)'
+                            : undefined}
                         />
                         <TextField
                           margin="dense"
@@ -940,9 +1100,15 @@ const Devices = () => {
                           size="small"
                           label="PiCam IP / Hostname"
                           fullWidth
-                          value={cam.raspberryPi?.ip || ''}
+                          value={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? (formData.taubenschiesser.ip || '')
+                            : (cam.raspberryPi?.ip || '')}
                           onChange={(e) => updateCameraNested(cam.id, 'raspberryPi', { ip: e.target.value })}
                           placeholder="PiCam oder 192.168.x.x"
+                          disabled={formData.deviceLayout === 'combined' && cam.role === 'master'}
+                          helperText={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? 'IP kommt vom Geräte-Layout (ein Gerät)'
+                            : undefined}
                         />
                         <TextField
                           margin="dense"
@@ -1056,9 +1222,15 @@ const Devices = () => {
                           size="small"
                           label="ESP-P4 IP / Hostname"
                           fullWidth
-                          value={cam.esp32P4?.ip || ''}
+                          value={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? (formData.taubenschiesser.ip || '')
+                            : (cam.esp32P4?.ip || '')}
                           onChange={(e) => updateCameraNested(cam.id, 'esp32P4', { ip: e.target.value })}
                           placeholder="ESP-P4 oder 192.168.x.x"
+                          disabled={formData.deviceLayout === 'combined' && cam.role === 'master'}
+                          helperText={formData.deviceLayout === 'combined' && cam.role === 'master'
+                            ? 'IP kommt vom Geräte-Layout (ein Gerät)'
+                            : undefined}
                         />
                         <TextField
                           margin="dense"
@@ -1099,6 +1271,17 @@ const Devices = () => {
                             />
                           )}
                           label="Bild um 180° drehen (flip)"
+                        />
+                        <FormControlLabel
+                          control={(
+                            <Switch
+                              checked={!!cam.esp32P4?.parallelDetect}
+                              onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                                parallelDetect: e.target.checked
+                              })}
+                            />
+                          )}
+                          label="Parallel-Detect (Cloud + P4 /detect, Schuss bleibt Cloud)"
                         />
                         <TextField
                           margin="dense"
@@ -1196,6 +1379,7 @@ const Devices = () => {
               </RadioGroup>
               <Divider sx={{ my: 1 }} />
             </Box>
+            )}
 
           </DialogContent>
           <DialogActions>

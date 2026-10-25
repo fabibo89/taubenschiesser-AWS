@@ -18,6 +18,15 @@ const deviceSchema = new mongoose.Schema({
     enum: ['taubenschiesser'],
     default: 'taubenschiesser'
   },
+  /**
+   * How motion (shooter) and cameras are wired:
+   * cam_only | motion_only | separate | combined
+   */
+  deviceLayout: {
+    type: String,
+    enum: ['cam_only', 'motion_only', 'separate', 'combined'],
+    default: 'separate'
+  },
   status: {
     type: String,
     enum: ['online', 'offline', 'maintenance', 'error'],
@@ -49,10 +58,11 @@ const deviceSchema = new mongoose.Schema({
   },
   // Taubenschiesser Hardware Configuration
   taubenschiesser: {
+    // Required for motion layouts; empty string allowed for cam_only (normalized on save)
     ip: {
       type: String,
-      required: true,
-      trim: true
+      trim: true,
+      default: ''
     },
     invertRotation: {
       type: Boolean,
@@ -208,6 +218,19 @@ const deviceSchema = new mongoose.Schema({
       resolution: {
         type: String,
         default: '640'
+      },
+      /**
+       * Live monitor: also POST analysis JPEG to this P4 `/detect`.
+       * Cloud YOLO stays master for save/shoot; if only P4 sees birds, save+shoot from P4.
+       * Both sides are stored on the detection (esp_parallel + detection_authority).
+       */
+      parallelDetect: {
+        type: Boolean,
+        default: false
+      },
+      detectEndpoint: {
+        type: String,
+        default: '/detect'
       }
     },
     // For direct RTSP or other cameras
@@ -339,6 +362,18 @@ const deviceSchema = new mongoose.Schema({
       resolution: {
         type: String,
         default: '640'
+      },
+      /**
+       * Live monitor: also POST analysis JPEG to this P4 `/detect`.
+       * Cloud YOLO stays master; P4-only hits also save+shoot. Both stored on detection.
+       */
+      parallelDetect: {
+        type: Boolean,
+        default: false
+      },
+      detectEndpoint: {
+        type: String,
+        default: '/detect'
       }
     },
     directUrl: String,
@@ -579,13 +614,19 @@ deviceSchema.methods.getEffectiveCameraStatus = function() {
 
 // Method to get overall device status
 deviceSchema.methods.getOverallStatus = function() {
+  const layout = this.deviceLayout || 'separate';
   const effectiveCameraStatus = this.getEffectiveCameraStatus();
-  
-  if (this.taubenschiesserStatus === 'online' && effectiveCameraStatus === 'online') {
+  const motion = layout !== 'cam_only';
+  const cams = layout !== 'motion_only';
+
+  const motionStatus = motion ? this.taubenschiesserStatus : 'online';
+  const camStatus = cams ? effectiveCameraStatus : 'online';
+
+  if (motionStatus === 'online' && camStatus === 'online') {
     return 'online';
-  } else if (this.taubenschiesserStatus === 'error' || effectiveCameraStatus === 'error') {
+  } else if (motionStatus === 'error' || camStatus === 'error') {
     return 'error';
-  } else if (this.taubenschiesserStatus === 'maintenance' || effectiveCameraStatus === 'maintenance') {
+  } else if (motionStatus === 'maintenance' || camStatus === 'maintenance') {
     return 'maintenance';
   } else {
     return 'offline';

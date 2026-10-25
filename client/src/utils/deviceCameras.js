@@ -35,7 +35,11 @@ export function defaultRaspberryPi() {
 }
 
 export function defaultEsp32P4() {
-  return defaultHttpStill();
+  return {
+    ...defaultHttpStill(),
+    parallelDetect: false,
+    detectEndpoint: '/detect'
+  };
 }
 
 export function isHttpStillType(type) {

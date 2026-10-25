@@ -44,6 +44,8 @@ router.post('/detection', async (req, res) => {
       shoot_active,
       watertank,
       scanPhotos,
+      detection_authority,
+      esp_parallel,
       // Dual camera support
       tapo_original_image,
       tapo_zoomed_image,
@@ -71,7 +73,10 @@ router.post('/detection', async (req, res) => {
       logger.debug(`⚠️ Keine Temperatur in Detection-Request (Device: ${deviceId})`);
     }
 
-    const modelDisplayName = await getCvModelName();
+    const authority = detection_authority === 'esp' ? 'esp' : 'cloud';
+    const modelDisplayName = authority === 'esp'
+      ? (Array.isArray(esp_parallel) && esp_parallel.find((e) => e && e.model)?.model) || 'ESPDet'
+      : await getCvModelName();
 
     // Create detection record - support both single and dual camera modes
     const detectionData = {
@@ -84,6 +89,7 @@ router.post('/detection', async (req, res) => {
         name: `${modelDisplayName}-Hardware`,
         version: '1.0.0'
       },
+      detection_authority: authority,
       camera_source: camera_source || 'unknown',
       temperature: temperature !== null && temperature !== undefined ? temperature : undefined,
       camera_position: camera_position && camera_position.rotation !== undefined && camera_position.tilt !== undefined ? {
@@ -92,6 +98,10 @@ router.post('/detection', async (req, res) => {
       } : undefined,
       shotFired: shotFired === true || shot_fired === true
     };
+
+    if (esp_parallel != null) {
+      detectionData.esp_parallel = esp_parallel;
+    }
 
     const active = shootActive || shoot_active;
     if (active && typeof active === 'object') {

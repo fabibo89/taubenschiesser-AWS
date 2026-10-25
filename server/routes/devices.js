@@ -12,6 +12,7 @@ const routeImages = require('../utils/routeImages');
 const panoramaScanImages = require('../utils/panoramaScanImages');
 const panoramaScanResults = require('../utils/panoramaScanResults');
 const { syncDeviceCameras } = require('../utils/deviceCameras');
+const { normalizeDeviceLayout, normalizeLayout, hasMotion, hasCameras } = require('../utils/deviceLayout');
 
 const router = express.Router();
 
@@ -203,11 +204,23 @@ router.post('/', authenticateToken, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, location, camera, cameras, taubenschiesser } = req.body;
+    const { name, location, camera, cameras, taubenschiesser, deviceLayout } = req.body;
+    const layout = normalizeLayout(deviceLayout);
+
+    if (hasMotion(layout) && !(taubenschiesser?.ip && String(taubenschiesser.ip).trim())) {
+      return res.status(400).json({ error: 'Taubenschiesser-IP ist für dieses Layout erforderlich' });
+    }
+    if (hasCameras(layout)) {
+      const cams = Array.isArray(cameras) ? cameras : [];
+      if (cams.length < 1 && !(camera && camera.type)) {
+        return res.status(400).json({ error: 'Mindestens eine Kamera ist für dieses Layout erforderlich' });
+      }
+    }
 
     const device = new Device({
       name,
       type: 'taubenschiesser', // Immer Taubenschiesser
+      deviceLayout: layout,
       location,
       camera,
       cameras: Array.isArray(cameras) ? cameras : undefined,
@@ -215,6 +228,7 @@ router.post('/', authenticateToken, [
       owner: req.user.userId
     });
 
+    normalizeDeviceLayout(device);
     syncDeviceCameras(device);
     await device.save();
     res.status(201).json(device);
@@ -261,11 +275,25 @@ router.put('/:id', authenticateToken, async (req, res) => {
           ...device.location,
           ...req.body[key]
         };
+      } else if (key === 'deviceLayout') {
+        device.deviceLayout = normalizeLayout(req.body[key]);
       } else if (key !== 'cameras') {
         device[key] = req.body[key];
       }
     });
 
+    const layout = normalizeLayout(device.deviceLayout);
+    if (hasMotion(layout) && !(device.taubenschiesser?.ip && String(device.taubenschiesser.ip).trim())) {
+      return res.status(400).json({ error: 'Taubenschiesser-IP ist für dieses Layout erforderlich' });
+    }
+    if (hasCameras(layout)) {
+      const cams = Array.isArray(device.cameras) ? device.cameras : [];
+      if (cams.length < 1) {
+        return res.status(400).json({ error: 'Mindestens eine Kamera ist für dieses Layout erforderlich' });
+      }
+    }
+
+    normalizeDeviceLayout(device);
     syncDeviceCameras(device);
     
     // Keep coordinate images in the RouteImage collection, not the device doc.

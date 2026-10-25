@@ -40,7 +40,11 @@ function defaultRaspberryPi() {
 }
 
 function defaultEsp32P4() {
-  return defaultHttpStill();
+  return {
+    ...defaultHttpStill(),
+    parallelDetect: false,
+    detectEndpoint: '/detect'
+  };
 }
 
 function isHttpStillType(type) {
