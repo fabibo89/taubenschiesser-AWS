@@ -72,13 +72,17 @@ function positiveBoxesFromDoc(doc) {
   return [];
 }
 
+function isNonTrainStatus(status) {
+  return status === 'no_pigeon' || status === 'too_far';
+}
+
 function isNegativeDoc(doc, positiveCount) {
   if (positiveCount > 0) return false;
   const birds = Array.isArray(doc?.birds) ? doc.birds : [];
   if (birds.length > 0) {
-    return birds.every((bird) => bird?.review?.status === 'no_pigeon');
+    return birds.every((bird) => isNonTrainStatus(bird?.review?.status));
   }
-  return doc?.classification_status === 'no_pigeon';
+  return isNonTrainStatus(doc?.classification_status);
 }
 
 function classifyExportDoc(doc) {
@@ -257,9 +261,32 @@ function dataYamlContent() {
     'train: train/images',
     'val: val/images',
     'names:',
-    '  0: pigeon',
+    '  0: bird',
     ''
   ].join('\n');
+}
+
+/** Relative short side of bbox (0–1). Uses image size when bbox is in pixels. */
+function shortSideRatio(bbox, imageInfo) {
+  if (!bbox) return null;
+  let w = Number(bbox.width);
+  let h = Number(bbox.height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  if (looksNormalized(bbox)) {
+    return Math.min(w, h);
+  }
+  const zoomed = imageInfo?.zoomed_size;
+  const original = imageInfo?.original_size;
+  const imgW = Number(zoomed?.width || original?.width);
+  const imgH = Number(zoomed?.height || original?.height);
+  if (!imgW || !imgH) return null;
+  return Math.min(w / imgW, h / imgH);
+}
+
+function clampMinShortSide(value, fallback = 0.04) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(0.5, Math.max(0.005, n));
 }
 
 module.exports = {
@@ -274,5 +301,11 @@ module.exports = {
   clampValRatio,
   temporalSplit,
   dataYamlContent,
-  hasStoredUrl
+  hasStoredUrl,
+  bboxFromBird,
+  looksNormalized,
+  shortSideRatio,
+  clampMinShortSide,
+  isNonTrainStatus,
+  isNegativeDoc
 };

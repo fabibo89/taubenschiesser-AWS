@@ -25,6 +25,40 @@ import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 
+/** Normalize bbox: object {x,y,width,height} or legacy array [x,y,width,height]. */
+const normalizeBbox = (bbox) => {
+  if (!bbox) return null;
+  if (Array.isArray(bbox) && bbox.length >= 4) {
+    const [x, y, width, height] = bbox.map(Number);
+    return { x, y, width, height };
+  }
+  if (typeof bbox === 'object' && bbox.x != null && bbox.y != null) {
+    return {
+      x: Number(bbox.x),
+      y: Number(bbox.y),
+      width: Number(bbox.width) || 0,
+      height: Number(bbox.height) || 0
+    };
+  }
+  return null;
+};
+
+const formatTopLeft = (detection) => {
+  const box = normalizeBbox(detection?.bbox);
+  if (!box) return 'N/A, N/A';
+  return `${box.x.toFixed(0)}, ${box.y.toFixed(0)}`;
+};
+
+const formatCenter = (detection) => {
+  const orig = detection?.bbox_original;
+  if (orig?.x != null && orig?.y != null) {
+    return `${Number(orig.x).toFixed(1)}, ${Number(orig.y).toFixed(1)}`;
+  }
+  const box = normalizeBbox(detection?.bbox);
+  if (!box) return 'N/A, N/A';
+  return `${(box.x + box.width / 2).toFixed(1)}, ${(box.y + box.height / 2).toFixed(1)}`;
+};
+
 const ImageUpload = () => {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
@@ -366,12 +400,12 @@ const ImageUpload = () => {
                           </TableCell>
                           <TableCell>
                             <Typography variant="body2" color="secondary" title="Mittelpunkt der Bounding Box">
-                              ({detection.bbox_original?.x?.toFixed(1) || 'N/A'}, {detection.bbox_original?.y?.toFixed(1) || 'N/A'})
+                              ({formatCenter(detection)})
                             </Typography>
                           </TableCell>
                           <TableCell>
                             <Typography variant="body2" title="Obere linke Ecke der Bounding Box">
-                              ({detection.bbox.x.toFixed(0)}, {detection.bbox.y.toFixed(0)})
+                              ({formatTopLeft(detection)})
                             </Typography>
                           </TableCell>
                         </TableRow>

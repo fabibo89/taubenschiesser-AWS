@@ -1,4 +1,8 @@
 const express = require('express');
+const axios = require('axios');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { authenticateToken } = require('../middleware/auth');
 const Detection = require('../models/Detection');
 const Device = require('../models/Device');
@@ -9,18 +13,56 @@ const {
   startExport,
   requestExportStop,
   getDownloadPath,
+  uploadCurrentExportForColab,
+  uploadCurrentExportToDrive,
   buildPreview
 } = require('../services/datasetExport');
+const { isS3Configured } = require('../services/colabDatasetUpload');
+const { driveConfig } = require('../services/googleDriveUpload');
+const { listBaselines, getBaseline } = require('../utils/modelBaselines');
+const {
+  status: nasTrainingStatus,
+  listDatasetZips,
+  findDatasetZip
+} = require('../utils/nasTraining');
+const {
+  getLatestHostVal,
+  listHostValHistory,
+  getHostValDetail
+} = require('../utils/benchmarkStore');
+const {
+  getBenchmarkStatus,
+  startEspBenchmark,
+  startHostBenchmark,
+  requestBenchmarkStop
+} = require('../services/espBenchmark');
+const {
+  getEspExportStatus,
+  startEspExport,
+  requestEspExportStop,
+  clearEspExportStatus
+} = require('../services/espExport');
+const { listEspP4Targets, resolveEspP4Target } = require('../utils/espP4Targets');
 const {
   applyMainReview,
   applySideReview,
+  applyBirdReview,
+  restoreBirdReview,
   applyNewBoxReview,
   restoreNewBoxReview
 } = require('../utils/detectionBirds');
+const {
+  bboxFromBird,
+  shortSideRatio,
+  clampMinShortSide
+} = require('../utils/yoloDataset');
 const logger = require('../utils/logger');
 
 const router = express.Router();
-
+const otaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 16 * 1024 * 1024 }
+});
 const BIRD_CLASSES = ['bird', 'birds', 'vogel', 'vögel', 'voegel', 'pigeon', 'taube', 'dove'];
 
 function hasStoredImage(field) {
@@ -62,6 +104,7 @@ router.get('/dataset', authenticateToken, async (req, res) => {
       images: 0,
       birds: 0,
       confirmedBirds: 0,
+      tooFarBirds: 0,
       sideBirds: 0,
       replayModels,
       selectedModel: preferred,
@@ -122,6 +165,13 @@ router.get('/dataset', authenticateToken, async (req, res) => {
               input: '$birds',
               as: 'bird',
               cond: { $eq: ['$$bird.review.status', 'confirmed_pigeon'] }
+            }
+          },
+          tooFarBirdsList: {
+            $filter: {
+              input: '$birds',
+              as: 'bird',
+              cond: { $eq: ['$$bird.review.status', 'too_far'] }
             }
           },
           // Main-Kennzahlen (trifft/verfehlt): nur role=main
@@ -192,6 +242,7 @@ router.get('/dataset', authenticateToken, async (req, res) => {
               { $cond: [{ $eq: ['$classification_status', 'confirmed_pigeon'] }, 1, 0] }
             ]
           },
+          tooFarCount: { $size: '$tooFarBirdsList' },
           sideCount: { $size: '$sideBirdsList' }
         }
       },
@@ -325,6 +376,7 @@ router.get('/dataset', authenticateToken, async (req, res) => {
           images: { $sum: { $cond: ['$hasImage', 1, 0] } },
           birds: { $sum: '$birdCount' },
           confirmedBirds: { $sum: '$confirmedCount' },
+          tooFarBirds: { $sum: '$tooFarCount' },
           sideBirds: { $sum: '$sideCount' },
           lDone: { $sum: { $cond: ['$hasLRun', 1, 0] } },
           lPending: { $sum: { $cond: ['$hasLRun', 0, 1] } },
@@ -342,6 +394,7 @@ router.get('/dataset', authenticateToken, async (req, res) => {
       images: row?.images || 0,
       birds: row?.birds || 0,
       confirmedBirds: row?.confirmedBirds || 0,
+      tooFarBirds: row?.tooFarBirds || 0,
       sideBirds: row?.sideBirds || 0,
       replayModels,
       selectedModel: preferred,
@@ -380,7 +433,10 @@ router.get('/dataset/export', authenticateToken, (req, res) => {
 router.post('/dataset/export', authenticateToken, (req, res) => {
   try {
     res.status(202).json(startExport(req.user.userId, {
-      valRatio: req.body?.valRatio ?? req.query.valRatio
+      valRatio: req.body?.valRatio ?? req.query.valRatio,
+      uploadToColab: Boolean(req.body?.uploadToColab),
+      uploadToDrive: Boolean(req.body?.uploadToDrive),
+      driveFolderUrl: req.body?.driveFolderUrl || req.body?.folderUrl || ''
     }));
   } catch (error) {
     logger.error('Start export error:', error);
@@ -398,6 +454,308 @@ router.get('/dataset/export/download', authenticateToken, (req, res) => {
     return res.status(404).json({ error: 'Kein Export zum Download bereit' });
   }
   res.download(file.path, file.name);
+});
+
+router.post('/dataset/export/colab-upload', authenticateToken, async (req, res) => {
+  try {
+    if (!isS3Configured()) {
+      return res.status(503).json({
+        error: 'S3 nicht konfiguriert (DATASET_S3_BUCKET in server/.env setzen)'
+      });
+    }
+    const state = await uploadCurrentExportForColab(req.user.userId);
+    res.json(state);
+  } catch (error) {
+    logger.error('Colab upload error:', error);
+    res.status(error.statusCode || 500).json({
+      ...getExportStatus(),
+      error: error.message || 'Colab-Upload fehlgeschlagen'
+    });
+  }
+});
+
+router.post('/dataset/export/drive-upload', authenticateToken, async (req, res) => {
+  try {
+    const cfg = driveConfig();
+    if (!cfg.credentialsReady) {
+      return res.status(503).json({
+        error: 'Google Drive Credentials fehlen (GOOGLE_DRIVE_CREDENTIALS_JSON in server/.env setzen)'
+      });
+    }
+    const state = await uploadCurrentExportToDrive(req.user.userId, {
+      folderUrl: req.body?.folderUrl || req.body?.driveFolderUrl || '',
+      folderId: req.body?.folderId || ''
+    });
+    res.json(state);
+  } catch (error) {
+    logger.error('Drive upload error:', error);
+    res.status(error.statusCode || 500).json({
+      ...getExportStatus(),
+      error: error.message || 'Drive-Upload fehlgeschlagen'
+    });
+  }
+});
+
+router.get('/dataset/esp-targets', authenticateToken, async (req, res) => {
+  try {
+    const targets = await listEspP4Targets(req.user.userId);
+    res.json({ targets });
+  } catch (error) {
+    logger.error('ESP targets error:', error);
+    res.status(500).json({ error: 'ESP-P4-Ziele konnten nicht geladen werden' });
+  }
+});
+
+router.get('/dataset/esp-targets/:deviceId/health', authenticateToken, async (req, res) => {
+  try {
+    const target = await resolveEspP4Target(
+      req.user.userId,
+      req.params.deviceId,
+      req.query.cameraId
+    );
+    if (!target) {
+      return res.status(404).json({ error: 'ESP-P4-Ziel nicht gefunden' });
+    }
+    const response = await axios.get(`${target.baseUrl}/health`, {
+      timeout: 8000,
+      validateStatus: () => true
+    });
+    res.status(response.status >= 400 ? 502 : 200).json({
+      target,
+      httpStatus: response.status,
+      health: response.data
+    });
+  } catch (error) {
+    logger.error('ESP health proxy error:', error.message);
+    res.status(502).json({ error: error.message || 'ESP-P4 nicht erreichbar' });
+  }
+});
+
+router.post(
+  '/dataset/esp-targets/:deviceId/ota',
+  authenticateToken,
+  otaUpload.single('firmware'),
+  async (req, res) => {
+    try {
+      if (!req.file?.buffer?.length) {
+        return res.status(400).json({ error: 'Firmware-.bin fehlt (Feld firmware)' });
+      }
+      if (req.file.buffer[0] !== 0xE9) {
+        return res.status(400).json({ error: 'Keine ESP-App-Image (Magic 0xE9 erwartet)' });
+      }
+      const target = await resolveEspP4Target(
+        req.user.userId,
+        req.params.deviceId,
+        req.query.cameraId || req.body?.cameraId
+      );
+      if (!target) {
+        return res.status(404).json({ error: 'ESP-P4-Ziel nicht gefunden' });
+      }
+      const response = await axios.post(`${target.baseUrl}/ota`, req.file.buffer, {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': req.file.buffer.length
+        },
+        timeout: 300000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        validateStatus: () => true
+      });
+      if (response.status >= 400) {
+        const detail = typeof response.data === 'string'
+          ? response.data
+          : (response.data?.error || `HTTP ${response.status}`);
+        return res.status(502).json({ error: `OTA fehlgeschlagen: ${detail}`, target });
+      }
+      res.json({
+        ok: true,
+        target,
+        bytes: req.file.buffer.length,
+        device: response.data
+      });
+    } catch (error) {
+      logger.error('ESP OTA proxy error:', error.message);
+      res.status(502).json({ error: error.message || 'OTA fehlgeschlagen' });
+    }
+  }
+);
+
+router.get('/dataset/benchmark', authenticateToken, (req, res) => {
+  res.json(getBenchmarkStatus());
+});
+
+router.get('/dataset/benchmark/baselines', authenticateToken, (req, res) => {
+  res.json({
+    baselines: listBaselines(),
+    datasets: listDatasetZips().map((z) => ({
+      stem: z.stem,
+      file: z.file,
+      bytes: z.bytes
+    })),
+    nas: nasTrainingStatus()
+  });
+});
+
+router.get('/dataset/benchmark/nas', authenticateToken, (req, res) => {
+  res.json({
+    ...nasTrainingStatus(),
+    datasets: listDatasetZips().map((z) => ({
+      stem: z.stem,
+      file: z.file,
+      bytes: z.bytes
+    }))
+  });
+});
+
+router.get('/dataset/benchmark/history', authenticateToken, (req, res) => {
+  const runName = typeof req.query?.runName === 'string' ? req.query.runName.trim() : '';
+  if (!runName) {
+    return res.status(400).json({ error: 'runName erforderlich' });
+  }
+  const limit = Number(req.query?.limit) || 10;
+  const file = typeof req.query?.file === 'string' ? req.query.file.trim() : '';
+  if (file) {
+    const detail = getHostValDetail(runName, file);
+    if (!detail) {
+      return res.status(404).json({ error: 'Benchmark-Datei nicht gefunden' });
+    }
+    return res.json({ runName, result: detail });
+  }
+  res.json({
+    runName,
+    latest: getLatestHostVal(runName),
+    history: listHostValHistory(runName, { limit })
+  });
+});
+
+router.post('/dataset/benchmark/stop', authenticateToken, (req, res) => {
+  res.json(requestBenchmarkStop());
+});
+
+router.post('/dataset/benchmark/esp', authenticateToken, (req, res) => {
+  try {
+    const valSource = String(req.body?.valSource || 'frozen').toLowerCase();
+    const preferLive = valSource === 'live';
+    const datasetStemRaw = typeof req.body?.datasetStem === 'string'
+      ? req.body.datasetStem.trim()
+      : '';
+    const datasetStem = preferLive ? null : (datasetStemRaw || null);
+    const zip = datasetStem ? findDatasetZip(datasetStem) : null;
+    if (!preferLive && datasetStem && !zip) {
+      return res.status(404).json({
+        error: `Trainingsdata-ZIP nicht auf NAS: ${datasetStem}`
+      });
+    }
+    res.status(202).json(startEspBenchmark(req.user.userId, {
+      deviceId: req.body?.deviceId,
+      cameraId: req.body?.cameraId,
+      valRatio: req.body?.valRatio,
+      limit: req.body?.limit,
+      datasetZipPath: preferLive ? null : (zip?.path || null),
+      datasetStem: preferLive ? null : (zip?.stem || null)
+    }));
+  } catch (error) {
+    logger.error('Start ESP benchmark error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Server error' });
+  }
+});
+
+router.post('/dataset/benchmark/host', authenticateToken, (req, res) => {
+  try {
+    const baselineId = typeof req.body?.baselineId === 'string' ? req.body.baselineId.trim() : '';
+    const baseline = baselineId ? getBaseline(baselineId) : null;
+    if (!baseline || !baseline.present) {
+      return res.status(404).json({
+        error: 'Modell nicht gefunden — Trainingsdata + result/ auf der NAS wählen'
+      });
+    }
+    const valSource = String(req.body?.valSource || 'frozen').toLowerCase();
+    const preferLive = valSource === 'live';
+    const datasetStemRaw = typeof req.body?.datasetStem === 'string'
+      ? req.body.datasetStem.trim()
+      : '';
+    const datasetStem = preferLive
+      ? null
+      : (datasetStemRaw || baseline.datasetStem || null);
+    const zip = datasetStem ? findDatasetZip(datasetStem) : null;
+    if (!preferLive && datasetStem && !zip) {
+      return res.status(404).json({
+        error: `Trainingsdata-ZIP nicht auf NAS: ${datasetStem}`
+      });
+    }
+    res.status(202).json(startHostBenchmark(req.user.userId, {
+      valRatio: req.body?.valRatio,
+      limit: req.body?.limit,
+      weightsName: baseline.file || null,
+      baselineId: baseline.id,
+      baselineLabel: baseline.label || null,
+      runName: baseline.runName || null,
+      imgsz: baseline.imgsz || Number(req.body?.imgsz) || null,
+      weightsPath: baseline.path,
+      datasetZipPath: preferLive ? null : (zip?.path || null),
+      datasetStem: preferLive ? null : (zip?.stem || null)
+    }));
+  } catch (error) {
+    logger.error('Start host benchmark error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Server error' });
+  }
+});
+
+router.get('/dataset/esp-export', authenticateToken, (req, res) => {
+  res.json(getEspExportStatus());
+});
+
+router.post('/dataset/esp-export/stop', authenticateToken, (req, res) => {
+  res.json(requestEspExportStop());
+});
+
+router.delete('/dataset/esp-export', authenticateToken, (req, res) => {
+  try {
+    res.json(clearEspExportStatus());
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || 'Clear failed' });
+  }
+});
+
+router.post('/dataset/esp-export', authenticateToken, (req, res) => {
+  try {
+    const baselineId = typeof req.body?.baselineId === 'string' ? req.body.baselineId.trim() : '';
+    const baseline = baselineId ? getBaseline(baselineId) : null;
+    if (!baseline || !baseline.present) {
+      return res.status(404).json({
+        error: 'Modell nicht gefunden — Trainingsdata + result/ auf der NAS wählen'
+      });
+    }
+    const datasetStemRaw = typeof req.body?.datasetStem === 'string'
+      ? req.body.datasetStem.trim()
+      : '';
+    const datasetStem = datasetStemRaw || baseline.datasetStem || null;
+    const zip = datasetStem ? findDatasetZip(datasetStem) : null;
+    if (!zip) {
+      return res.status(404).json({
+        error: datasetStem
+          ? `Trainingsdata-ZIP nicht auf NAS: ${datasetStem}`
+          : 'Trainingsdata-ZIP für Kalibrierung wählen'
+      });
+    }
+    const targetRaw = String(req.body?.target || 'esp32p4').toLowerCase();
+    const target = targetRaw === 'esp32s3' ? 'esp32s3' : 'esp32p4';
+    res.status(202).json(startEspExport(req.user.userId, {
+      weightsName: baseline.file || null,
+      baselineId: baseline.id,
+      baselineLabel: baseline.label || null,
+      runName: baseline.runName || null,
+      imgsz: baseline.imgsz || Number(req.body?.imgsz) || null,
+      weightsPath: baseline.path,
+      datasetZipPath: zip.path,
+      datasetStem: zip.stem,
+      target,
+      calibLimit: req.body?.calibLimit
+    }));
+  } catch (error) {
+    logger.error('Start ESP export error:', error);
+    res.status(error.statusCode || 500).json({ error: error.message || 'Server error' });
+  }
 });
 
 const L_REVIEW_CASES = {
@@ -467,6 +825,67 @@ function resolveReplayModel(modelId) {
 async function userDeviceIds(userId) {
   const devices = await Device.find({ owner: userId }).select('_id');
   return devices.map((d) => d._id);
+}
+
+/** confirmed_pigeon birds whose relative short side is below minShortSide */
+function sizeFilterCandidatesFromDoc(doc, minShortSide) {
+  const items = [];
+  if (!doc) return items;
+  const imageInfo = doc.image_info || null;
+  const birds = Array.isArray(doc.birds) ? doc.birds : [];
+
+  for (const bird of birds) {
+    if (bird?.review?.status !== 'confirmed_pigeon') continue;
+    if (!bird.bird_id) continue;
+    const bbox = bboxFromBird(bird);
+    const ratio = shortSideRatio(bbox, imageInfo);
+    if (ratio == null || ratio >= minShortSide) continue;
+    items.push({
+      detectionId: String(doc._id),
+      birdId: bird.bird_id,
+      role: bird.role || null,
+      bird,
+      shortSideRatio: ratio,
+      image_info: imageInfo,
+      processedAt: doc.processedAt || null
+    });
+  }
+  return items;
+}
+
+async function loadSizeFilterCandidates(deviceIds, minShortSide, { limit = null, maxScan = 5000 } = {}) {
+  if (!deviceIds.length) return { total: 0, items: [] };
+
+  const query = {
+    device: { $in: deviceIds },
+    $or: [
+      { 'birds.review.status': 'confirmed_pigeon' },
+      { classification_status: 'confirmed_pigeon' }
+    ]
+  };
+
+  const cursor = Detection.find(query)
+    .select('_id birds image_info processedAt classification_status target_bird')
+    .sort({ processedAt: -1 })
+    .limit(maxScan)
+    .lean()
+    .cursor();
+
+  const all = [];
+  for await (const doc of cursor) {
+    const found = sizeFilterCandidatesFromDoc(doc, minShortSide);
+    for (const item of found) all.push(item);
+  }
+
+  all.sort((a, b) => {
+    const ta = a.processedAt ? new Date(a.processedAt).getTime() : 0;
+    const tb = b.processedAt ? new Date(b.processedAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  const total = all.length;
+  const items = limit != null ? all.slice(0, limit) : all;
+  return { total, items };
 }
 
 function cloneReview(review) {
@@ -2045,6 +2464,181 @@ router.post('/dataset/new-review/:detectionId', authenticateToken, async (req, r
     });
   } catch (error) {
     logger.error('New-review decide error:', error);
+    res.status(500).json({ error: 'Entscheidung konnte nicht gespeichert werden' });
+  }
+});
+
+router.get('/dataset/size-filter', authenticateToken, async (req, res) => {
+  try {
+    const minShortSide = clampMinShortSide(req.query.minShortSide, 0.04);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const deviceIds = await userDeviceIds(req.user.userId);
+    if (deviceIds.length === 0) {
+      return res.json({ minShortSide, total: 0, items: [] });
+    }
+
+    const { total, items } = await loadSizeFilterCandidates(deviceIds, minShortSide, { limit });
+    res.json({
+      minShortSide,
+      total,
+      items: items.map(({ detectionId, birdId, role, bird, shortSideRatio: ratio, image_info }) => ({
+        detectionId,
+        birdId,
+        role,
+        bird,
+        shortSideRatio: ratio,
+        image_info
+      }))
+    });
+  } catch (error) {
+    logger.error('Size-filter queue error:', error);
+    res.status(500).json({ error: 'Zu-weit-Liste konnte nicht geladen werden' });
+  }
+});
+
+router.post('/dataset/size-filter/undo', authenticateToken, async (req, res) => {
+  try {
+    const undo = req.body?.undo;
+    if (!undo || undo.kind !== 'size-filter' || !undo.detectionId || !undo.birdId) {
+      return res.status(400).json({ error: 'undo-Payload ungültig' });
+    }
+
+    const detection = await Detection.findById(undo.detectionId).populate('device', 'owner');
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const bird = restoreBirdReview(detection, {
+      birdId: undo.birdId,
+      previous: undo.previous || {}
+    });
+    if (!bird) {
+      return res.status(404).json({ error: 'Vogel nicht gefunden' });
+    }
+
+    await detection.save();
+    res.json({ ok: true, detectionId: String(detection._id), birdId: undo.birdId });
+  } catch (error) {
+    logger.error('Size-filter undo error:', error);
+    res.status(500).json({ error: 'Undo fehlgeschlagen' });
+  }
+});
+
+router.post('/dataset/size-filter/mark-all', authenticateToken, async (req, res) => {
+  try {
+    const minShortSide = clampMinShortSide(req.body?.minShortSide ?? req.query.minShortSide, 0.04);
+    const maxMark = Math.min(500, Math.max(1, parseInt(req.body?.limit, 10) || 200));
+    const deviceIds = await userDeviceIds(req.user.userId);
+    if (deviceIds.length === 0) {
+      return res.json({ ok: true, minShortSide, marked: 0, errors: 0, total: 0 });
+    }
+
+    const { total, items } = await loadSizeFilterCandidates(deviceIds, minShortSide, {
+      limit: maxMark,
+      maxScan: 8000
+    });
+
+    let marked = 0;
+    let errors = 0;
+    const byDetection = new Map();
+    for (const item of items) {
+      if (!byDetection.has(item.detectionId)) byDetection.set(item.detectionId, []);
+      byDetection.get(item.detectionId).push(item.birdId);
+    }
+
+    for (const [detectionId, birdIds] of byDetection) {
+      try {
+        const detection = await Detection.findById(detectionId).populate('device', 'owner');
+        if (!detection?.device || detection.device.owner.toString() !== req.user.userId) {
+          errors += birdIds.length;
+          continue;
+        }
+        let changed = false;
+        for (const birdId of birdIds) {
+          const result = applyBirdReview(detection, {
+            birdId,
+            status: 'too_far',
+            source: 'size-filter',
+            at: new Date()
+          });
+          if (!result) {
+            errors += 1;
+            continue;
+          }
+          marked += 1;
+          changed = true;
+        }
+        if (changed) await detection.save();
+      } catch (err) {
+        errors += birdIds.length;
+        logger.warn('Size-filter mark-all item failed:', err.message);
+      }
+    }
+
+    res.json({ ok: true, minShortSide, marked, errors, total, capped: total > maxMark });
+  } catch (error) {
+    logger.error('Size-filter mark-all error:', error);
+    res.status(500).json({ error: 'Massen-Markierung fehlgeschlagen' });
+  }
+});
+
+router.post('/dataset/size-filter/:detectionId', authenticateToken, async (req, res) => {
+  try {
+    const birdId = typeof req.body?.birdId === 'string' ? req.body.birdId.trim() : '';
+    const action = req.body?.action;
+    if (!birdId) {
+      return res.status(400).json({ error: 'birdId fehlt' });
+    }
+    if (!['too_far', 'keep'].includes(action)) {
+      return res.status(400).json({ error: 'action muss too_far oder keep sein' });
+    }
+
+    const detection = await Detection.findById(req.params.detectionId).populate('device', 'owner');
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (action === 'keep') {
+      return res.json({
+        ok: true,
+        detectionId: String(detection._id),
+        birdId,
+        action: 'keep',
+        undo: null
+      });
+    }
+
+    const result = applyBirdReview(detection, {
+      birdId,
+      status: 'too_far',
+      source: 'size-filter',
+      at: new Date()
+    });
+    if (!result) {
+      return res.status(404).json({ error: 'Vogel nicht gefunden' });
+    }
+
+    await detection.save();
+    res.json({
+      ok: true,
+      detectionId: String(detection._id),
+      birdId,
+      action: 'too_far',
+      undo: {
+        kind: 'size-filter',
+        detectionId: String(detection._id),
+        birdId,
+        previous: result.previous
+      }
+    });
+  } catch (error) {
+    logger.error('Size-filter decide error:', error);
     res.status(500).json({ error: 'Entscheidung konnte nicht gespeichert werden' });
   }
 });

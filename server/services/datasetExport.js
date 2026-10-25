@@ -16,13 +16,46 @@ const {
   temporalSplit,
   dataYamlContent
 } = require('../utils/yoloDataset');
+const {
+  isS3Configured,
+  s3Config,
+  uploadZipForColab
+} = require('./colabDatasetUpload');
+const {
+  driveConfig,
+  uploadZipToDrive
+} = require('./googleDriveUpload');
 
 const EXPORT_DIR = path.join(__dirname, '../exports');
 
 let current = null;
 
+function drivePublicMeta() {
+  const cfg = driveConfig();
+  return {
+    driveConfigured: cfg.enabled,
+    driveCredentialsReady: cfg.credentialsReady,
+    driveFolderId: cfg.folderId || null,
+    driveClientEmail: cfg.clientEmail || null,
+    driveAutoUpload: cfg.autoUpload,
+    driveColabPathPrefix: cfg.colabPathPrefix
+  };
+}
+
+function isUploadingSideChannel(state) {
+  return state.colabUploadStatus === 'uploading'
+    || state.driveUploadStatus === 'uploading';
+}
+
 function publicState(state) {
-  if (!state) return { status: 'idle' };
+  if (!state) {
+    return {
+      status: 'idle',
+      s3Configured: isS3Configured(),
+      colabAutoUpload: s3Config().autoUpload,
+      ...drivePublicMeta()
+    };
+  }
   return {
     status: state.status,
     processed: state.processed || 0,
@@ -32,11 +65,27 @@ function publicState(state) {
     errors: state.errors || 0,
     message: state.message || '',
     downloadName: state.downloadName || null,
-    ready: state.status === 'done' && Boolean(state.zipPath),
+    ready: Boolean(state.zipPath) && (
+      state.status === 'done'
+      || (state.status === 'running' && isUploadingSideChannel(state))
+    ),
     startedAt: state.startedAt || null,
     finishedAt: state.finishedAt || null,
     preview: state.preview || null,
-    error: state.error || null
+    error: state.error || null,
+    s3Configured: isS3Configured(),
+    colabAutoUpload: s3Config().autoUpload,
+    colabDatasetUrl: state.colabDatasetUrl || null,
+    colabUrlType: state.colabUrlType || null,
+    colabUrlExpiresIn: state.colabUrlExpiresIn || null,
+    colabUploadStatus: state.colabUploadStatus || null,
+    colabUploadError: state.colabUploadError || null,
+    ...drivePublicMeta(),
+    driveFileId: state.driveFileId || null,
+    driveWebViewLink: state.driveWebViewLink || null,
+    driveColabPath: state.driveColabPath || null,
+    driveUploadStatus: state.driveUploadStatus || null,
+    driveUploadError: state.driveUploadError || null
   };
 }
 
@@ -131,11 +180,13 @@ async function fetchCandidateRows(deviceIds) {
             }
           }
         },
-        noPigeonBirds: {
+        nonTrainBirds: {
           $filter: {
             input: { $ifNull: ['$birds', []] },
             as: 'bird',
-            cond: { $eq: ['$$bird.review.status', 'no_pigeon'] }
+            cond: {
+              $in: ['$$bird.review.status', ['no_pigeon', 'too_far']]
+            }
           }
         },
         birdCount: { $size: { $ifNull: ['$birds', []] } }
@@ -156,10 +207,10 @@ async function fetchCandidateRows(deviceIds) {
             }
           ]
         },
-        allNoPigeon: {
+        allNonTrain: {
           $and: [
             { $gt: ['$birdCount', 0] },
-            { $eq: ['$birdCount', { $size: '$noPigeonBirds' }] }
+            { $eq: ['$birdCount', { $size: '$nonTrainBirds' }] }
           ]
         }
       }
@@ -181,11 +232,16 @@ async function fetchCandidateRows(deviceIds) {
                   $cond: [
                     {
                       $or: [
-                        '$allNoPigeon',
+                        '$allNonTrain',
                         {
                           $and: [
                             { $eq: ['$birdCount', 0] },
-                            { $eq: ['$classification_status', 'no_pigeon'] }
+                            {
+                              $in: [
+                                '$classification_status',
+                                ['no_pigeon', 'too_far']
+                              ]
+                            }
                           ]
                         }
                       ]
@@ -275,6 +331,16 @@ async function runExport(userId, state) {
   state.errors = 0;
   state.zipPath = null;
   state.downloadName = null;
+  state.colabDatasetUrl = null;
+  state.colabUrlType = null;
+  state.colabUrlExpiresIn = null;
+  state.colabUploadStatus = null;
+  state.colabUploadError = null;
+  state.driveFileId = null;
+  state.driveWebViewLink = null;
+  state.driveColabPath = null;
+  state.driveUploadStatus = null;
+  state.driveUploadError = null;
 
   const deviceIds = await deviceIdsForUser(userId);
   const rows = deviceIds.length ? await fetchCandidateRows(deviceIds) : [];
@@ -405,10 +471,64 @@ async function runExport(userId, state) {
       /* ignore */
     }
   } else {
-    state.status = 'done';
-    state.message = 'Fertig';
     state.zipPath = zipPath;
     state.downloadName = downloadName;
+
+    const wantS3 = state.uploadToColab || s3Config().autoUpload;
+    const wantDrive = state.uploadToDrive || driveConfig().autoUpload;
+    let message = 'Fertig';
+
+    if (wantDrive) {
+      if (!driveConfig().credentialsReady) {
+        state.driveUploadStatus = 'failed';
+        state.driveUploadError = 'Google Drive Credentials fehlen (GOOGLE_DRIVE_CREDENTIALS_JSON)';
+        message = 'Fertig (Drive nicht konfiguriert)';
+      } else {
+        state.driveUploadStatus = 'uploading';
+        state.message = 'Google-Drive-Upload…';
+        try {
+          const uploaded = await uploadZipToDrive(zipPath, downloadName, {
+            folderUrl: state.driveFolderUrl
+          });
+          state.driveFileId = uploaded.fileId;
+          state.driveWebViewLink = uploaded.webViewLink;
+          state.driveColabPath = uploaded.colabPath;
+          state.driveUploadStatus = 'done';
+          message = 'Fertig (Drive-Datei bereit)';
+        } catch (err) {
+          logger.error(`Drive upload failed: ${err.message}`);
+          state.driveUploadStatus = 'failed';
+          state.driveUploadError = err.message || 'Drive-Upload fehlgeschlagen';
+          message = 'Fertig (Drive-Upload fehlgeschlagen)';
+        }
+      }
+    }
+
+    if (wantS3 && isS3Configured()) {
+      // Stay "running" so the UI keeps polling until the URL is ready.
+      state.colabUploadStatus = 'uploading';
+      state.message = 'S3-Upload für Colab…';
+      try {
+        const uploaded = await uploadZipForColab(zipPath, downloadName);
+        state.colabDatasetUrl = uploaded.url;
+        state.colabUrlType = uploaded.urlType;
+        state.colabUrlExpiresIn = uploaded.expiresIn;
+        state.colabUploadStatus = 'done';
+        message = state.driveFileId
+          ? 'Fertig (Drive + Colab-URL bereit)'
+          : 'Fertig (Colab-URL bereit)';
+      } catch (err) {
+        logger.error(`Colab S3 upload failed: ${err.message}`);
+        state.colabUploadStatus = 'failed';
+        state.colabUploadError = err.message || 'S3-Upload fehlgeschlagen';
+        message = state.driveFileId
+          ? 'Fertig (Drive ok, S3 fehlgeschlagen)'
+          : 'Fertig (S3-Upload fehlgeschlagen)';
+      }
+    }
+
+    state.message = message;
+    state.status = 'done';
   }
   state.finishedAt = new Date().toISOString();
   return publicState(state);
@@ -424,6 +544,11 @@ function startExport(userId, options = {}) {
     status: 'running',
     userId: String(userId),
     valRatio: clampValRatio(options.valRatio),
+    uploadToColab: Boolean(options.uploadToColab),
+    uploadToDrive: Boolean(options.uploadToDrive),
+    driveFolderUrl: typeof options.driveFolderUrl === 'string'
+      ? options.driveFolderUrl.trim()
+      : '',
     processed: 0,
     total: 0,
     written: 0,
@@ -436,7 +561,17 @@ function startExport(userId, options = {}) {
     preview: null,
     error: null,
     startedAt: null,
-    finishedAt: null
+    finishedAt: null,
+    colabDatasetUrl: null,
+    colabUrlType: null,
+    colabUrlExpiresIn: null,
+    colabUploadStatus: null,
+    colabUploadError: null,
+    driveFileId: null,
+    driveWebViewLink: null,
+    driveColabPath: null,
+    driveUploadStatus: null,
+    driveUploadError: null
   };
   current = state;
   setImmediate(() => {
@@ -451,6 +586,79 @@ function startExport(userId, options = {}) {
   return publicState(state);
 }
 
+/**
+ * Upload the current ready export zip to S3 for Colab.
+ */
+async function uploadCurrentExportForColab(userId) {
+  const file = getDownloadPath(userId);
+  if (!file) {
+    const err = new Error('Kein Export zum Upload bereit');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!current) {
+    const err = new Error('Kein Export-Status');
+    err.statusCode = 404;
+    throw err;
+  }
+  current.colabUploadStatus = 'uploading';
+  current.colabUploadError = null;
+  try {
+    const uploaded = await uploadZipForColab(file.path, file.name);
+    current.colabDatasetUrl = uploaded.url;
+    current.colabUrlType = uploaded.urlType;
+    current.colabUrlExpiresIn = uploaded.expiresIn;
+    current.colabUploadStatus = 'done';
+    return publicState(current);
+  } catch (err) {
+    current.colabUploadStatus = 'failed';
+    current.colabUploadError = err.message || 'S3-Upload fehlgeschlagen';
+    throw err;
+  }
+}
+
+/**
+ * Upload the current ready export zip to Google Drive for Colab.
+ */
+async function uploadCurrentExportToDrive(userId, options = {}) {
+  const file = getDownloadPath(userId);
+  if (!file) {
+    const err = new Error('Kein Export zum Upload bereit');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!current) {
+    const err = new Error('Kein Export-Status');
+    err.statusCode = 404;
+    throw err;
+  }
+  const cfg = driveConfig();
+  if (!cfg.credentialsReady) {
+    const err = new Error(
+      'Google Drive Credentials fehlen (GOOGLE_DRIVE_CREDENTIALS_JSON in server/.env)'
+    );
+    err.statusCode = 503;
+    throw err;
+  }
+  current.driveUploadStatus = 'uploading';
+  current.driveUploadError = null;
+  try {
+    const uploaded = await uploadZipToDrive(file.path, file.name, {
+      folderUrl: options.folderUrl || options.driveFolderUrl,
+      folderId: options.folderId
+    });
+    current.driveFileId = uploaded.fileId;
+    current.driveWebViewLink = uploaded.webViewLink;
+    current.driveColabPath = uploaded.colabPath;
+    current.driveUploadStatus = 'done';
+    return publicState(current);
+  } catch (err) {
+    current.driveUploadStatus = 'failed';
+    current.driveUploadError = err.message || 'Drive-Upload fehlgeschlagen';
+    throw err;
+  }
+}
+
 function requestExportStop() {
   if (!current || current.status !== 'running') return publicState(current);
   current.stopRequested = true;
@@ -459,7 +667,10 @@ function requestExportStop() {
 }
 
 function getDownloadPath(userId) {
-  if (!current || current.status !== 'done' || !current.zipPath) return null;
+  if (!current || !current.zipPath) return null;
+  const zipReady = current.status === 'done'
+    || (current.status === 'running' && isUploadingSideChannel(current));
+  if (!zipReady) return null;
   if (String(current.userId) !== String(userId)) return null;
   if (!fs.existsSync(current.zipPath)) return null;
   return {
@@ -473,6 +684,9 @@ module.exports = {
   startExport,
   requestExportStop,
   getDownloadPath,
+  uploadCurrentExportForColab,
+  uploadCurrentExportToDrive,
   buildPreview,
+  fetchCandidateRows,
   EXPORT_DIR
 };

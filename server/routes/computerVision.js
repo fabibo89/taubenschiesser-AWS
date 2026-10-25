@@ -351,7 +351,7 @@ router.get('/detections', authenticateToken, async (req, res) => {
 
     // Lean list: no image payloads, no CV angle enrichment (that blocked filters for minutes when CV was slow/down).
     const detections = await Detection.find(query)
-      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank fovCalibration preShootPhotos.cameraName preShootPhotos.role scanPhotos.cameraName scanPhotos.role')
+      .select('_id device processedAt classification_status processingTime detections target_bird temperature camera_position model image_info zoom_factor camera_source shotFired shootActive watertank detection_authority esp_parallel fovCalibration preShootPhotos.cameraName preShootPhotos.role scanPhotos.cameraName scanPhotos.role')
       .sort({ processedAt: -1 })
       .skip(skip)
       .limit(limitNum)
@@ -505,7 +505,7 @@ router.get('/detections/unclassified', authenticateToken, async (req, res) => {
     // while keeping the query index-friendly.
     const [detections, total] = await Promise.all([
       Detection.find(filter)
-        .select('_id device image_info detections target_bird processedAt processingTime camera_position shotFired shootActive watertank')
+        .select('_id device image_info detections target_bird processedAt processingTime camera_position shotFired shootActive watertank detection_authority esp_parallel')
         .sort({ processedAt: -1 })
         .limit(limitNum)
         .populate('device', 'name deviceId type')

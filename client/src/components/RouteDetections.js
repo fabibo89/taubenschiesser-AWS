@@ -43,6 +43,49 @@ const PIGEON_FILTER = [
   { value: 'no_pigeon', label: 'Keine Taube' }
 ];
 
+/** Zielvogel vs. Nebentaube — nicht Rot (das wäre „keine Taube“). */
+const ROUTE_BOX = {
+  target: '#00e676',
+  side: '#29b6f6'
+};
+
+function RouteBoxLegend({ dense = false }) {
+  return (
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: dense ? 1.5 : 2, alignItems: 'center' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+        <Box
+          sx={{
+            width: dense ? 18 : 22,
+            height: dense ? 14 : 16,
+            border: `3px solid ${ROUTE_BOX.target}`,
+            borderRadius: 0.5,
+            boxSizing: 'border-box',
+            flexShrink: 0
+          }}
+        />
+        <Typography variant="caption" color="text.secondary">
+          Zielvogel (Main)
+        </Typography>
+      </Box>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+        <Box
+          sx={{
+            width: dense ? 18 : 22,
+            height: dense ? 14 : 16,
+            border: `3px solid ${ROUTE_BOX.side}`,
+            borderRadius: 0.5,
+            boxSizing: 'border-box',
+            flexShrink: 0
+          }}
+        />
+        <Typography variant="caption" color="text.secondary">
+          Nebentaube (Side)
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 function toLocalDateString(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -259,9 +302,11 @@ function RoutePointCard({ coord, index, detections }) {
                         top: y,
                         width: Math.max(w, 4),
                         height: Math.max(h, 4),
-                        border: `3px solid ${isTarget ? '#4caf50' : '#f44336'}`,
+                        border: `${isTarget ? 4 : 2}px solid ${isTarget ? ROUTE_BOX.target : ROUTE_BOX.side}`,
                         boxSizing: 'border-box',
-                        boxShadow: isTarget ? '0 0 0 2px rgba(76,175,80,0.6)' : '0 0 0 1px rgba(0,0,0,0.5)',
+                        boxShadow: isTarget
+                          ? '0 0 0 2px rgba(0,230,118,0.45)'
+                          : '0 0 0 1px rgba(0,0,0,0.45)',
                         pointerEvents: 'auto',
                         cursor: 'pointer'
                       }}
@@ -314,9 +359,19 @@ function RoutePointCard({ coord, index, detections }) {
                             ESP: Rot {hoveredBoxInfo.esp_rot ?? '–'}°, Tilt {hoveredBoxInfo.esp_tilt ?? '–'}°
                           </Typography>
                         )}
-                        {hoveredBoxInfo.isTargetBird && (
-                          <Chip label="Zielvogel" size="small" color="primary" sx={{ mt: 0.5 }} />
-                        )}
+                        <Chip
+                          label={hoveredBoxInfo.isTargetBird ? 'Zielvogel (Main)' : 'Nebentaube (Side)'}
+                          size="small"
+                          sx={{
+                            mt: 0.5,
+                            borderColor: hoveredBoxInfo.isTargetBird ? ROUTE_BOX.target : ROUTE_BOX.side,
+                            color: hoveredBoxInfo.isTargetBird ? '#1b5e20' : '#01579b',
+                            bgcolor: hoveredBoxInfo.isTargetBird
+                              ? 'rgba(0,230,118,0.15)'
+                              : 'rgba(41,182,246,0.12)'
+                          }}
+                          variant="outlined"
+                        />
                       </>
                     )}
                   </Box>
@@ -344,6 +399,8 @@ function RoutePointCard({ coord, index, detections }) {
                     h = (hoveredBoxInfo.bbox.height / imgH) * 100;
                   }
                   const showBox = (hoveredBoxInfo?.position || hoveredBoxInfo?.bbox) && imgW > 1 && imgH > 1;
+                  const isTarget = Boolean(hoveredBoxInfo?.isTargetBird);
+                  const boxColor = isTarget ? ROUTE_BOX.target : ROUTE_BOX.side;
                   return (
                     <Box sx={{ position: 'relative', display: 'inline-block' }}>
                       <img
@@ -359,9 +416,9 @@ function RoutePointCard({ coord, index, detections }) {
                             top: `${top}%`,
                             width: `${w}%`,
                             height: `${h}%`,
-                            border: '3px solid #f44336',
+                            border: `${isTarget ? 4 : 2}px solid ${boxColor}`,
                             boxSizing: 'border-box',
-                            boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+                            boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
                             pointerEvents: 'none'
                           }}
                         />
@@ -378,9 +435,12 @@ function RoutePointCard({ coord, index, detections }) {
             </Popover>
           </Box>
         )}
-        {detections.length > 0 && (
-          <Chip size="small" label={`${detections.length} Erkennung(en)`} sx={{ mt: 1 }} />
-        )}
+        <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+          {detections.length > 0 && (
+            <Chip size="small" label={`${detections.length} Erkennung(en)`} />
+          )}
+          <RouteBoxLegend dense />
+        </Box>
       </CardContent>
     </Card>
   );
@@ -698,7 +758,10 @@ export default function RouteDetections() {
             </Table>
           </TableContainer>
 
-          <Typography variant="h6" sx={{ mt: 2, mb: 1 }}>Routenbilder mit eingezeichneten Tauben</Typography>
+          <Box sx={{ mt: 2, mb: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 2 }}>
+            <Typography variant="h6" sx={{ m: 0 }}>Routenbilder mit eingezeichneten Tauben</Typography>
+            <RouteBoxLegend />
+          </Box>
           <Grid container spacing={2}>
             {coordinates.map((coord, idx) => {
               const detectionsForCoord = allDetections.filter(
@@ -741,65 +804,78 @@ export default function RouteDetections() {
             const imgW = info.original_size?.width || info.zoomed_size?.width || 1;
             const imgH = info.original_size?.height || info.zoomed_size?.height || 1;
             const boxes = [];
+            const pushBox = (left, top, w, h, isTarget) => {
+              boxes.push({ left, top, w, h, isTarget: Boolean(isTarget) });
+            };
             if (detection.target_bird && (detection.target_bird.bbox || detection.target_bird.position)) {
               const b = detection.target_bird;
               if (b.position) {
-                boxes.push({
-                  left: ((b.position.center_x - b.position.width / 2) / imgW) * 100,
-                  top: ((b.position.center_y - b.position.height / 2) / imgH) * 100,
-                  w: (b.position.width / imgW) * 100,
-                  h: (b.position.height / imgH) * 100
-                });
+                pushBox(
+                  ((b.position.center_x - b.position.width / 2) / imgW) * 100,
+                  ((b.position.center_y - b.position.height / 2) / imgH) * 100,
+                  (b.position.width / imgW) * 100,
+                  (b.position.height / imgH) * 100,
+                  true
+                );
               } else if (b.bbox) {
-                boxes.push({
-                  left: (b.bbox.x / imgW) * 100,
-                  top: (b.bbox.y / imgH) * 100,
-                  w: (b.bbox.width / imgW) * 100,
-                  h: (b.bbox.height / imgH) * 100
-                });
+                pushBox(
+                  (b.bbox.x / imgW) * 100,
+                  (b.bbox.y / imgH) * 100,
+                  (b.bbox.width / imgW) * 100,
+                  (b.bbox.height / imgH) * 100,
+                  true
+                );
               }
             }
             (detection.detections || []).forEach((det) => {
               if (det.class !== 'bird') return;
+              const isTarget = Boolean(det.is_target_bird);
               if (det.position) {
-                boxes.push({
-                  left: ((det.position.center_x - det.position.width / 2) / imgW) * 100,
-                  top: ((det.position.center_y - det.position.height / 2) / imgH) * 100,
-                  w: (det.position.width / imgW) * 100,
-                  h: (det.position.height / imgH) * 100
-                });
+                pushBox(
+                  ((det.position.center_x - det.position.width / 2) / imgW) * 100,
+                  ((det.position.center_y - det.position.height / 2) / imgH) * 100,
+                  (det.position.width / imgW) * 100,
+                  (det.position.height / imgH) * 100,
+                  isTarget
+                );
               } else if (det.bbox) {
-                boxes.push({
-                  left: (det.bbox.x / imgW) * 100,
-                  top: (det.bbox.y / imgH) * 100,
-                  w: (det.bbox.width / imgW) * 100,
-                  h: (det.bbox.height / imgH) * 100
-                });
+                pushBox(
+                  (det.bbox.x / imgW) * 100,
+                  (det.bbox.y / imgH) * 100,
+                  (det.bbox.width / imgW) * 100,
+                  (det.bbox.height / imgH) * 100,
+                  isTarget
+                );
               }
             });
             return (
-              <Box sx={{ position: 'relative', display: 'inline-block' }}>
-                <img
-                  src={imageDialogUrl}
-                  alt="Detection"
-                  style={{ maxWidth: '100%', display: 'block', verticalAlign: 'top' }}
-                />
-                {boxes.map((box, idx) => (
-                  <Box
-                    key={idx}
-                    sx={{
-                      position: 'absolute',
-                      left: `${box.left}%`,
-                      top: `${box.top}%`,
-                      width: `${box.w}%`,
-                      height: `${box.h}%`,
-                      border: '3px solid #f44336',
-                      boxSizing: 'border-box',
-                      boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
-                      pointerEvents: 'none'
-                    }}
+              <Box>
+                <Box sx={{ mb: 1 }}>
+                  <RouteBoxLegend dense />
+                </Box>
+                <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                  <img
+                    src={imageDialogUrl}
+                    alt="Detection"
+                    style={{ maxWidth: '100%', display: 'block', verticalAlign: 'top' }}
                   />
-                ))}
+                  {boxes.map((box, idx) => (
+                    <Box
+                      key={idx}
+                      sx={{
+                        position: 'absolute',
+                        left: `${box.left}%`,
+                        top: `${box.top}%`,
+                        width: `${box.w}%`,
+                        height: `${box.h}%`,
+                        border: `${box.isTarget ? 4 : 2}px solid ${box.isTarget ? ROUTE_BOX.target : ROUTE_BOX.side}`,
+                        boxSizing: 'border-box',
+                        boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  ))}
+                </Box>
               </Box>
             );
           })()}

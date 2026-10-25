@@ -27,7 +27,8 @@ const CAMERA_SOURCES = new Set([
   'direct'
 ]);
 
-const REVIEW_STATUSES = new Set(['confirmed_pigeon', 'no_pigeon']);
+const REVIEW_STATUSES = new Set(['confirmed_pigeon', 'no_pigeon', 'too_far']);
+const NON_TRAIN_STATUSES = new Set(['no_pigeon', 'too_far']);
 
 function plain(value) {
   if (value && typeof value.toObject === 'function') return value.toObject();
@@ -465,6 +466,74 @@ function applySideReview(doc, { birdId, status, source = 'side-review', at = new
 }
 
 /**
+ * Set review on any bird (main or side). Main mirrors to classification_status.
+ * Returns { bird, previous } for undo.
+ */
+function applyBirdReview(doc, {
+  birdId,
+  status,
+  source = 'size-filter',
+  at = new Date()
+} = {}) {
+  if (!doc || !birdId) return null;
+  attachLiveBirdLayer(doc);
+  const bird = (doc.birds || []).find((entry) => entry.bird_id === birdId);
+  if (!bird) return null;
+
+  const previous = {
+    status: bird.review?.status ?? null,
+    source: bird.review?.source ?? null,
+    at: bird.review?.at || null,
+    classification_status: doc.classification_status ?? null,
+    classifiedAt: doc.classifiedAt || null,
+    role: bird.role
+  };
+
+  const normalized = REVIEW_STATUSES.has(status) ? status : null;
+  const when = normalized ? (at ? new Date(at) : new Date()) : null;
+  bird.review = {
+    status: normalized,
+    source: normalized ? source : null,
+    at: when
+  };
+
+  if (bird.role === 'main') {
+    doc.classification_status = normalized;
+    doc.classifiedAt = when;
+  }
+
+  if (typeof doc.markModified === 'function') {
+    doc.markModified('birds');
+    doc.markModified('target_bird');
+  }
+  return { bird, previous };
+}
+
+function restoreBirdReview(doc, { birdId, previous } = {}) {
+  if (!doc || !birdId || !previous) return null;
+  attachLiveBirdLayer(doc);
+  const bird = (doc.birds || []).find((entry) => entry.bird_id === birdId);
+  if (!bird) return null;
+
+  bird.review = {
+    status: previous.status ?? null,
+    source: previous.source ?? null,
+    at: previous.at ? new Date(previous.at) : null
+  };
+
+  if (bird.role === 'main' || previous.role === 'main') {
+    doc.classification_status = previous.classification_status ?? null;
+    doc.classifiedAt = previous.classifiedAt ? new Date(previous.classifiedAt) : null;
+  }
+
+  if (typeof doc.markModified === 'function') {
+    doc.markModified('birds');
+    doc.markModified('target_bird');
+  }
+  return bird;
+}
+
+/**
  * Accept a replay box without bird_id as a new side bird, or reject it via box.review.
  * Returns { box, bird, created }.
  */
@@ -555,10 +624,14 @@ function restoreNewBoxReview(doc, {
 
 module.exports = {
   LIVE_RUN_ID,
+  REVIEW_STATUSES,
+  NON_TRAIN_STATUSES,
   hasLiveRun,
   attachLiveBirdLayer,
   applyMainReview,
   applySideReview,
+  applyBirdReview,
+  restoreBirdReview,
   applyNewBoxReview,
   restoreNewBoxReview,
   appendReplayRun,
