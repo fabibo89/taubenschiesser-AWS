@@ -30,6 +30,10 @@ from angle_helper import (
     enrich_detections_esp_angles as shared_enrich_detections_esp_angles,
 )
 from laser_zone import resolve_shoot_use_laser, resolve_shoot_use_audio, resolve_shoot_actions_for_detection
+from ignore_zone import (
+    filter_detections_by_ignore_zones,
+    get_route_coordinate_for_device,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -1770,8 +1774,54 @@ class HardwareMonitor:
 
         return targets
 
+    def _esp_only_may_shoot(
+        self, device: Dict, esp_parallel: Optional[List[Dict]] = None
+    ) -> bool:
+        """Whether ESP-authority (slave-only) detections may trigger a shoot.
+
+        Reads espOnlyShoot on the winning parallelDetect P4 cam (default True).
+        """
+        best = self._best_esp_parallel_hit(esp_parallel)
+        cam_id = best.get('camera_id') if isinstance(best, dict) else None
+
+        def _cfg_allows(cfg: Optional[Dict]) -> Optional[bool]:
+            if not isinstance(cfg, dict) or not cfg.get('parallelDetect'):
+                return None
+            return bool(cfg.get('espOnlyShoot', True))
+
+        cameras = device.get('cameras') if isinstance(device.get('cameras'), list) else []
+        matched: Optional[bool] = None
+        any_allow: Optional[bool] = None
+        for cam in cameras:
+            if not isinstance(cam, dict) or cam.get('type') != 'esp32-p4':
+                continue
+            if cam.get('enabled') is False:
+                continue
+            allow = _cfg_allows(cam.get('esp32P4') or {})
+            if allow is None:
+                continue
+            if cam_id and cam.get('id') == cam_id:
+                matched = allow
+                break
+            if any_allow is None:
+                any_allow = allow
+            else:
+                any_allow = any_allow or allow
+
+        if matched is not None:
+            return matched
+        if any_allow is not None:
+            return any_allow
+
+        legacy = device.get('camera') if isinstance(device.get('camera'), dict) else {}
+        if legacy.get('type') == 'esp32-p4':
+            allow = _cfg_allows(legacy.get('esp32P4') or {})
+            if allow is not None:
+                return allow
+        return True
+
     async def _post_esp_parallel_detect(self, target: Dict, jpeg_bytes: bytes) -> Dict:
-        """POST JPEG to ESP-P4 /detect (alongside cloud). Results stored; P4-only can drive shoot."""
+        """POST JPEG to ESP-P4 /detect (alongside cloud). Results stored; P4-only may drive shoot."""
         url = target.get('url')
         started = time.monotonic()
         out = {
@@ -2040,6 +2090,60 @@ class HardwareMonitor:
             'model': esp_result.get('model'),
         }
 
+    def _apply_ignore_zones_to_result(
+        self,
+        device: Dict,
+        cv_result: Optional[Dict],
+        original_frame: np.ndarray,
+        zoomed_frame: np.ndarray,
+    ) -> Optional[Dict]:
+        """Drop birds inside route-point ignoreZones (Master + Slave). Mutates and returns cv_result."""
+        if not isinstance(cv_result, dict):
+            return cv_result
+        taub = device.get('taubenschiesser') if isinstance(device.get('taubenschiesser'), dict) else {}
+        device_ip = taub.get('ip') if isinstance(taub, dict) else None
+        actions = device.get('actions') or {}
+        route_coordinates = (actions.get('route') or {}).get('coordinates') or []
+        route_index = self.get_arrived_route_index(device_ip, len(route_coordinates)) if device_ip else 0
+        route_coord = get_route_coordinate_for_device(device, route_index)
+        zoom_factor = 1.0
+        if isinstance(route_coord, dict):
+            try:
+                zoom_factor = float(route_coord.get('zoom') or 1.0)
+            except (TypeError, ValueError):
+                zoom_factor = 1.0
+        image_info = {
+            'original_size': {
+                'width': int(original_frame.shape[1]),
+                'height': int(original_frame.shape[0]),
+            },
+            'zoomed_size': {
+                'width': int(zoomed_frame.shape[1]),
+                'height': int(zoomed_frame.shape[0]),
+            },
+        }
+        kept, dropped = filter_detections_by_ignore_zones(
+            cv_result.get('detections'),
+            route_coord,
+            zoom_factor,
+            image_info,
+        )
+        if dropped:
+            logger.info(
+                f"🚫 Ignore-Zone: {dropped} Vogel-Box(en) verworfen "
+                f"(Routenpunkt {route_index + 1 if route_coordinates else '?'})"
+            )
+        birds = [d for d in kept if d.get('class') == 'bird']
+        cv_result['detections'] = kept
+        cv_result['bird_count'] = len(birds)
+        cv_result['birds_found'] = len(birds) > 0
+        if birds:
+            confs = [float(d.get('confidence') or 0) for d in birds]
+            cv_result['confidence_level'] = max(confs) if confs else cv_result.get('confidence_level', 0)
+        else:
+            cv_result['confidence_level'] = 0.0
+        return cv_result
+
     async def analyze_frame_for_birds(self, device: Dict, original_frame: np.ndarray, zoomed_frame: np.ndarray, camera_source: str = 'unknown'):
         """Analyze frame for birds and trigger shoot if found (cloud master, ESP-P4 fallback)."""
         try:
@@ -2091,11 +2195,15 @@ class HardwareMonitor:
                         )
                         
                         # Log CV service response details
-                        bird_count = result.get('bird_count', 0)
                         detections = result.get('detections', [])
                         sent_h, sent_w = model_frame.shape[:2]
                         self._scale_detections_to_saved(detections, sent_w, sent_h, saved_w, saved_h)
                         result['detections'] = detections
+                        result = self._apply_ignore_zones_to_result(
+                            device, result, original_frame, zoomed_frame
+                        )
+                        detections = result.get('detections', [])
+                        bird_count = result.get('bird_count', 0)
                         _pt_raw = result.get('processing_time', 0)
                         try:
                             processing_time_ms = float(_pt_raw or 0)
@@ -2187,8 +2295,15 @@ class HardwareMonitor:
                             save_result = self._esp_result_as_cv(
                                 esp_best, sent_w, sent_h, saved_w, saved_h, camera_source
                             )
+                            save_result = self._apply_ignore_zones_to_result(
+                                device, save_result, original_frame, zoomed_frame
+                            )
+                            if not save_result.get('birds_found'):
+                                detection_authority = None
+                                save_result = None
+                                logger.info("🚫 ESP-Hit komplett in Ignore-Zone — kein Save/Schuss")
                             # Aim angles for shoot from P4 boxes
-                            esp_dets = save_result.get('detections') or []
+                            esp_dets = (save_result or {}).get('detections') or []
                             esp_target = max(
                                 (d for d in esp_dets if d.get('class') == 'bird'),
                                 key=lambda d: d.get('confidence', 0),
@@ -2381,15 +2496,26 @@ class HardwareMonitor:
                                 )
                             elif detection_authority == 'esp':
                                 esp_to_store = esp_parallel
-                            
-                            # Save detection to database (with shotFired=monitor_armed)
+
+                            esp_may_shoot = (
+                                detection_authority != 'esp'
+                                or self._esp_only_may_shoot(device, esp_to_store)
+                            )
+                            will_shoot = bool(monitor_armed and esp_may_shoot)
+                            if monitor_armed and detection_authority == 'esp' and not esp_may_shoot:
+                                logger.info(
+                                    f"🦅 ESP-only hit on {device_ip} — save only "
+                                    f"(espOnlyShoot=false)"
+                                )
+
+                            # Save detection to database (with shotFired=will_shoot)
                             target_bird, detection_id = await self.save_detection_to_db(
                                 device,
                                 original_frame,
                                 zoomed_frame,
                                 save_result,
                                 camera_source,
-                                shot_fired=monitor_armed,
+                                shot_fired=will_shoot,
                                 detection_authority=detection_authority,
                                 esp_parallel=esp_to_store,
                             )
@@ -2397,9 +2523,9 @@ class HardwareMonitor:
                             taub_cfg = device.get('taubenschiesser', {}) if isinstance(device.get('taubenschiesser'), dict) else {}
                             fov_on_detection = bool(taub_cfg.get('postShotFovCalibrate'))
 
-                            # Trigger shoot only when monitor is armed (calibrate runs after shoot if enabled).
-                            # If not armed but FOV-on-detection is on: calibrate from scan pose now.
-                            if monitor_armed:
+                            # Trigger shoot only when monitor is armed (and espOnlyShoot if ESP-auth).
+                            # If not shooting but FOV-on-detection is on: calibrate from scan pose now.
+                            if will_shoot:
                                 await self.trigger_shoot(
                                     device, target_bird=target_bird, detection_id=detection_id
                                 )
@@ -2425,28 +2551,43 @@ class HardwareMonitor:
                             save_result = self._esp_result_as_cv(
                                 esp_best, src_w, src_h, saved_w, saved_h, camera_source
                             )
-                            monitor_armed = device.get('monitorArmed', False)
-                            logger.warning(
-                                f"🦅 Cloud CV failed HTTP {response.status} — "
-                                f"falling back to P4 ({esp_best.get('count')} birds)"
+                            save_result = self._apply_ignore_zones_to_result(
+                                device, save_result, original_frame, zoomed_frame
                             )
-                            if device_ip:
-                                self.device_dynamic_wait_threshold[device_ip] = 0
-                            await self._emit_device_waiting_snapshot(device)
-                            target_bird, detection_id = await self.save_detection_to_db(
-                                device,
-                                original_frame,
-                                zoomed_frame,
-                                save_result,
-                                camera_source,
-                                shot_fired=monitor_armed,
-                                detection_authority='esp',
-                                esp_parallel=esp_parallel,
-                            )
-                            if monitor_armed:
-                                await self.trigger_shoot(
-                                    device, target_bird=target_bird, detection_id=detection_id
+                            if not save_result.get('birds_found'):
+                                logger.info(
+                                    "🚫 ESP-Fallback: alle Boxen in Ignore-Zone — kein Save"
                                 )
+                                await self.send_monitor_event(device, 'error', {
+                                    'message': f'CV analysis failed: HTTP {response.status}',
+                                    'camera': camera_source
+                                })
+                            else:
+                                monitor_armed = device.get('monitorArmed', False)
+                                esp_may_shoot = self._esp_only_may_shoot(device, esp_parallel)
+                                will_shoot = bool(monitor_armed and esp_may_shoot)
+                                logger.warning(
+                                    f"🦅 Cloud CV failed HTTP {response.status} — "
+                                    f"falling back to P4 ({save_result.get('bird_count')} birds)"
+                                    + ("" if will_shoot else " — save only (espOnlyShoot=false)")
+                                )
+                                if device_ip:
+                                    self.device_dynamic_wait_threshold[device_ip] = 0
+                                await self._emit_device_waiting_snapshot(device)
+                                target_bird, detection_id = await self.save_detection_to_db(
+                                    device,
+                                    original_frame,
+                                    zoomed_frame,
+                                    save_result,
+                                    camera_source,
+                                    shot_fired=will_shoot,
+                                    detection_authority='esp',
+                                    esp_parallel=esp_parallel,
+                                )
+                                if will_shoot:
+                                    await self.trigger_shoot(
+                                        device, target_bird=target_bird, detection_id=detection_id
+                                    )
                         else:
                             await self.send_monitor_event(device, 'error', {
                                 'message': f'CV analysis failed: HTTP {response.status}',

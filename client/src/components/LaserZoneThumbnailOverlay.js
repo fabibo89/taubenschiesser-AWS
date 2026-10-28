@@ -1,18 +1,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box } from '@mui/material';
 import { hasActiveLaserZone, normalizeLaserZone } from '../utils/laserZone';
+import { normalizeIgnoreZones } from '../utils/ignoreZone';
 
 /**
- * Route thumbnail with laser zone overlay aligned to the actual rendered image
+ * Route thumbnail with laser + ignore zone overlays aligned to the actual rendered image
  * (object-fit: contain), not the surrounding container.
  */
-const LaserZoneThumbnailOverlay = ({ image, laserZone }) => {
+const LaserZoneThumbnailOverlay = ({ image, laserZone, ignoreZones }) => {
   const containerRef = useRef(null);
   const imgRef = useRef(null);
   const [imageLayout, setImageLayout] = useState(null);
 
   const zone = normalizeLaserZone(laserZone);
   const showZone = hasActiveLaserZone(zone);
+  const ignoreList = normalizeIgnoreZones(ignoreZones);
+  const showIgnore = ignoreList.length > 0;
 
   const measureImageLayout = useCallback(() => {
     const img = imgRef.current;
@@ -75,7 +78,7 @@ const LaserZoneThumbnailOverlay = ({ image, laserZone }) => {
           display: 'block'
         }}
       />
-      {showZone && imageLayout && (
+      {(showZone || showIgnore) && imageLayout && (
         <Box
           component="svg"
           viewBox="0 0 100 100"
@@ -89,13 +92,25 @@ const LaserZoneThumbnailOverlay = ({ image, laserZone }) => {
             pointerEvents: 'none'
           }}
         >
-          <polygon
-            points={polygonAttr}
-            fill="rgba(76, 175, 80, 0.2)"
-            stroke="rgba(76, 175, 80, 0.9)"
-            strokeWidth="1.5"
-            vectorEffect="non-scaling-stroke"
-          />
+          {showZone && (
+            <polygon
+              points={polygonAttr}
+              fill="rgba(76, 175, 80, 0.2)"
+              stroke="rgba(76, 175, 80, 0.9)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          {ignoreList.map((z, i) => (
+            <polygon
+              key={`ign-${i}`}
+              points={z.points.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+              fill="rgba(244, 67, 54, 0.28)"
+              stroke="rgba(198, 40, 40, 0.9)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
         </Box>
       )}
     </Box>

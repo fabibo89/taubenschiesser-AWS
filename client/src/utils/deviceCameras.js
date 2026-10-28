@@ -38,6 +38,7 @@ export function defaultEsp32P4() {
   return {
     ...defaultHttpStill(),
     parallelDetect: false,
+    espOnlyShoot: true,
     detectEndpoint: '/detect'
   };
 }

@@ -666,6 +666,9 @@ const RouteEditDialog = ({
                           {hasActiveLaserZone(coord.laserZone) && (
                             <Chip label="Laser" size="small" color="success" variant="outlined" />
                           )}
+                          {Array.isArray(coord.ignoreZones) && coord.ignoreZones.length > 0 && (
+                            <Chip label="Ignore" size="small" color="error" variant="outlined" />
+                          )}
                           {isRoutePointAudioEnabled(coord) && (
                             <Chip label="Audio" size="small" color="primary" variant="outlined" />
                           )}
@@ -698,6 +701,7 @@ const RouteEditDialog = ({
                             <LaserZoneThumbnailOverlay
                               image={coord.image}
                               laserZone={coord.laserZone}
+                              ignoreZones={coord.ignoreZones}
                             />
                           ) : (
                             <Box textAlign="center">

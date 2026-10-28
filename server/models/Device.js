@@ -221,12 +221,20 @@ const deviceSchema = new mongoose.Schema({
       },
       /**
        * Live monitor: also POST analysis JPEG to this P4 `/detect`.
-       * Cloud YOLO stays master for save/shoot; if only P4 sees birds, save+shoot from P4.
+       * Cloud YOLO stays master for save/shoot; if only P4 sees birds, save (+ optional shoot).
        * Both sides are stored on the detection (esp_parallel + detection_authority).
        */
       parallelDetect: {
         type: Boolean,
         default: false
+      },
+      /**
+       * When only the P4 (slave) finds birds, allow monitor shoot if armed.
+       * false = save detection only (shadow / compare). Default true = previous behaviour.
+       */
+      espOnlyShoot: {
+        type: Boolean,
+        default: true
       },
       detectEndpoint: {
         type: String,
@@ -365,11 +373,18 @@ const deviceSchema = new mongoose.Schema({
       },
       /**
        * Live monitor: also POST analysis JPEG to this P4 `/detect`.
-       * Cloud YOLO stays master; P4-only hits also save+shoot. Both stored on detection.
+       * Cloud YOLO stays master; P4-only hits save (+ optional shoot). Both stored on detection.
        */
       parallelDetect: {
         type: Boolean,
         default: false
+      },
+      /**
+       * When only the P4 finds birds, allow shoot if armed. false = save only.
+       */
+      espOnlyShoot: {
+        type: Boolean,
+        default: true
       },
       detectEndpoint: {
         type: String,
@@ -440,7 +455,23 @@ const deviceSchema = new mongoose.Schema({
             x: { type: Number, min: 0, max: 1 },
             y: { type: Number, min: 0, max: 1 }
           }]
-        }
+        },
+        /**
+         * Ignore zones: detections whose center falls inside are dropped (no save/shoot).
+         * Applies to Cloud YOLO and ESP-P4 alike. Normalized 0–1 on the route snapshot.
+         */
+        ignoreZones: [{
+          enabled: { type: Boolean, default: true },
+          shape: { type: String, enum: ['rect', 'polygon'], default: 'polygon' },
+          x: { type: Number, min: 0, max: 1 },
+          y: { type: Number, min: 0, max: 1 },
+          width: { type: Number, min: 0.01, max: 1 },
+          height: { type: Number, min: 0.01, max: 1 },
+          points: [{
+            x: { type: Number, min: 0, max: 1 },
+            y: { type: Number, min: 0, max: 1 }
+          }]
+        }]
       }],
       panorama: {
         image: {

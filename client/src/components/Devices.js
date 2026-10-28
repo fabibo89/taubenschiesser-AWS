@@ -1281,8 +1281,21 @@ const Devices = () => {
                               })}
                             />
                           )}
-                          label="Parallel-Detect (Cloud + P4 /detect, Schuss bleibt Cloud)"
+                          label="Parallel-Detect (Cloud + P4 /detect)"
                         />
+                        {!!cam.esp32P4?.parallelDetect && (
+                          <FormControlLabel
+                            control={(
+                              <Switch
+                                checked={cam.esp32P4?.espOnlyShoot !== false}
+                                onChange={(e) => updateCameraNested(cam.id, 'esp32P4', {
+                                  espOnlyShoot: e.target.checked
+                                })}
+                              />
+                            )}
+                            label="Bei reiner Slave-Erkennung auch schießen"
+                          />
+                        )}
                         <TextField
                           margin="dense"
                           size="small"

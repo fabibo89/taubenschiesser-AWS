@@ -21,13 +21,20 @@ import {
   Paper,
   Popover,
   IconButton,
-  Dialog,
-  DialogTitle,
-  DialogContent
+  ToggleButton,
+  ToggleButtonGroup,
+  Tooltip,
+  Button
 } from '@mui/material';
 import { ExpandMore as ExpandMoreIcon, ExpandLess as ExpandLessIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
+import { resolveDetectionSources, detectionSourceLabels } from '../utils/detectionSources';
+import { normalizeIgnoreZones, hasActiveIgnoreZones, detectionHitsIgnoreZones } from '../utils/ignoreZone';
+import { normalizeLaserZone, hasActiveLaserZone } from '../utils/laserZone';
+import DetectionDetailDialog from './DetectionDetailDialog';
+import IgnoreZoneEditor from './IgnoreZoneEditor';
+import IgnoreZoneAffectedDialog from './IgnoreZoneAffectedDialog';
 
 const TIME_RANGES = [
   { value: '1', label: '1 Tag' },
@@ -46,7 +53,9 @@ const PIGEON_FILTER = [
 /** Zielvogel vs. Nebentaube — nicht Rot (das wäre „keine Taube“). */
 const ROUTE_BOX = {
   target: '#00e676',
-  side: '#29b6f6'
+  side: '#29b6f6',
+  ignore: 'rgba(198, 40, 40, 0.85)',
+  laser: 'rgba(76, 175, 80, 0.9)'
 };
 
 function RouteBoxLegend({ dense = false }) {
@@ -82,6 +91,22 @@ function RouteBoxLegend({ dense = false }) {
           Nebentaube (Side)
         </Typography>
       </Box>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+        <Box
+          sx={{
+            width: dense ? 18 : 22,
+            height: dense ? 14 : 16,
+            bgcolor: 'rgba(244, 67, 54, 0.35)',
+            border: `2px solid ${ROUTE_BOX.ignore}`,
+            borderRadius: 0.5,
+            boxSizing: 'border-box',
+            flexShrink: 0
+          }}
+        />
+        <Typography variant="caption" color="text.secondary">
+          Ignore-Zone
+        </Typography>
+      </Box>
     </Box>
   );
 }
@@ -107,7 +132,21 @@ function getDateRange(days) {
   };
 }
 
-function RoutePointCard({ coord, index, detections }) {
+/** Filter by Cloud-YOLO (Master) / ESP-P4 (Slave) source chips. Legacy → Master. */
+function detectionMatchesSourceFilter(detection, sourceFilter) {
+  const wantMaster = sourceFilter.includes('master');
+  const wantSlave = sourceFilter.includes('slave');
+  if (!wantMaster && !wantSlave) return false;
+
+  const src = resolveDetectionSources(detection);
+  if (!src.known) return wantMaster;
+
+  if (src.master && wantMaster) return true;
+  if (src.slave && wantSlave) return true;
+  return false;
+}
+
+function RoutePointCard({ coord, index, detections, onOpenDetectionDetail, onEditIgnoreZones }) {
   const [imgSize, setImgSize] = useState({ w: 0, h: 0, naturalW: 0, naturalH: 0 });
   const [anchorEl, setAnchorEl] = useState(null);
   const [hoveredDetectionId, setHoveredDetectionId] = useState(null);
@@ -116,6 +155,9 @@ function RoutePointCard({ coord, index, detections }) {
   const [detectionMeta, setDetectionMeta] = useState({}); // { [id]: { createdAt, _id } }
   const closeTimeoutRef = useRef(null);
   const leaveDelayRef = useRef(null);
+  const ignoreZones = normalizeIgnoreZones(coord?.ignoreZones);
+  const laserZone = normalizeLaserZone(coord?.laserZone);
+  const showLaser = hasActiveLaserZone(laserZone);
 
   const clearCloseTimers = () => {
     if (closeTimeoutRef.current) {
@@ -192,6 +234,19 @@ function RoutePointCard({ coord, index, detections }) {
           setImageCache((prev) => ({ ...prev, [detectionId]: null }));
         });
     }
+  };
+
+  const closePopover = () => {
+    clearCloseTimers();
+    setAnchorEl(null);
+    setHoveredDetectionId(null);
+    setHoveredBoxInfo(null);
+  };
+
+  const openDetail = (detectionId) => {
+    if (!detectionId) return;
+    closePopover();
+    onOpenDetectionDetail?.(detectionId);
   };
 
   const scheduleClose = () => {
@@ -296,6 +351,7 @@ function RoutePointCard({ coord, index, detections }) {
                       key={idx}
                       onMouseEnter={(e) => handleBoxMouseEnter(e, detectionId, { position: det.position, bbox: det.bbox, esp_rot: det.esp_rot, esp_tilt: det.esp_tilt, isTargetBird: isTarget })}
                       onMouseLeave={scheduleClose}
+                      onClick={() => openDetail(detectionId)}
                       sx={{
                         position: 'absolute',
                         left: x,
@@ -315,21 +371,68 @@ function RoutePointCard({ coord, index, detections }) {
                 });
               })()}
             </Box>
+            {/* Zone overlays (ignore + laser) aligned to rendered image box */}
+            {imgSize.w > 0 && (ignoreZones.length > 0 || showLaser) && (() => {
+              const cw = imgSize.w;
+              const ch = imgSize.h;
+              const nw = imgSize.naturalW || cw;
+              const nh = imgSize.naturalH || ch;
+              const scale = Math.min(cw / nw, ch / nh) || 1;
+              const dw = nw * scale;
+              const dh = nh * scale;
+              const offsetX = (cw - dw) / 2;
+              const offsetY = (ch - dh) / 2;
+              return (
+                <Box
+                  component="svg"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  sx={{
+                    position: 'absolute',
+                    left: offsetX,
+                    top: offsetY,
+                    width: dw,
+                    height: dh,
+                    pointerEvents: 'none',
+                    zIndex: 2
+                  }}
+                >
+                  {showLaser && (
+                    <polygon
+                      points={laserZone.points.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+                      fill="rgba(76, 175, 80, 0.12)"
+                      stroke={ROUTE_BOX.laser}
+                      strokeWidth="1.2"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  {ignoreZones.map((z, zi) => (
+                    <polygon
+                      key={`ign-${zi}`}
+                      points={z.points.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+                      fill="rgba(244, 67, 54, 0.28)"
+                      stroke={ROUTE_BOX.ignore}
+                      strokeWidth="1.8"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ))}
+                </Box>
+              );
+            })()}
             <Popover
               open={Boolean(anchorEl)}
               anchorEl={anchorEl}
-              onClose={() => {
-                setAnchorEl(null);
-                setHoveredDetectionId(null);
-                setHoveredBoxInfo(null);
-              }}
+              onClose={closePopover}
               anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
               transformOrigin={{ vertical: 'top', horizontal: 'center' }}
               disableRestoreFocus
+              // Root lets clicks through to the overlay boxes; only the paper is interactive
+              sx={{ pointerEvents: 'none' }}
               slotProps={{
                 paper: {
                   onMouseEnter: clearCloseTimers,
-                  onMouseLeave: scheduleClose
+                  onMouseLeave: scheduleClose,
+                  sx: { pointerEvents: 'auto' }
                 }
               }}
             >
@@ -402,7 +505,11 @@ function RoutePointCard({ coord, index, detections }) {
                   const isTarget = Boolean(hoveredBoxInfo?.isTargetBird);
                   const boxColor = isTarget ? ROUTE_BOX.target : ROUTE_BOX.side;
                   return (
-                    <Box sx={{ position: 'relative', display: 'inline-block' }}>
+                    <Box
+                      onClick={() => openDetail(hoveredDetectionId)}
+                      title="Erkennungs-Details öffnen"
+                      sx={{ position: 'relative', display: 'inline-block', cursor: 'pointer' }}
+                    >
                       <img
                         src={imageCache[hoveredDetectionId]}
                         alt="Detection"
@@ -439,6 +546,17 @@ function RoutePointCard({ coord, index, detections }) {
           {detections.length > 0 && (
             <Chip size="small" label={`${detections.length} Erkennung(en)`} />
           )}
+          {hasActiveIgnoreZones(coord?.ignoreZones) && (
+            <Chip size="small" color="error" variant="outlined" label={`${ignoreZones.length} Ignore-Zone(n)`} />
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            color="error"
+            onClick={() => onEditIgnoreZones?.(index, detections)}
+          >
+            Ignore-Zonen
+          </Button>
           <RouteBoxLegend dense />
         </Box>
       </CardContent>
@@ -452,33 +570,16 @@ export default function RouteDetections() {
   const [device, setDevice] = useState(null);
   const [timeRange, setTimeRange] = useState('30');
   const [classificationStatus, setClassificationStatus] = useState('confirmed_pigeon');
+  /** Which Erkennung-Quellen in Liste/Routenbilder: master = Cloud-YOLO, slave = ESP-P4 */
+  const [sourceFilter, setSourceFilter] = useState(['master', 'slave']);
   const [loading, setLoading] = useState(true);
   const [allDetections, setAllDetections] = useState([]);
   const [loadingDetections, setLoadingDetections] = useState(false);
   const [expandedRows, setExpandedRows] = useState(() => new Set());
-  const [imageDialogDetectionId, setImageDialogDetectionId] = useState(null);
-  const [imageDialogUrl, setImageDialogUrl] = useState(null);
-
-  useEffect(() => {
-    if (!imageDialogDetectionId) {
-      setImageDialogUrl(null);
-      return;
-    }
-    let cancelled = false;
-    setImageDialogUrl('loading');
-    axios
-      .get(`/api/cv/detections/${imageDialogDetectionId}`)
-      .then((res) => {
-        if (!cancelled) {
-          const url = res.data?.zoomed_image?.url || res.data?.image?.url || null;
-          setImageDialogUrl(url || null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setImageDialogUrl(null);
-      });
-    return () => { cancelled = true; };
-  }, [imageDialogDetectionId]);
+  const [detailDetectionId, setDetailDetectionId] = useState(null);
+  const [ignoreEditor, setIgnoreEditor] = useState(null); // { index, birdBoxes }
+  const [ignoreSaving, setIgnoreSaving] = useState(false);
+  const [affectedDialog, setAffectedDialog] = useState(null); // { detections, ignoreZones }
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -512,6 +613,107 @@ export default function RouteDetections() {
   const coordinates = device?.actions?.route?.coordinates || [];
   const { dateFrom, dateTo } = getDateRange(timeRange);
 
+  const openIgnoreEditor = useCallback((index, detectionsForCoord = []) => {
+    const birdBoxes = [];
+    detectionsForCoord.forEach((d, di) => {
+      const info = d.image_info || {};
+      const imageSize = info.original_size || info.zoomed_size || null;
+      if (!imageSize?.width) return;
+      const push = (bird, label) => {
+        if (!bird || (!bird.bbox && !bird.position)) return;
+        birdBoxes.push({ bird, imageSize, label });
+      };
+      if (d.target_bird) push(d.target_bird, `Ziel #${di + 1}`);
+      (d.detections || []).forEach((det, j) => {
+        if (det.class !== 'bird') return;
+        push(det, `Box #${di + 1}.${j + 1}`);
+      });
+    });
+    setIgnoreEditor({ index, birdBoxes });
+  }, []);
+
+  const saveIgnoreZones = useCallback(async (zones) => {
+    if (!selectedDeviceId || ignoreEditor == null) return;
+    const index = ignoreEditor.index;
+    setIgnoreSaving(true);
+    try {
+      const actionsRes = await axios.get(`/api/devices/${selectedDeviceId}/actions`);
+      const mode = actionsRes.data?.mode || device?.actions?.mode || 'route';
+      const route = actionsRes.data?.route || { coordinates: [] };
+      const coords = [...(route.coordinates || [])];
+      if (!coords[index]) {
+        toast.error('Routenpunkt nicht gefunden');
+        return;
+      }
+      const next = { ...coords[index] };
+      if (zones && zones.length) {
+        next.ignoreZones = zones;
+      } else {
+        delete next.ignoreZones;
+      }
+      coords[index] = next;
+      await axios.put(`/api/devices/${selectedDeviceId}/actions`, {
+        mode,
+        route: { ...route, coordinates: coords }
+      });
+      setDevice((prev) => {
+        if (!prev) return prev;
+        const prevCoords = prev.actions?.route?.coordinates || [];
+        const updated = prevCoords.map((c, i) => (i === index
+          ? { ...c, ignoreZones: zones?.length ? zones : undefined }
+          : c));
+        return {
+          ...prev,
+          actions: {
+            ...prev.actions,
+            route: {
+              ...(prev.actions?.route || {}),
+              coordinates: updated
+            }
+          }
+        };
+      });
+      toast.success(zones?.length ? 'Ignore-Zonen gespeichert' : 'Ignore-Zonen entfernt');
+      setIgnoreEditor(null);
+
+      // Offer to update detections in the selected time range (all classifications, not UI filter)
+      if (zones?.length) {
+        const coord = coords[index];
+        const params = new URLSearchParams({
+          deviceId: selectedDeviceId,
+          limit: '2000'
+        });
+        if (dateFrom) params.append('dateFrom', dateFrom);
+        if (dateTo) params.append('dateTo', dateTo);
+        // no classificationStatus → Taube + Keine Taube + unklassifiziert
+        const listRes = await axios.get(`/api/cv/detections?${params}`);
+        const pool = listRes.data?.detections || [];
+        const atPoint = pool.filter(
+          (d) =>
+            (d.camera_position?.rotation ?? null) === (coord.rotation ?? null)
+            && (d.camera_position?.tilt ?? null) === (coord.tilt ?? null)
+        );
+        const affected = atPoint.filter((d) => detectionHitsIgnoreZones(d, zones));
+        if (affected.length > 0) {
+          const ask = window.confirm(
+            `${affected.length} Erkennung(en) im gewählten Zeitraum fallen in die Ignore-Zonen `
+            + '(alle Klassifizierungen).\n\n'
+            + 'Betroffene Erkennungen jetzt aktualisieren?'
+          );
+          if (ask) {
+            setAffectedDialog({ detections: affected, ignoreZones: zones });
+          }
+        } else {
+          toast.info('Keine Erkennungen im Zeitraum liegen in den Ignore-Zonen.');
+        }
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Speichern fehlgeschlagen');
+    } finally {
+      setIgnoreSaving(false);
+    }
+  }, [selectedDeviceId, ignoreEditor, device?.actions?.mode, dateFrom, dateTo]);
+
   useEffect(() => {
     if (!selectedDeviceId) {
       setAllDetections([]);
@@ -540,8 +742,12 @@ export default function RouteDetections() {
     return () => { cancelled = true; };
   }, [selectedDeviceId, timeRange, classificationStatus, dateFrom, dateTo]);
 
+  const filteredDetections = allDetections.filter((d) =>
+    detectionMatchesSourceFilter(d, sourceFilter)
+  );
+
   const clusteredDetections = [];
-  allDetections.forEach((d) => {
+  filteredDetections.forEach((d) => {
     const rot = d.camera_position?.rotation ?? '-';
     const til = d.camera_position?.tilt ?? '-';
     const coordIndex = coordinates.findIndex(
@@ -589,7 +795,8 @@ export default function RouteDetections() {
       sourceImage: `${srcW} × ${srcH}`,
       mapping,
       hasTargetBird,
-      birds
+      birds,
+      sourceLabels: detectionSourceLabels(d)
     });
   });
 
@@ -653,6 +860,31 @@ export default function RouteDetections() {
                 </Select>
               </FormControl>
             </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                Erkennung
+              </Typography>
+              <ToggleButtonGroup
+                size="small"
+                value={sourceFilter}
+                onChange={(_e, next) => {
+                  if (!next || next.length === 0) return;
+                  setSourceFilter(next);
+                }}
+                aria-label="Master/Slave Erkennung filtern"
+              >
+                <ToggleButton value="master" aria-label="Master (Cloud-YOLO)">
+                  <Tooltip title="Cloud-YOLO (Master)">
+                    <span>Master</span>
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="slave" aria-label="Slave (ESP-P4)">
+                  <Tooltip title="ESP-P4 parallel (Slave)">
+                    <span>Slave</span>
+                  </Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Grid>
           </Grid>
         </CardContent>
       </Card>
@@ -680,6 +912,7 @@ export default function RouteDetections() {
                 <TableRow>
                   <TableCell padding="none" sx={{ width: 48 }} />
                   <TableCell>Datum / Zeit</TableCell>
+                  <TableCell>Erkennung</TableCell>
                   <TableCell>Zielvogel</TableCell>
                   <TableCell>Routenposition</TableCell>
                   <TableCell>Position (Zeichnung) / Anzahl Tauben</TableCell>
@@ -690,13 +923,13 @@ export default function RouteDetections() {
               <TableBody>
                 {loadingDetections ? (
                   <TableRow>
-                    <TableCell colSpan={7} align="center">
+                    <TableCell colSpan={8} align="center">
                       <CircularProgress size={24} sx={{ my: 1 }} />
                     </TableCell>
                   </TableRow>
                 ) : clusteredDetections.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} align="center" sx={{ color: 'text.secondary' }}>
+                    <TableCell colSpan={8} align="center" sx={{ color: 'text.secondary' }}>
                       Keine Tauben im gewählten Zeitraum.
                     </TableCell>
                   </TableRow>
@@ -719,13 +952,31 @@ export default function RouteDetections() {
                             ) : null}
                           </TableCell>
                           <TableCell>{cluster.date ? new Date(cluster.date).toLocaleString('de-DE') : '-'}</TableCell>
+                          <TableCell>
+                            {(cluster.sourceLabels || []).length > 0 ? (
+                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                                {cluster.sourceLabels.map((s) => (
+                                  <Tooltip key={s.key} title={s.title}>
+                                    <Chip
+                                      size="small"
+                                      label={s.label}
+                                      color={s.key === 'master' ? 'primary' : 'secondary'}
+                                      variant="outlined"
+                                    />
+                                  </Tooltip>
+                                ))}
+                              </Box>
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">—</Typography>
+                            )}
+                          </TableCell>
                           <TableCell>{cluster.hasTargetBird ? 'Ja' : 'Nein'}</TableCell>
                           <TableCell>{cluster.routePosition} {cluster.mapping}</TableCell>
                           <TableCell>
                             {hasBirds ? (
                               <Box
                                 component="span"
-                                onClick={() => setImageDialogDetectionId(cluster.detectionId)}
+                                onClick={() => setDetailDetectionId(cluster.detectionId)}
                                 sx={{ cursor: 'pointer', textDecoration: 'underline', '&:hover': { color: 'primary.main' } }}
                               >
                                 {cluster.birds.length} Taube(n)
@@ -738,6 +989,7 @@ export default function RouteDetections() {
                         {hasBirds && isExpanded && cluster.birds.map((bird, idx) => (
                           <TableRow key={`${cluster.detectionId}-bird-${idx}`} sx={{ bgcolor: bird.isTargetBird ? 'action.selected' : 'action.hover' }}>
                             <TableCell sx={{ width: 48 }} />
+                            <TableCell />
                             <TableCell />
                             <TableCell>{bird.isTargetBird ? 'Ja (Ziel)' : 'Nein'}</TableCell>
                             <TableCell sx={{ pl: 3 }} />
@@ -764,14 +1016,20 @@ export default function RouteDetections() {
           </Box>
           <Grid container spacing={2}>
             {coordinates.map((coord, idx) => {
-              const detectionsForCoord = allDetections.filter(
+              const detectionsForCoord = filteredDetections.filter(
                 (d) =>
                   (d.camera_position?.rotation ?? null) === (coord.rotation ?? null) &&
                   (d.camera_position?.tilt ?? null) === (coord.tilt ?? null)
               );
               return (
                 <Grid item xs={12} sm={6} md={4} key={idx}>
-                  <RoutePointCard coord={coord} index={idx} detections={detectionsForCoord} />
+                  <RoutePointCard
+                    coord={coord}
+                    index={idx}
+                    detections={detectionsForCoord}
+                    onOpenDetectionDetail={setDetailDetectionId}
+                    onEditIgnoreZones={openIgnoreEditor}
+                  />
                 </Grid>
               );
             })}
@@ -779,108 +1037,63 @@ export default function RouteDetections() {
         </>
       )}
 
-      <Dialog
-        open={Boolean(imageDialogDetectionId)}
-        onClose={() => setImageDialogDetectionId(null)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Detection-Bild mit Markierungen</DialogTitle>
-        <DialogContent>
-          {imageDialogDetectionId && (() => {
-            const detection = allDetections.find((d) => d._id === imageDialogDetectionId);
-            if (!detection) return <Typography color="text.secondary">Detection nicht gefunden.</Typography>;
-            if (imageDialogUrl === 'loading') {
-              return (
-                <Box display="flex" justifyContent="center" alignItems="center" minHeight={200}>
-                  <CircularProgress />
-                </Box>
-              );
-            }
-            if (!imageDialogUrl) {
-              return <Typography color="text.secondary">Bild nicht verfügbar.</Typography>;
-            }
-            const info = detection.image_info || {};
-            const imgW = info.original_size?.width || info.zoomed_size?.width || 1;
-            const imgH = info.original_size?.height || info.zoomed_size?.height || 1;
-            const boxes = [];
-            const pushBox = (left, top, w, h, isTarget) => {
-              boxes.push({ left, top, w, h, isTarget: Boolean(isTarget) });
-            };
-            if (detection.target_bird && (detection.target_bird.bbox || detection.target_bird.position)) {
-              const b = detection.target_bird;
-              if (b.position) {
-                pushBox(
-                  ((b.position.center_x - b.position.width / 2) / imgW) * 100,
-                  ((b.position.center_y - b.position.height / 2) / imgH) * 100,
-                  (b.position.width / imgW) * 100,
-                  (b.position.height / imgH) * 100,
-                  true
-                );
-              } else if (b.bbox) {
-                pushBox(
-                  (b.bbox.x / imgW) * 100,
-                  (b.bbox.y / imgH) * 100,
-                  (b.bbox.width / imgW) * 100,
-                  (b.bbox.height / imgH) * 100,
-                  true
-                );
+      <DetectionDetailDialog
+        open={Boolean(detailDetectionId)}
+        detectionId={detailDetectionId}
+        neighborIds={filteredDetections.map((d) => d._id)}
+        onClose={() => setDetailDetectionId(null)}
+        onDeleted={(id) => setAllDetections((prev) => prev.filter((d) => d._id !== id))}
+        onUpdated={(next) => setAllDetections((prev) => prev.map((d) => (
+          d._id === next._id
+            ? {
+                ...d,
+                classification_status: next.classification_status,
+                classifiedAt: next.classifiedAt,
+                birds: next.birds,
+                target_bird: next.target_bird,
+                ...(next.camera_position ? { camera_position: next.camera_position } : {})
               }
-            }
-            (detection.detections || []).forEach((det) => {
-              if (det.class !== 'bird') return;
-              const isTarget = Boolean(det.is_target_bird);
-              if (det.position) {
-                pushBox(
-                  ((det.position.center_x - det.position.width / 2) / imgW) * 100,
-                  ((det.position.center_y - det.position.height / 2) / imgH) * 100,
-                  (det.position.width / imgW) * 100,
-                  (det.position.height / imgH) * 100,
-                  isTarget
-                );
-              } else if (det.bbox) {
-                pushBox(
-                  (det.bbox.x / imgW) * 100,
-                  (det.bbox.y / imgH) * 100,
-                  (det.bbox.width / imgW) * 100,
-                  (det.bbox.height / imgH) * 100,
-                  isTarget
-                );
-              }
-            });
-            return (
-              <Box>
-                <Box sx={{ mb: 1 }}>
-                  <RouteBoxLegend dense />
-                </Box>
-                <Box sx={{ position: 'relative', display: 'inline-block' }}>
-                  <img
-                    src={imageDialogUrl}
-                    alt="Detection"
-                    style={{ maxWidth: '100%', display: 'block', verticalAlign: 'top' }}
-                  />
-                  {boxes.map((box, idx) => (
-                    <Box
-                      key={idx}
-                      sx={{
-                        position: 'absolute',
-                        left: `${box.left}%`,
-                        top: `${box.top}%`,
-                        width: `${box.w}%`,
-                        height: `${box.h}%`,
-                        border: `${box.isTarget ? 4 : 2}px solid ${box.isTarget ? ROUTE_BOX.target : ROUTE_BOX.side}`,
-                        boxSizing: 'border-box',
-                        boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
-                        pointerEvents: 'none'
-                      }}
-                    />
-                  ))}
-                </Box>
-              </Box>
-            );
+            : d
+        )))}
+      />
+
+      {ignoreEditor != null && coordinates[ignoreEditor.index] && (
+        <IgnoreZoneEditor
+          open
+          onClose={() => !ignoreSaving && setIgnoreEditor(null)}
+          image={(() => {
+            const img = coordinates[ignoreEditor.index]?.image;
+            if (!img) return null;
+            return img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`;
           })()}
-        </DialogContent>
-      </Dialog>
+          ignoreZones={coordinates[ignoreEditor.index]?.ignoreZones}
+          routePointIndex={ignoreEditor.index}
+          birdBoxes={ignoreEditor.birdBoxes}
+          onSave={saveIgnoreZones}
+        />
+      )}
+
+      {affectedDialog && (
+        <IgnoreZoneAffectedDialog
+          open
+          detections={affectedDialog.detections}
+          ignoreZones={affectedDialog.ignoreZones}
+          onClose={() => setAffectedDialog(null)}
+          onApplied={({ action, ids }) => {
+            const idSet = new Set((ids || []).map((id) => String(id)));
+            if (action === 'delete' || (action === 'no_pigeon' && classificationStatus === 'confirmed_pigeon')) {
+              setAllDetections((prev) => prev.filter((d) => !idSet.has(String(d._id))));
+            } else if (action === 'no_pigeon') {
+              setAllDetections((prev) => prev.map((d) => (
+                idSet.has(String(d._id))
+                  ? { ...d, classification_status: 'no_pigeon' }
+                  : d
+              )));
+            }
+            setAffectedDialog(null);
+          }}
+        />
+      )}
     </Box>
   );
 }
