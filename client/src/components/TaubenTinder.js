@@ -13,7 +13,9 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  Tooltip
+  Tooltip,
+  FormControlLabel,
+  Switch
 } from '@mui/material';
 import {
   Favorite as FavoriteIcon,
@@ -24,7 +26,10 @@ import {
   WaterDrop as WaterDropIcon,
   FlashOn as FlashOnIcon,
   VolumeUp as VolumeUpIcon,
-  Block as BlockIcon
+  Block as BlockIcon,
+  Visibility as VisibilityIcon,
+  VisibilityOff as VisibilityOffIcon,
+  Undo as UndoIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
@@ -159,6 +164,59 @@ function computeContainLayout(containerWidth, containerHeight, imgNaturalWidth, 
   };
 }
 
+/** Pick target bird box in natural image pixels (prefer is_target_bird). */
+function resolveTargetPixelBox(detectionDoc, imageData, imageInfo) {
+  if (!detectionDoc || !imageInfo?.width || !imageInfo?.height) return null;
+  const list = Array.isArray(detectionDoc.detections) ? detectionDoc.detections : [];
+  if (!list.length) return null;
+  const target = list.find((d) => d?.is_target_bird === true) || list[0];
+  if (!target) return null;
+
+  const imgWidth = imageInfo.width;
+  const imgHeight = imageInfo.height;
+  let rawLeft;
+  let rawTop;
+  let rawWidth;
+  let rawHeight;
+
+  if (imageData?.zoomed_image?.url && target.position) {
+    const { center_x, center_y, width, height } = target.position;
+    rawLeft = center_x - width / 2;
+    rawTop = center_y - height / 2;
+    rawWidth = width;
+    rawHeight = height;
+  } else if (target.bbox) {
+    rawLeft = target.bbox.x;
+    rawTop = target.bbox.y;
+    rawWidth = target.bbox.width;
+    rawHeight = target.bbox.height;
+  } else {
+    return null;
+  }
+
+  return toPixelBBox(
+    { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight },
+    imgWidth,
+    imgHeight
+  );
+}
+
+/** Expand box with padding, clamped to image bounds. */
+function paddedCropBox(box, imgWidth, imgHeight, padRatio = 0.35) {
+  if (!box) return null;
+  const pad = Math.max(box.width, box.height) * padRatio;
+  const left = Math.max(0, box.left - pad);
+  const top = Math.max(0, box.top - pad);
+  const right = Math.min(imgWidth, box.left + box.width + pad);
+  const bottom = Math.min(imgHeight, box.top + box.height + pad);
+  return {
+    left,
+    top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top)
+  };
+}
+
 const TaubenTinder = () => {
   const [detections, setDetections] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -175,6 +233,10 @@ const TaubenTinder = () => {
   const [imageByDetectionId, setImageByDetectionId] = useState({});
   const [totalUnclassified, setTotalUnclassified] = useState(0);
   const [sessionBase, setSessionBase] = useState(0);
+  const [showBoxes, setShowBoxes] = useState(true);
+  /** Last classify action that can be undone (delete cannot). */
+  const [lastUndo, setLastUndo] = useState(null);
+  const [undoBusy, setUndoBusy] = useState(false);
   const imageByDetectionIdRef = useRef({});
   imageByDetectionIdRef.current = imageByDetectionId;
 
@@ -184,7 +246,9 @@ const TaubenTinder = () => {
   const imageRef = useRef(null);
   const containerRef = useRef(null);
   const actionPromiseRef = useRef(null);
+  const didSwipeRef = useRef(false);
   const FLY_AWAY_DURATION_MS = 350;
+  const CLICK_MOVE_PX = 12;
 
   useEffect(() => {
     fetchUnclassifiedDetections();
@@ -314,9 +378,11 @@ const TaubenTinder = () => {
     if (detections.length === 0 || currentIndex >= detections.length) return;
 
     const detection = detections[currentIndex];
+    const imageData = imageByDetectionIdRef.current[detection._id];
 
     if (action === 'delete') {
       await axios.delete(`/api/cv/detections/${detection._id}`);
+      setLastUndo(null);
       toast.error('Erkennung gelöscht');
     } else {
       const actionMap = {
@@ -326,6 +392,11 @@ const TaubenTinder = () => {
       await axios.patch(`/api/cv/detections/${detection._id}/classify`, {
         action: actionMap[action]
       });
+      setLastUndo({
+        detection,
+        action,
+        imageData: imageData && imageData !== 'loading' ? imageData : undefined
+      });
       if (action === 'confirm_pigeon') {
         toast.success('Als Taube bestätigt');
       } else {
@@ -333,6 +404,50 @@ const TaubenTinder = () => {
       }
     }
   };
+
+  const undoLast = async () => {
+    if (!lastUndo || undoBusy || loadingNext || flyAwayDirection) return;
+    if (lastUndo.action === 'delete') {
+      toast.info('Löschen kann nicht rückgängig gemacht werden');
+      setLastUndo(null);
+      return;
+    }
+
+    setUndoBusy(true);
+    try {
+      await axios.patch(`/api/cv/detections/${lastUndo.detection._id}/classify`, {
+        action: 'unclassified'
+      });
+
+      const idStr = String(lastUndo.detection._id);
+      const existingIdx = detections.findIndex((d) => String(d._id) === idStr);
+      if (existingIdx >= 0) {
+        setCurrentIndex(existingIdx);
+      } else {
+        setDetections((prev) => [lastUndo.detection, ...prev]);
+        setCurrentIndex(0);
+      }
+      if (lastUndo.imageData) {
+        setImageByDetectionId((prev) => ({
+          ...prev,
+          [idStr]: lastUndo.imageData
+        }));
+      }
+      setLastUndo(null);
+      setOffset({ x: 0, y: 0 });
+      setSwipeDirection(null);
+      setFlyAwayDirection(null);
+      toast.info('Rückgängig — Karte wieder da');
+    } catch (error) {
+      console.error('Undo failed:', error);
+      toast.error('Rückgängig fehlgeschlagen');
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const undoLastRef = useRef(undoLast);
+  undoLastRef.current = undoLast;
 
   const advanceToNext = async () => {
     const nextIndex = currentIndex + 1;
@@ -354,6 +469,7 @@ const TaubenTinder = () => {
     setDeleteConfirmOpen(false);
     try {
       await axios.delete(`/api/cv/detections/${pendingDeleteDetection._id}`);
+      setLastUndo(null);
       toast.success('Erkennung gelöscht');
       await advanceToNext();
     } catch (error) {
@@ -385,12 +501,23 @@ const TaubenTinder = () => {
   const handleSwipeActionRef = useRef(handleSwipeAction);
   handleSwipeActionRef.current = handleSwipeAction;
 
-  // Arrow keys: ← keine Taube, → Taube, ↑ löschen
+  // Arrow keys: ← keine Taube, → Taube, ↑ löschen; Ctrl/Cmd+Z oder U = Undo
   useEffect(() => {
     const onKeyDown = (e) => {
       if (deleteConfirmOpen) return;
       const tag = e.target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+
+      if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        undoLastRef.current();
+        return;
+      }
+      if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        undoLastRef.current();
+        return;
+      }
 
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
@@ -447,6 +574,7 @@ const TaubenTinder = () => {
   const handleTouchStart = (e) => {
     if (flyAwayDirection || loadingNext) return;
     const touch = e.touches[0];
+    didSwipeRef.current = false;
     touchStartRef.current = {
       x: touch.clientX,
       y: touch.clientY,
@@ -460,17 +588,19 @@ const TaubenTinder = () => {
     const touch = e.touches[0];
     const deltaX = touch.clientX - touchStartRef.current.x;
     const deltaY = touch.clientY - touchStartRef.current.y;
-    
-    setSwiping(true);
-    setOffset({ x: deltaX, y: deltaY });
-    
-    // Determine swipe direction
-    if (Math.abs(deltaX) > Math.abs(deltaY)) {
-      setSwipeDirection(deltaX > 0 ? 'right' : 'left');
-    } else if (deltaY < -50) {
-      setSwipeDirection('up');
-    } else {
-      setSwipeDirection(null);
+
+    if (Math.abs(deltaX) > CLICK_MOVE_PX || Math.abs(deltaY) > CLICK_MOVE_PX) {
+      didSwipeRef.current = true;
+      setSwiping(true);
+      setOffset({ x: deltaX, y: deltaY });
+
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        setSwipeDirection(deltaX > 0 ? 'right' : 'left');
+      } else if (deltaY < -50) {
+        setSwipeDirection('up');
+      } else {
+        setSwipeDirection(null);
+      }
     }
   };
 
@@ -480,7 +610,7 @@ const TaubenTinder = () => {
     const touch = e.changedTouches[0];
     const deltaX = touch.clientX - touchStartRef.current.x;
     const deltaY = touch.clientY - touchStartRef.current.y;
-    const deltaTime = Date.now() - touchStartRef.current.time;
+    const deltaTime = Math.max(1, Date.now() - touchStartRef.current.time);
 
     const threshold = 100;
     const velocityThreshold = 0.3;
@@ -488,7 +618,8 @@ const TaubenTinder = () => {
 
     setSwiping(false);
 
-    const committed = velocity > velocityThreshold || Math.abs(deltaX) > threshold || deltaY < -threshold;
+    const committed = didSwipeRef.current
+      && (velocity > velocityThreshold || Math.abs(deltaX) > threshold || deltaY < -threshold);
     let action = null;
     if (committed) {
       if (deltaY < -threshold) action = 'delete';
@@ -507,11 +638,13 @@ const TaubenTinder = () => {
       setSwipeDirection(null);
     }
     touchStartRef.current = null;
+    didSwipeRef.current = false;
   };
 
   // Mouse drag to swipe (left button only)
   const handleMouseDown = (e) => {
     if (flyAwayDirection || loadingNext || e.button !== 0) return;
+    didSwipeRef.current = false;
     mouseStartRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -527,7 +660,8 @@ const TaubenTinder = () => {
     const deltaX = e.clientX - mouseStartRef.current.x;
     const deltaY = e.clientY - mouseStartRef.current.y;
 
-    if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
+    if (Math.abs(deltaX) > CLICK_MOVE_PX || Math.abs(deltaY) > CLICK_MOVE_PX) {
+      didSwipeRef.current = true;
       setSwiping(true);
       setOffset({ x: deltaX, y: deltaY });
 
@@ -554,7 +688,8 @@ const TaubenTinder = () => {
 
     setSwiping(false);
 
-    const committed = Math.abs(deltaX) > threshold || deltaY < -threshold;
+    const committed = didSwipeRef.current
+      && (Math.abs(deltaX) > threshold || deltaY < -threshold);
     let action = null;
     if (committed) {
       if (deltaY < -threshold) action = 'delete';
@@ -573,6 +708,7 @@ const TaubenTinder = () => {
       setSwipeDirection(null);
     }
     mouseStartRef.current = null;
+    didSwipeRef.current = false;
   };
 
   const getRotation = () => {
@@ -602,9 +738,19 @@ const TaubenTinder = () => {
         <Typography variant="h4" gutterBottom>
           Tauben-Tinder
         </Typography>
-        <Alert severity="info" sx={{ mb: 3 }}>
+        <Alert severity="info" sx={{ mb: 2 }}>
           Keine unklassifizierten Erkennungen vorhanden. Alle Erkennungen wurden bereits klassifiziert!
         </Alert>
+        {lastUndo && (
+          <Button
+            variant="outlined"
+            startIcon={undoBusy ? <CircularProgress size={16} /> : <UndoIcon />}
+            onClick={undoLast}
+            disabled={undoBusy}
+          >
+            Letzte Entscheidung rückgängig
+          </Button>
+        )}
       </Box>
     );
   }
@@ -616,21 +762,150 @@ const TaubenTinder = () => {
   const currentImageLoading = currentImageData === 'loading' || currentImageData === undefined;
   const displayImage = currentImageData?.zoomed_image?.url || currentImageData?.image?.url;
   const imageInfo = resolveImageInfo(currentDetection, currentImageData);
+  const targetPixelBox = resolveTargetPixelBox(currentDetection, currentImageData, imageInfo);
+  const zoomCrop = imageInfo
+    ? paddedCropBox(targetPixelBox, imageInfo.width, imageInfo.height)
+    : null;
+  const zoomPanelW = 280;
+  const zoomPanelH = 420;
+  const zoomScale = zoomCrop
+    ? Math.min(zoomPanelW / zoomCrop.width, zoomPanelH / zoomCrop.height)
+    : 1;
+  const zoomViewW = zoomCrop ? Math.round(zoomCrop.width * zoomScale) : zoomPanelW;
+  const zoomViewH = zoomCrop ? Math.round(zoomCrop.height * zoomScale) : zoomPanelH;
 
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
         Tauben-Tinder
       </Typography>
-      <Typography variant="body2" color="text.secondary" gutterBottom sx={{ mb: 2 }}>
-        {displayPosition} / {displayTotal} unklassifiziert — ← Keine Taube ✗ · → Taube ✓ · ↑ Löschen · oder swipen
+      <Typography variant="body2" color="text.secondary" gutterBottom>
+        {displayPosition} / {displayTotal} unklassifiziert — ← Keine Taube ✗ · → Taube ✓ · ↑ Löschen · U / ⌘Z Undo
       </Typography>
+      <Box display="flex" flexWrap="wrap" alignItems="center" gap={1} sx={{ mb: 1 }}>
+        <FormControlLabel
+          control={(
+            <Switch
+              size="small"
+              checked={showBoxes}
+              onChange={(e) => setShowBoxes(e.target.checked)}
+              color="success"
+            />
+          )}
+          label={showBoxes ? 'Boxen anzeigen' : 'Boxen aus'}
+        />
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={undoBusy ? <CircularProgress size={14} /> : <UndoIcon />}
+          onClick={undoLast}
+          disabled={!lastUndo || undoBusy || loadingNext || Boolean(flyAwayDirection)}
+          title={lastUndo ? 'Letzte Klassifizierung rückgängig (U / Ctrl+Z)' : 'Nichts zum Rückgängigmachen'}
+        >
+          Undo
+        </Button>
+      </Box>
+
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: { xs: 'column', md: 'row' },
+          alignItems: { xs: 'stretch', md: 'flex-start' },
+          justifyContent: 'center',
+          gap: 2,
+          maxWidth: { xs: 600, md: 920 },
+          mx: 'auto'
+        }}
+      >
+        {/* Persistent target zoom (left) */}
+        <Paper
+          elevation={4}
+          sx={{
+            width: { xs: '100%', md: zoomPanelW },
+            flexShrink: 0,
+            borderRadius: 3,
+            overflow: 'hidden',
+            bgcolor: '#111',
+            alignSelf: { md: 'stretch' }
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{ display: 'block', px: 1.5, pt: 1, pb: 0.5, color: 'grey.400' }}
+          >
+            Ziel (Zoom)
+          </Typography>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: { xs: 200, md: zoomPanelH },
+              px: 1,
+              pb: 1.5
+            }}
+          >
+            {currentImageLoading && <CircularProgress size={28} sx={{ color: 'white' }} />}
+            {!currentImageLoading && displayImage && zoomCrop && imageInfo ? (
+              <Box
+                sx={{
+                  width: zoomViewW,
+                  height: zoomViewH,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  bgcolor: '#000',
+                  borderRadius: 1,
+                  position: 'relative'
+                }}
+              >
+                <Box
+                  component="img"
+                  src={displayImage}
+                  alt="Zielbereich"
+                  draggable={false}
+                  sx={{
+                    position: 'absolute',
+                    left: `${-zoomCrop.left * zoomScale}px`,
+                    top: `${-zoomCrop.top * zoomScale}px`,
+                    width: `${imageInfo.width * zoomScale}px`,
+                    height: `${imageInfo.height * zoomScale}px`,
+                    maxWidth: 'none',
+                    display: 'block',
+                    pointerEvents: 'none',
+                    userSelect: 'none'
+                  }}
+                />
+                {showBoxes && targetPixelBox && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      left: `${(targetPixelBox.left - zoomCrop.left) * zoomScale}px`,
+                      top: `${(targetPixelBox.top - zoomCrop.top) * zoomScale}px`,
+                      width: `${targetPixelBox.width * zoomScale}px`,
+                      height: `${targetPixelBox.height * zoomScale}px`,
+                      border: '3px solid #00e676',
+                      boxSizing: 'border-box',
+                      pointerEvents: 'none'
+                    }}
+                  />
+                )}
+              </Box>
+            ) : (
+              !currentImageLoading && (
+                <Typography variant="body2" color="grey.500" sx={{ px: 2, textAlign: 'center' }}>
+                  Kein Zielbereich
+                </Typography>
+              )
+            )}
+          </Box>
+        </Paper>
 
       <Box
         sx={{
           position: 'relative',
+          flex: 1,
+          width: '100%',
           maxWidth: '600px',
-          margin: '0 auto',
           height: { xs: '70vh', sm: '600px' },
           touchAction: 'none',
           userSelect: 'none'
@@ -716,16 +991,41 @@ const TaubenTinder = () => {
                   display: 'block'
                 }}
               />
-              
+
+              <Tooltip title={showBoxes ? 'Boxen ausblenden' : 'Boxen einblenden'}>
+                <IconButton
+                  size="small"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowBoxes((v) => !v);
+                  }}
+                  sx={{
+                    position: 'absolute',
+                    top: 8,
+                    right: 8,
+                    zIndex: 5,
+                    bgcolor: 'rgba(0,0,0,0.55)',
+                    color: '#fff',
+                    '&:hover': { bgcolor: 'rgba(0,0,0,0.75)' }
+                  }}
+                >
+                  {showBoxes ? <VisibilityIcon fontSize="small" /> : <VisibilityOffIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+
               {/* Draw bounding boxes */}
-              {imageInfo && renderedImageSize.width > 0 && currentDetection.detections?.map((detection, index) => {
+              {showBoxes && imageInfo && renderedImageSize.width > 0 && currentDetection.detections?.map((detection, index) => {
                 if (!detection.bbox && !detection.position) return null;
-                
+
                 const imgWidth = imageInfo.width || 1;
                 const imgHeight = imageInfo.height || 1;
-                
-                let rawLeft, rawTop, rawWidth, rawHeight;
-                
+
+                let rawLeft;
+                let rawTop;
+                let rawWidth;
+                let rawHeight;
+
                 if (currentImageData?.zoomed_image?.url && detection.position) {
                   const { center_x, center_y, width, height } = detection.position;
                   rawLeft = center_x - width / 2;
@@ -747,11 +1047,10 @@ const TaubenTinder = () => {
                   imgWidth,
                   imgHeight
                 );
-                
-                // Convert from image coordinates to rendered coordinates
+
                 const scaleX = renderedImageSize.width / imgWidth;
                 const scaleY = renderedImageSize.height / imgHeight;
-                
+
                 const leftPx = bboxLeft * scaleX + renderedImageSize.offsetX;
                 const topPx = bboxTop * scaleY + renderedImageSize.offsetY;
                 const widthPx = bboxWidth * scaleX;
@@ -889,7 +1188,7 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="warning"
-            disabled={loadingNext}
+            disabled={loadingNext || undoBusy}
             onClick={() => handleSwipeAction('no_pigeon')}
             sx={{ width: 64, height: 64 }}
             title="Keine Taube (← / Links swipen)"
@@ -899,7 +1198,7 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="error"
-            disabled={loadingNext}
+            disabled={loadingNext || undoBusy}
             onClick={() => handleSwipeAction('delete')}
             sx={{ width: 64, height: 64 }}
             title="Löschen (↑ / Hoch swipen)"
@@ -909,14 +1208,24 @@ const TaubenTinder = () => {
           <IconButton
             size="large"
             color="success"
-            disabled={loadingNext}
+            disabled={loadingNext || undoBusy}
             onClick={() => handleSwipeAction('confirm_pigeon')}
             sx={{ width: 64, height: 64 }}
             title="Taube bestätigen (→ / Rechts swipen)"
           >
             <FavoriteIcon fontSize="large" />
           </IconButton>
+          <IconButton
+            size="large"
+            disabled={!lastUndo || loadingNext || undoBusy || Boolean(flyAwayDirection)}
+            onClick={undoLast}
+            sx={{ width: 64, height: 64 }}
+            title="Rückgängig (U / Ctrl+Z)"
+          >
+            <UndoIcon fontSize="large" />
+          </IconButton>
         </Box>
+      </Box>
       </Box>
 
       {/* Delete Confirmation Dialog */}
