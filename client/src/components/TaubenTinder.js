@@ -217,6 +217,86 @@ function paddedCropBox(box, imgWidth, imgHeight, padRatio = 0.35) {
   };
 }
 
+function rectsOverlap(a, b, pad = 6) {
+  if (!a || !b) return false;
+  return !(
+    a.left + a.width + pad <= b.left
+    || b.left + b.width + pad <= a.left
+    || a.top + a.height + pad <= b.top
+    || b.top + b.height + pad <= a.top
+  );
+}
+
+function measureZoomView(zoomCrop, maxSide) {
+  if (!zoomCrop?.width || !zoomCrop?.height) {
+    return { width: maxSide, height: maxSide, scale: 1 };
+  }
+  const scale = Math.min(maxSide / zoomCrop.width, maxSide / zoomCrop.height);
+  return {
+    width: Math.max(1, Math.round(zoomCrop.width * scale)),
+    height: Math.max(1, Math.round(zoomCrop.height * scale)),
+    scale
+  };
+}
+
+/**
+ * Place PiP: prefer bottom-left in the rendered image area.
+ * If it overlaps the target bird, try other corners still inside the visible image.
+ */
+function computePipPlacement({
+  rendered,
+  imageInfo,
+  targetPixelBox,
+  pipW,
+  pipH,
+  margin = 8
+}) {
+  if (!rendered?.width || !pipW || !pipH) {
+    return { left: margin, top: null, bottom: margin, right: null };
+  }
+
+  const areaLeft = rendered.offsetX;
+  const areaTop = rendered.offsetY;
+  const areaRight = rendered.offsetX + rendered.width;
+  const areaBottom = rendered.offsetY + rendered.height;
+  const containerW = rendered.width + 2 * rendered.offsetX;
+  const containerH = rendered.height + 2 * rendered.offsetY;
+
+  let bird = null;
+  if (targetPixelBox && imageInfo?.width && imageInfo?.height) {
+    const sx = rendered.width / imageInfo.width;
+    const sy = rendered.height / imageInfo.height;
+    bird = {
+      left: targetPixelBox.left * sx + rendered.offsetX,
+      top: targetPixelBox.top * sy + rendered.offsetY,
+      width: targetPixelBox.width * sx,
+      height: targetPixelBox.height * sy
+    };
+  }
+
+  const clamp = (left, top) => ({
+    left: Math.max(margin, Math.min(left, Math.max(margin, containerW - pipW - margin))),
+    top: Math.max(margin, Math.min(top, Math.max(margin, containerH - pipH - margin)))
+  });
+
+  // Order: bottom-left first, then other corners in visible image area
+  const candidates = [
+    clamp(areaLeft + margin, areaBottom - pipH - margin),
+    clamp(areaRight - pipW - margin, areaBottom - pipH - margin),
+    clamp(areaLeft + margin, areaTop + margin),
+    clamp(areaRight - pipW - margin, areaTop + margin)
+  ];
+
+  for (const pos of candidates) {
+    const pip = { left: pos.left, top: pos.top, width: pipW, height: pipH };
+    if (!bird || !rectsOverlap(pip, bird)) {
+      return { left: pos.left, top: pos.top, bottom: null, right: null };
+    }
+  }
+
+  return { left: candidates[0].left, top: candidates[0].top, bottom: null, right: null };
+}
+
 const TaubenTinder = () => {
   const [detections, setDetections] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -234,6 +314,8 @@ const TaubenTinder = () => {
   const [totalUnclassified, setTotalUnclassified] = useState(0);
   const [sessionBase, setSessionBase] = useState(0);
   const [showBoxes, setShowBoxes] = useState(true);
+  /** Main image area: false = full frame, true = target zoom crop. */
+  const [mainShowsZoom, setMainShowsZoom] = useState(false);
   /** Last classify action that can be undone (delete cannot). */
   const [lastUndo, setLastUndo] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -247,6 +329,7 @@ const TaubenTinder = () => {
   const containerRef = useRef(null);
   const actionPromiseRef = useRef(null);
   const didSwipeRef = useRef(false);
+  const zoomCropRef = useRef(null);
   const FLY_AWAY_DURATION_MS = 350;
   const CLICK_MOVE_PX = 12;
 
@@ -458,6 +541,28 @@ const TaubenTinder = () => {
     }
   };
 
+  const isPointInImageArea = (clientX, clientY) => {
+    const el = containerRef.current;
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return (
+      clientX >= rect.left
+      && clientX <= rect.right
+      && clientY >= rect.top
+      && clientY <= rect.bottom
+    );
+  };
+
+  const toggleMainZoom = (clientX, clientY) => {
+    if (clientX != null && clientY != null && !isPointInImageArea(clientX, clientY)) {
+      return;
+    }
+    setMainShowsZoom((v) => {
+      if (!v && !zoomCropRef.current) return false;
+      return !v;
+    });
+  };
+
   const requestDelete = () => {
     if (detections.length === 0 || currentIndex >= detections.length) return;
     setPendingDeleteDetection(detections[currentIndex]);
@@ -636,12 +741,15 @@ const TaubenTinder = () => {
     } else {
       setOffset({ x: 0, y: 0 });
       setSwipeDirection(null);
+      if (!didSwipeRef.current) {
+        toggleMainZoom(touch.clientX, touch.clientY);
+      }
     }
     touchStartRef.current = null;
     didSwipeRef.current = false;
   };
 
-  // Mouse drag to swipe (left button only)
+  // Mouse drag to swipe (left button only); click on image toggles full ↔ zoom
   const handleMouseDown = (e) => {
     if (flyAwayDirection || loadingNext || e.button !== 0) return;
     didSwipeRef.current = false;
@@ -706,6 +814,9 @@ const TaubenTinder = () => {
     } else {
       setOffset({ x: 0, y: 0 });
       setSwipeDirection(null);
+      if (!didSwipeRef.current) {
+        toggleMainZoom(e.clientX, e.clientY);
+      }
     }
     mouseStartRef.current = null;
     didSwipeRef.current = false;
@@ -766,21 +877,88 @@ const TaubenTinder = () => {
   const zoomCrop = imageInfo
     ? paddedCropBox(targetPixelBox, imageInfo.width, imageInfo.height)
     : null;
-  const zoomPanelW = 280;
-  const zoomPanelH = 420;
-  const zoomScale = zoomCrop
-    ? Math.min(zoomPanelW / zoomCrop.width, zoomPanelH / zoomCrop.height)
-    : 1;
-  const zoomViewW = zoomCrop ? Math.round(zoomCrop.width * zoomScale) : zoomPanelW;
-  const zoomViewH = zoomCrop ? Math.round(zoomCrop.height * zoomScale) : zoomPanelH;
+  zoomCropRef.current = zoomCrop;
+  const mobilePipMax = 128;
+  const mobilePipSize = measureZoomView(zoomCrop, mobilePipMax);
+  const mobilePipPos = computePipPlacement({
+    rendered: renderedImageSize,
+    imageInfo,
+    targetPixelBox,
+    pipW: mobilePipSize.width,
+    pipH: mobilePipSize.height,
+    margin: 8
+  });
+
+  const renderTargetZoom = (maxSide, { showLabel = false } = {}) => {
+    if (currentImageLoading) {
+      return <CircularProgress size={22} sx={{ color: 'white' }} />;
+    }
+    if (!displayImage || !zoomCrop || !imageInfo) {
+      return showLabel ? (
+        <Typography variant="caption" color="grey.500">Kein Ziel</Typography>
+      ) : null;
+    }
+    const { width: viewW, height: viewH, scale } = measureZoomView(zoomCrop, maxSide);
+    return (
+      <Box
+        sx={{
+          width: viewW,
+          height: viewH,
+          maxWidth: '100%',
+          overflow: 'hidden',
+          bgcolor: '#000',
+          borderRadius: 1,
+          position: 'relative',
+          border: '1px solid rgba(255,255,255,0.35)',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.45)',
+          pointerEvents: 'none'
+        }}
+      >
+        <Box
+          component="img"
+          src={displayImage}
+          alt="Zielbereich"
+          draggable={false}
+          sx={{
+            position: 'absolute',
+            left: `${-zoomCrop.left * scale}px`,
+            top: `${-zoomCrop.top * scale}px`,
+            width: `${imageInfo.width * scale}px`,
+            height: `${imageInfo.height * scale}px`,
+            maxWidth: 'none',
+            display: 'block',
+            pointerEvents: 'none',
+            userSelect: 'none'
+          }}
+        />
+        {showBoxes && targetPixelBox && (
+          <Box
+            sx={{
+              position: 'absolute',
+              left: `${(targetPixelBox.left - zoomCrop.left) * scale}px`,
+              top: `${(targetPixelBox.top - zoomCrop.top) * scale}px`,
+              width: `${targetPixelBox.width * scale}px`,
+              height: `${targetPixelBox.height * scale}px`,
+              border: '2px solid #00e676',
+              boxSizing: 'border-box',
+              pointerEvents: 'none'
+            }}
+          />
+        )}
+      </Box>
+    );
+  };
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
+      <Typography variant="h4" gutterBottom sx={{ fontSize: { xs: '1.5rem', sm: '2.125rem' } }}>
         Tauben-Tinder
       </Typography>
-      <Typography variant="body2" color="text.secondary" gutterBottom>
+      <Typography variant="body2" color="text.secondary" gutterBottom sx={{ display: { xs: 'none', sm: 'block' } }}>
         {displayPosition} / {displayTotal} unklassifiziert — ← Keine Taube ✗ · → Taube ✓ · ↑ Löschen · U / ⌘Z Undo
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display={{ xs: 'block', sm: 'none' }} sx={{ mb: 0.5 }}>
+        {displayPosition}/{displayTotal} — Tippen: Bild/Zoom · Swipe ← ✗ · → ✓ · ↑ Löschen
       </Typography>
       <Box display="flex" flexWrap="wrap" alignItems="center" gap={1} sx={{ mb: 1 }}>
         <FormControlLabel
@@ -809,24 +987,25 @@ const TaubenTinder = () => {
       <Box
         sx={{
           display: 'flex',
-          flexDirection: { xs: 'column', md: 'row' },
-          alignItems: { xs: 'stretch', md: 'flex-start' },
+          flexDirection: 'row',
+          alignItems: 'flex-start',
           justifyContent: 'center',
           gap: 2,
           maxWidth: { xs: 600, md: 920 },
           mx: 'auto'
         }}
       >
-        {/* Persistent target zoom (left) */}
+        {/* Desktop: zoom panel left */}
         <Paper
           elevation={4}
           sx={{
-            width: { xs: '100%', md: zoomPanelW },
+            display: { xs: 'none', md: 'block' },
+            width: 280,
             flexShrink: 0,
             borderRadius: 3,
             overflow: 'hidden',
             bgcolor: '#111',
-            alignSelf: { md: 'stretch' }
+            alignSelf: 'stretch'
           }}
         >
           <Typography
@@ -840,63 +1019,12 @@ const TaubenTinder = () => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              minHeight: { xs: 200, md: zoomPanelH },
+              minHeight: 420,
               px: 1,
               pb: 1.5
             }}
           >
-            {currentImageLoading && <CircularProgress size={28} sx={{ color: 'white' }} />}
-            {!currentImageLoading && displayImage && zoomCrop && imageInfo ? (
-              <Box
-                sx={{
-                  width: zoomViewW,
-                  height: zoomViewH,
-                  maxWidth: '100%',
-                  overflow: 'hidden',
-                  bgcolor: '#000',
-                  borderRadius: 1,
-                  position: 'relative'
-                }}
-              >
-                <Box
-                  component="img"
-                  src={displayImage}
-                  alt="Zielbereich"
-                  draggable={false}
-                  sx={{
-                    position: 'absolute',
-                    left: `${-zoomCrop.left * zoomScale}px`,
-                    top: `${-zoomCrop.top * zoomScale}px`,
-                    width: `${imageInfo.width * zoomScale}px`,
-                    height: `${imageInfo.height * zoomScale}px`,
-                    maxWidth: 'none',
-                    display: 'block',
-                    pointerEvents: 'none',
-                    userSelect: 'none'
-                  }}
-                />
-                {showBoxes && targetPixelBox && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      left: `${(targetPixelBox.left - zoomCrop.left) * zoomScale}px`,
-                      top: `${(targetPixelBox.top - zoomCrop.top) * zoomScale}px`,
-                      width: `${targetPixelBox.width * zoomScale}px`,
-                      height: `${targetPixelBox.height * zoomScale}px`,
-                      border: '3px solid #00e676',
-                      boxSizing: 'border-box',
-                      pointerEvents: 'none'
-                    }}
-                  />
-                )}
-              </Box>
-            ) : (
-              !currentImageLoading && (
-                <Typography variant="body2" color="grey.500" sx={{ px: 2, textAlign: 'center' }}>
-                  Kein Zielbereich
-                </Typography>
-              )
-            )}
+            {renderTargetZoom(280, { showLabel: true })}
           </Box>
         </Paper>
 
@@ -906,7 +1034,7 @@ const TaubenTinder = () => {
           flex: 1,
           width: '100%',
           maxWidth: '600px',
-          height: { xs: '70vh', sm: '600px' },
+          height: { xs: 'min(72vh, 560px)', sm: '600px' },
           touchAction: 'none',
           userSelect: 'none'
         }}
@@ -974,6 +1102,7 @@ const TaubenTinder = () => {
             )}
             {!currentImageLoading && displayImage && (
               <>
+              {!mainShowsZoom && (
               <Box
                 ref={imageRef}
                 component="img"
@@ -991,6 +1120,25 @@ const TaubenTinder = () => {
                   display: 'block'
                 }}
               />
+              )}
+
+              {mainShowsZoom && (
+                <Box
+                  sx={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    p: 1
+                  }}
+                >
+                  {renderTargetZoom(Math.min(
+                    (containerRef.current?.clientWidth || 360) - 16,
+                    (containerRef.current?.clientHeight || 360) - 16
+                  ))}
+                </Box>
+              )}
 
               <Tooltip title={showBoxes ? 'Boxen ausblenden' : 'Boxen einblenden'}>
                 <IconButton
@@ -1014,8 +1162,26 @@ const TaubenTinder = () => {
                 </IconButton>
               </Tooltip>
 
+              {/* Mobile PiP only while full frame is shown */}
+              {!mainShowsZoom && (
+              <Box
+                sx={{
+                  display: { xs: 'block', md: 'none' },
+                  position: 'absolute',
+                  left: mobilePipPos.left,
+                  top: mobilePipPos.top,
+                  bottom: mobilePipPos.bottom,
+                  right: mobilePipPos.right,
+                  zIndex: 4,
+                  pointerEvents: 'none'
+                }}
+              >
+                {renderTargetZoom(mobilePipMax)}
+              </Box>
+              )}
+
               {/* Draw bounding boxes */}
-              {showBoxes && imageInfo && renderedImageSize.width > 0 && currentDetection.detections?.map((detection, index) => {
+              {!mainShowsZoom && showBoxes && imageInfo && renderedImageSize.width > 0 && currentDetection.detections?.map((detection, index) => {
                 if (!detection.bbox && !detection.position) return null;
 
                 const imgWidth = imageInfo.width || 1;
@@ -1176,13 +1342,14 @@ const TaubenTinder = () => {
           )}
         </Paper>
 
-        {/* Action Buttons (fallback for desktop) */}
+        {/* Action Buttons */}
         <Box
           sx={{
-            display: { xs: 'none', sm: 'flex' },
+            display: 'flex',
             justifyContent: 'center',
-            gap: 2,
-            mt: 4
+            gap: { xs: 1.5, sm: 2 },
+            mt: { xs: 2, sm: 4 },
+            pb: { xs: 2, sm: 0 }
           }}
         >
           <IconButton
