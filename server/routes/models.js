@@ -37,6 +37,9 @@ const {
   requestBenchmarkStop
 } = require('../services/espBenchmark');
 const {
+  buildNegativeClustersFromDocs
+} = require('../utils/negativeDuplicates');
+const {
   getEspExportStatus,
   startEspExport,
   requestEspExportStop,
@@ -102,8 +105,11 @@ router.get('/dataset', authenticateToken, async (req, res) => {
 
     const empty = {
       images: 0,
+      imagesWithBirds: 0,
       birds: 0,
       confirmedBirds: 0,
+      unconfirmedBirds: 0,
+      noPigeonBirds: 0,
       tooFarBirds: 0,
       sideBirds: 0,
       replayModels,
@@ -165,6 +171,13 @@ router.get('/dataset', authenticateToken, async (req, res) => {
               input: '$birds',
               as: 'bird',
               cond: { $eq: ['$$bird.review.status', 'confirmed_pigeon'] }
+            }
+          },
+          noPigeonBirdsList: {
+            $filter: {
+              input: '$birds',
+              as: 'bird',
+              cond: { $eq: ['$$bird.review.status', 'no_pigeon'] }
             }
           },
           tooFarBirdsList: {
@@ -240,6 +253,60 @@ router.get('/dataset', authenticateToken, async (req, res) => {
               { $gt: [{ $size: '$birds' }, 0] },
               { $size: '$confirmedBirdsList' },
               { $cond: [{ $eq: ['$classification_status', 'confirmed_pigeon'] }, 1, 0] }
+            ]
+          },
+          noPigeonCount: {
+            $cond: [
+              { $gt: [{ $size: '$birds' }, 0] },
+              { $size: '$noPigeonBirdsList' },
+              { $cond: [{ $eq: ['$classification_status', 'no_pigeon'] }, 1, 0] }
+            ]
+          },
+          // Einzeldetections ohne Review-Entscheidung (noch offen)
+          unconfirmedCount: {
+            $cond: [
+              { $gt: [{ $size: '$birds' }, 0] },
+              {
+                $size: {
+                  $filter: {
+                    input: '$birds',
+                    as: 'bird',
+                    cond: {
+                      $not: {
+                        $in: [
+                          { $ifNull: ['$$bird.review.status', null] },
+                          ['confirmed_pigeon', 'no_pigeon', 'too_far']
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                $cond: [
+                  {
+                    $in: [
+                      { $ifNull: ['$classification_status', null] },
+                      ['confirmed_pigeon', 'no_pigeon', 'too_far']
+                    ]
+                  },
+                  0,
+                  {
+                    $size: {
+                      $filter: {
+                        input: '$detections',
+                        as: 'det',
+                        cond: {
+                          $in: [
+                            { $toLower: { $ifNull: ['$$det.class', ''] } },
+                            BIRD_CLASSES
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
             ]
           },
           tooFarCount: { $size: '$tooFarBirdsList' },
@@ -374,8 +441,19 @@ router.get('/dataset', authenticateToken, async (req, res) => {
         $group: {
           _id: null,
           images: { $sum: { $cond: ['$hasImage', 1, 0] } },
+          imagesWithBirds: {
+            $sum: {
+              $cond: [
+                { $and: ['$hasImage', { $gt: ['$birdCount', 0] }] },
+                1,
+                0
+              ]
+            }
+          },
           birds: { $sum: '$birdCount' },
           confirmedBirds: { $sum: '$confirmedCount' },
+          unconfirmedBirds: { $sum: '$unconfirmedCount' },
+          noPigeonBirds: { $sum: '$noPigeonCount' },
           tooFarBirds: { $sum: '$tooFarCount' },
           sideBirds: { $sum: '$sideCount' },
           lDone: { $sum: { $cond: ['$hasLRun', 1, 0] } },
@@ -392,8 +470,11 @@ router.get('/dataset', authenticateToken, async (req, res) => {
 
     res.json({
       images: row?.images || 0,
+      imagesWithBirds: row?.imagesWithBirds || 0,
       birds: row?.birds || 0,
       confirmedBirds: row?.confirmedBirds || 0,
+      unconfirmedBirds: row?.unconfirmedBirds || 0,
+      noPigeonBirds: row?.noPigeonBirds || 0,
       tooFarBirds: row?.tooFarBirds || 0,
       sideBirds: row?.sideBirds || 0,
       replayModels,
@@ -822,6 +903,36 @@ function resolveReplayModel(modelId) {
     || null;
 }
 
+/**
+ * Detection docs embed JPEG base64 (~0.5–1MB each), so review aggs are heavy.
+ * We still scan ALL matching docs (no hard cap) — otherwise older review cases
+ * never appear. Mitigations: index on model_runs.model.name, newest-first sort,
+ * allowDiskUse, maxTimeMS, and staggered client loads.
+ */
+const REVIEW_AGG_MAX_MS = Math.min(
+  300000,
+  Math.max(30000, parseInt(process.env.REVIEW_AGG_MAX_MS || '180000', 10) || 180000)
+);
+
+function reviewScanPrefix({ deviceIds, modelName, extraMatch = {} }) {
+  return [
+    {
+      $match: {
+        device: { $in: deviceIds },
+        model_runs: { $elemMatch: { 'model.name': modelName } },
+        ...extraMatch
+      }
+    },
+    { $sort: { processedAt: -1 } }
+  ];
+}
+
+function runReviewAggregate(pipeline) {
+  return Detection.aggregate(pipeline)
+    .allowDiskUse(true)
+    .option({ maxTimeMS: REVIEW_AGG_MAX_MS });
+}
+
 async function userDeviceIds(userId) {
   const devices = await Device.find({ owner: userId }).select('_id');
   return devices.map((d) => d._id);
@@ -853,7 +964,7 @@ function sizeFilterCandidatesFromDoc(doc, minShortSide) {
   return items;
 }
 
-async function loadSizeFilterCandidates(deviceIds, minShortSide, { limit = null, maxScan = 5000 } = {}) {
+async function loadSizeFilterCandidates(deviceIds, minShortSide, { limit = null } = {}) {
   if (!deviceIds.length) return { total: 0, items: [] };
 
   const query = {
@@ -864,12 +975,12 @@ async function loadSizeFilterCandidates(deviceIds, minShortSide, { limit = null,
     ]
   };
 
+  // Full history — no maxScan cap (select is lightweight, no base64).
   const cursor = Detection.find(query)
     .select('_id birds image_info processedAt classification_status target_bird')
     .sort({ processedAt: -1 })
-    .limit(maxScan)
     .lean()
-    .cursor();
+    .cursor({ batchSize: 100 });
 
   const all = [];
   for await (const doc of cursor) {
@@ -884,7 +995,7 @@ async function loadSizeFilterCandidates(deviceIds, minShortSide, { limit = null,
   });
 
   const total = all.length;
-  const items = limit != null ? all.slice(0, limit) : all;
+  const items = limit != null && limit > 0 ? all.slice(0, limit) : all;
   return { total, items };
 }
 
@@ -1006,12 +1117,7 @@ function restoreSideReviewUndo(detection, undo) {
 
 async function fetchLReviewTargets({ deviceIds, modelName, reviewSource, caseId, limit }) {
   const pipeline = [
-    {
-      $match: {
-        device: { $in: deviceIds },
-        model_runs: { $elemMatch: { 'model.name': modelName } }
-      }
-    },
+    ...reviewScanPrefix({ deviceIds, modelName }),
     {
       $project: {
         birds: { $ifNull: ['$birds', []] },
@@ -1150,18 +1256,12 @@ async function fetchLReviewTargets({ deviceIds, modelName, reviewSource, caseId,
     );
   }
 
-  return Detection.aggregate(pipeline).allowDiskUse(true);
+  return runReviewAggregate(pipeline);
 }
 
 async function fetchSideReviewTargets({ deviceIds, modelName, reviewSource, caseId, limit }) {
-  return Detection.aggregate([
-    {
-      $match: {
-        device: { $in: deviceIds },
-        model_runs: { $elemMatch: { 'model.name': modelName } },
-        'birds.role': 'side'
-      }
-    },
+  return runReviewAggregate([
+    ...reviewScanPrefix({ deviceIds, modelName, extraMatch: { 'birds.role': 'side' } }),
     {
       $project: {
         birds: { $ifNull: ['$birds', []] },
@@ -1249,7 +1349,7 @@ async function fetchSideReviewTargets({ deviceIds, modelName, reviewSource, case
         birdId: '$sideBirdsList.bird_id'
       }
     }
-  ]).allowDiskUse(true);
+  ]);
 }
 
 router.get('/dataset/l-review', authenticateToken, async (req, res) => {
@@ -1270,13 +1370,8 @@ router.get('/dataset/l-review', authenticateToken, async (req, res) => {
     const reviewSource = `l-review:${preferred.name}`;
     const modelName = preferred.name;
 
-    const rows = await Detection.aggregate([
-      {
-        $match: {
-          device: { $in: deviceIds },
-          model_runs: { $elemMatch: { 'model.name': modelName } }
-        }
-      },
+    const rows = await runReviewAggregate([
+      ...reviewScanPrefix({ deviceIds, modelName }),
       {
         $project: {
           device: 1,
@@ -1506,7 +1601,7 @@ router.get('/dataset/l-review', authenticateToken, async (req, res) => {
           ]
         }
       }
-    ]).allowDiskUse(true);
+    ]);
 
     const facet = rows[0] || { aCount: [], a: [], bCount: [], cCount: [], bcItems: [] };
 
@@ -1747,14 +1842,8 @@ router.get('/dataset/side-review', authenticateToken, async (req, res) => {
     const reviewSource = `side-review:${preferred.name}`;
     const modelName = preferred.name;
 
-    const rows = await Detection.aggregate([
-      {
-        $match: {
-          device: { $in: deviceIds },
-          model_runs: { $elemMatch: { 'model.name': modelName } },
-          'birds.role': 'side'
-        }
-      },
+    const rows = await runReviewAggregate([
+      ...reviewScanPrefix({ deviceIds, modelName, extraMatch: { 'birds.role': 'side' } }),
       {
         $project: {
           device: 1,
@@ -1895,7 +1984,7 @@ router.get('/dataset/side-review', authenticateToken, async (req, res) => {
           ]
         }
       }
-    ]).allowDiskUse(true);
+    ]);
 
     const facet = rows[0] || { aCount: [], bCount: [], aItems: [], bItems: [] };
     const caseTotals = {
@@ -2100,13 +2189,8 @@ router.post('/dataset/side-review/:detectionId', authenticateToken, async (req, 
 });
 
 async function fetchNewReviewTargets({ deviceIds, modelName, limit }) {
-  return Detection.aggregate([
-    {
-      $match: {
-        device: { $in: deviceIds },
-        model_runs: { $elemMatch: { 'model.name': modelName } }
-      }
-    },
+  return runReviewAggregate([
+    ...reviewScanPrefix({ deviceIds, modelName }),
     {
       $project: {
         device: 1,
@@ -2173,7 +2257,7 @@ async function fetchNewReviewTargets({ deviceIds, modelName, limit }) {
         lBox: '$lRun.boxes'
       }
     }
-  ]).allowDiskUse(true);
+  ]);
 }
 
 router.get('/dataset/new-review', authenticateToken, async (req, res) => {
@@ -2195,13 +2279,8 @@ router.get('/dataset/new-review', authenticateToken, async (req, res) => {
 
     const [itemsRaw, countRows] = await Promise.all([
       fetchNewReviewTargets({ deviceIds, modelName, limit }),
-      Detection.aggregate([
-        {
-          $match: {
-            device: { $in: deviceIds },
-            model_runs: { $elemMatch: { 'model.name': modelName } }
-          }
-        },
+      runReviewAggregate([
+        ...reviewScanPrefix({ deviceIds, modelName }),
         {
           $project: {
             model_runs: {
@@ -2240,7 +2319,7 @@ router.get('/dataset/new-review', authenticateToken, async (req, res) => {
           }
         },
         { $count: 'n' }
-      ]).allowDiskUse(true)
+      ])
     ]);
 
     const total = countRows[0]?.n || 0;
@@ -2530,15 +2609,14 @@ router.post('/dataset/size-filter/undo', authenticateToken, async (req, res) => 
 router.post('/dataset/size-filter/mark-all', authenticateToken, async (req, res) => {
   try {
     const minShortSide = clampMinShortSide(req.body?.minShortSide ?? req.query.minShortSide, 0.04);
-    const maxMark = Math.min(500, Math.max(1, parseInt(req.body?.limit, 10) || 200));
     const deviceIds = await userDeviceIds(req.user.userId);
     if (deviceIds.length === 0) {
       return res.json({ ok: true, minShortSide, marked: 0, errors: 0, total: 0 });
     }
 
+    // Mark every matching candidate across full history (no scan/mark caps).
     const { total, items } = await loadSizeFilterCandidates(deviceIds, minShortSide, {
-      limit: maxMark,
-      maxScan: 8000
+      limit: null
     });
 
     let marked = 0;
@@ -2578,7 +2656,7 @@ router.post('/dataset/size-filter/mark-all', authenticateToken, async (req, res)
       }
     }
 
-    res.json({ ok: true, minShortSide, marked, errors, total, capped: total > maxMark });
+    res.json({ ok: true, minShortSide, marked, errors, total, capped: false });
   } catch (error) {
     logger.error('Size-filter mark-all error:', error);
     res.status(500).json({ error: 'Massen-Markierung fehlgeschlagen' });
@@ -2658,6 +2736,172 @@ router.post('/:id/replay', authenticateToken, (req, res) => {
   } catch (error) {
     logger.error('Start replay error:', error);
     res.status(error.statusCode || 500).json({ error: error.message || 'Server error' });
+  }
+});
+
+/**
+ * „Keine Taube“ / too_far export negatives clustered by image.
+ * Query:
+ *   mode=exact|similar (default exact)
+ *   scope=image|detection
+ *   unit=doc|box (doc = classic 1 hash/detection; box = per finding)
+ *   strict=1 → classifyExportDoc (all birds negative); 0 → looser candidate
+ *   days=0 → all time; days>0 → lookback window
+ *   limit=0 → no cap; limit>0 → newest N only
+ *   minCount, maxDistance (similar only, Hamming 1–32, default 8)
+ */
+router.get('/dataset/negative-duplicates', authenticateToken, async (req, res) => {
+  try {
+    const mode = String(req.query.mode || 'exact').toLowerCase() === 'similar'
+      ? 'similar'
+      : 'exact';
+    const scope = String(req.query.scope || 'image').toLowerCase() === 'detection'
+      ? 'detection'
+      : 'image';
+    const unit = String(req.query.unit || 'box').toLowerCase() === 'doc' ? 'doc' : 'box';
+    const strict = String(req.query.strict || '0') === '1' || String(req.query.strict).toLowerCase() === 'true';
+    const daysRaw = parseInt(req.query.days, 10);
+    const limitRaw = parseInt(req.query.limit, 10);
+    // Default: scan everything. Explicit days/limit > 0 still supported.
+    const days = Number.isFinite(daysRaw) && daysRaw > 0
+      ? Math.min(3650, daysRaw)
+      : 0;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(100000, limitRaw)
+      : 0;
+    const minCount = Math.min(50, Math.max(2, parseInt(req.query.minCount, 10) || 2));
+    const maxDistance = Math.min(32, Math.max(1, parseInt(req.query.maxDistance, 10) || 8));
+
+    const deviceIds = await userDeviceIds(req.user.userId);
+    if (!deviceIds.length) {
+      return res.json({
+        clusters: [],
+        scanned: 0,
+        negatives: 0,
+        days,
+        limit,
+        minCount,
+        mode,
+        scope,
+        unit,
+        strict,
+        maxDistance,
+        all: days === 0 && limit === 0
+      });
+    }
+
+    const filter = {
+      device: { $in: deviceIds },
+      $or: [
+        { classification_status: { $in: ['no_pigeon', 'too_far'] } },
+        { 'birds.review.status': { $in: ['no_pigeon', 'too_far'] } }
+      ]
+    };
+    if (days > 0) {
+      filter.processedAt = { $gte: new Date(Date.now() - days * 24 * 60 * 60 * 1000) };
+    }
+
+    let query = Detection.find(filter)
+      .select('_id device processedAt classification_status birds target_bird camera_source camera_position detection_authority esp_parallel image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image image_info')
+      .sort({ processedAt: -1 });
+    if (limit > 0) query = query.limit(limit);
+
+    const cursor = query.lean().cursor({ batchSize: 24 });
+    const {
+      clusters: clustersRaw,
+      scanned,
+      negatives,
+      hashedCount
+    } = await buildNegativeClustersFromDocs(cursor, {
+      mode,
+      scope,
+      unit,
+      strict,
+      minCount,
+      maxDistance,
+      concurrency: 4,
+      batchSize: 24
+    });
+
+    const clusters = clustersRaw.map((c) => ({
+      hash: c.hash,
+      kind: c.kind || mode,
+      scope: c.scope || scope,
+      count: c.count,
+      size: c.size,
+      imageField: c.imageField,
+      maxDistance: c.maxDistance,
+      firstAt: c.firstAt,
+      lastAt: c.lastAt,
+      thumbUrl: c.thumbUrl || c.detections[0]?.thumbUrl || null,
+      keepId: c.detections[0]?.memberKey || c.detections[0]?.id || null,
+      sampleDetectionId: c.detections[0]?.id || null,
+      detections: c.detections.map((d) => ({
+        id: d.id,
+        memberKey: d.memberKey || d.id,
+        boxIndex: d.boxIndex,
+        birdId: d.birdId || null,
+        focusStatus: d.focusStatus || null,
+        processedAt: d.processedAt,
+        classification_status: d.classification_status,
+        boxes: d.boxes || [],
+        image_info: d.image_info || null,
+        thumbUrl: d.thumbUrl || null,
+        camera_source: d.camera_source || null,
+        camera_position: d.camera_position || null,
+        cam: d.cam || null
+      }))
+    }));
+
+    res.json({
+      clusters,
+      scanned,
+      negatives,
+      boxesHashed: hashedCount || 0,
+      days,
+      limit,
+      minCount,
+      mode,
+      scope,
+      unit,
+      strict,
+      maxDistance,
+      all: days === 0 && limit === 0
+    });
+  } catch (error) {
+    logger.error('Negative duplicates error:', error);
+    res.status(500).json({ error: 'Negativ-Duplikate konnten nicht geladen werden' });
+  }
+});
+
+/** Delete detections by id (must be owned). Used to prune duplicate negatives. */
+router.post('/dataset/negative-duplicates/delete', authenticateToken, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    if (ids.length > 5000) {
+      return res.status(400).json({ error: 'Too many ids (max 5000)' });
+    }
+
+    const deviceIds = await userDeviceIds(req.user.userId);
+    if (!deviceIds.length) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await Detection.deleteMany({
+      _id: { $in: ids },
+      device: { $in: deviceIds }
+    });
+
+    res.json({
+      deleted: result.deletedCount || 0,
+      requested: ids.length
+    });
+  } catch (error) {
+    logger.error('Negative duplicates delete error:', error);
+    res.status(500).json({ error: 'Löschen fehlgeschlagen' });
   }
 });
 

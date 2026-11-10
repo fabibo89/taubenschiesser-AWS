@@ -8,6 +8,13 @@ const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { findDuplicateGroups } = require('../utils/duplicateDetections');
 const { applyMainReview, attachLiveBirdLayer, applySideReview } = require('../utils/detectionBirds');
+const {
+  hashImageUrl,
+  isSlavePhoto,
+  collectSlaveEntries,
+  buildSlaveDuplicateClusters
+} = require('../utils/slavePhotoDuplicates');
+const { resolveLiveSensors, applyLiveSensor } = require('../utils/espP4Health');
 const cvServiceUrl = process.env.CV_SERVICE_URL || 'http://localhost:8000';
 
 /** Enrich a detection doc with esp_rot, esp_tilt, is_target_bird for display. Uses cv-service (single source of truth). */
@@ -1052,7 +1059,11 @@ router.patch('/detections/:id/bird-review', authenticateToken, async (req, res) 
   try {
     const birdId = typeof req.body?.birdId === 'string' ? req.body.birdId.trim() : '';
     const rawStatus = req.body?.status;
-    const status = rawStatus === 'confirmed_pigeon' || rawStatus === 'no_pigeon' ? rawStatus : null;
+    const status = rawStatus === 'confirmed_pigeon'
+      || rawStatus === 'no_pigeon'
+      || rawStatus === 'too_far'
+      ? rawStatus
+      : null;
 
     if (!birdId) {
       return res.status(400).json({ error: 'birdId required' });
@@ -1097,6 +1108,235 @@ router.patch('/detections/:id/bird-review', authenticateToken, async (req, res) 
     res.json({ detection });
   } catch (error) {
     logger.error('Bird review error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * Identical slave companion stills (scanPhotos / preShootPhotos).
+ * Query: days (default 14), limit (default 800, max 2000)
+ */
+router.get('/slave-duplicates', authenticateToken, async (req, res) => {
+  try {
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 14));
+    const limit = Math.min(2000, Math.max(50, parseInt(req.query.limit, 10) || 800));
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id name cameras');
+    const deviceIds = devices.map((d) => d._id);
+    if (!deviceIds.length) {
+      return res.json({ clusters: [], scanned: 0, days, limit });
+    }
+    const deviceNameById = new Map(devices.map((d) => [String(d._id), d.name]));
+    const liveSensors = await resolveLiveSensors(devices);
+
+    const detections = await Detection.find({
+      device: { $in: deviceIds },
+      processedAt: { $gte: from },
+      $or: [
+        { 'scanPhotos.0': { $exists: true } },
+        { 'preShootPhotos.0': { $exists: true } }
+      ]
+    })
+      .select('_id device processedAt scanPhotos preShootPhotos')
+      .sort({ processedAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const clusters = buildSlaveDuplicateClusters(detections).map((c) => {
+      applyLiveSensor(c, liveSensors);
+      return {
+        hash: c.hash,
+        count: c.count,
+        cameraName: c.cameraName,
+        sensor: c.sensor || null,
+        size: c.size,
+        firstAt: c.firstAt,
+        lastAt: c.lastAt,
+        sampleDetectionId: c.detections[0]?.id || null,
+        detections: c.detections.map((d) => {
+          applyLiveSensor(d, liveSensors, c.cameraName);
+          return {
+            id: d.id,
+            processedAt: d.processedAt,
+            kind: d.kind,
+            sensor: d.sensor || null,
+            deviceName: deviceNameById.get(String(d.device)) || 'Gerät'
+          };
+        })
+      };
+    });
+
+    res.json({ clusters, scanned: detections.length, days, limit });
+  } catch (error) {
+    logger.error('Slave duplicates error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * Master + first slave still for side-by-side compare.
+ */
+router.get('/detections/:id/slave-compare', authenticateToken, async (req, res) => {
+  try {
+    if (!/^[a-fA-F0-9]{24}$/.test(String(req.params.id || ''))) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    const detection = await Detection.findById(req.params.id)
+      .select('device processedAt image zoomed_image tapo_image tapo_zoomed_image raspberry_pi_image raspberry_pi_zoomed_image scanPhotos preShootPhotos camera_source')
+      .populate('device', 'name owner cameras');
+
+    if (!detection) {
+      return res.status(404).json({ error: 'Detection not found' });
+    }
+    if (!detection.device || detection.device.owner.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const imgs = pickDetectionImages(detection);
+    const slaves = collectSlaveEntries(detection);
+    const preferredHash = typeof req.query.hash === 'string' ? req.query.hash : null;
+    const slave = preferredHash
+      ? (slaves.find((s) => s.hash === preferredHash) || slaves[0] || null)
+      : (slaves[0] || null);
+
+    if (slave && !slave.sensor) {
+      const liveSensors = await resolveLiveSensors([detection.device]);
+      applyLiveSensor(slave, liveSensors);
+    }
+
+    res.json({
+      id: detection._id,
+      processedAt: detection.processedAt,
+      device: { _id: detection.device._id, name: detection.device.name },
+      master: {
+        url: imgs.image?.url || imgs.zoomed_image?.url || null,
+        zoomedUrl: imgs.zoomed_image?.url || null
+      },
+      slave: slave
+        ? {
+            url: slave.url,
+            hash: slave.hash,
+            kind: slave.kind,
+            cameraName: slave.cameraName,
+            sensor: slave.sensor || null,
+            role: slave.role,
+            size: slave.size
+          }
+        : null
+    });
+  } catch (error) {
+    logger.error('Slave compare error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * Recent detections that have at least one slave companion (for browse tab).
+ * Query: days, limit, page
+ */
+router.get('/slave-pairs', authenticateToken, async (req, res) => {
+  try {
+    const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 7));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 40));
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = devices.map((d) => d._id);
+    if (!deviceIds.length) {
+      return res.json({ items: [], total: 0, page, limit, days });
+    }
+
+    const filter = {
+      device: { $in: deviceIds },
+      processedAt: { $gte: from },
+      $or: [
+        { 'scanPhotos.0': { $exists: true } },
+        { 'preShootPhotos.0': { $exists: true } }
+      ]
+    };
+
+    const total = await Detection.countDocuments(filter);
+    const docs = await Detection.find(filter)
+      .select('_id device processedAt scanPhotos.role preShootPhotos.role')
+      .populate('device', 'name')
+      .sort({ processedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean();
+
+    const items = docs
+      .filter((d) => [...(d.scanPhotos || []), ...(d.preShootPhotos || [])]
+        .some((p) => p && (p.role || 'slave') !== 'master'))
+      .map((d) => ({
+        id: String(d._id),
+        processedAt: d.processedAt,
+        deviceName: d.device?.name || 'Gerät'
+      }));
+
+    res.json({ items, total, page, limit, days });
+  } catch (error) {
+    logger.error('Slave pairs error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/**
+ * Remove slave companion stills from detections.
+ * Body: { detectionIds: string[], hash?: string }
+ * If hash is set, only remove slave photos matching that content hash.
+ */
+router.post('/slave-photos/delete', authenticateToken, async (req, res) => {
+  try {
+    const detectionIds = Array.isArray(req.body?.detectionIds) ? req.body.detectionIds : [];
+    const hash = typeof req.body?.hash === 'string' && req.body.hash.length > 8
+      ? req.body.hash
+      : null;
+    if (!detectionIds.length) {
+      return res.status(400).json({ error: 'detectionIds required' });
+    }
+
+    const devices = await Device.find({ owner: req.user.userId }).select('_id');
+    const deviceIds = new Set(devices.map((d) => String(d._id)));
+
+    let detectionsUpdated = 0;
+    let photosRemoved = 0;
+
+    for (const rawId of detectionIds) {
+      if (!/^[a-fA-F0-9]{24}$/.test(String(rawId || ''))) continue;
+      const detection = await Detection.findById(rawId);
+      if (!detection) continue;
+      if (!deviceIds.has(String(detection.device))) continue;
+
+      let removedHere = 0;
+      const filterPhoto = (p) => {
+        if (!isSlavePhoto(p)) return true;
+        if (hash) {
+          const h = hashImageUrl(p.image?.url);
+          if (h !== hash) return true;
+        }
+        removedHere += 1;
+        return false;
+      };
+
+      if (Array.isArray(detection.scanPhotos) && detection.scanPhotos.length) {
+        detection.scanPhotos = detection.scanPhotos.filter(filterPhoto);
+      }
+      if (Array.isArray(detection.preShootPhotos) && detection.preShootPhotos.length) {
+        detection.preShootPhotos = detection.preShootPhotos.filter(filterPhoto);
+      }
+
+      if (removedHere > 0) {
+        await detection.save();
+        detectionsUpdated += 1;
+        photosRemoved += removedHere;
+      }
+    }
+
+    res.json({ success: true, detectionsUpdated, photosRemoved });
+  } catch (error) {
+    logger.error('Slave photos delete error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

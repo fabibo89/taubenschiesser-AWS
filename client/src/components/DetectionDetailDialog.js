@@ -32,11 +32,136 @@ import {
   WaterDrop as WaterDropIcon,
   FlashOn as FlashOnIcon,
   VolumeUp as VolumeUpIcon,
-  Block as BlockIcon
+  Block as BlockIcon,
+  OpenInFull as OpenInFullIcon,
+  ZoomOutMap as ZoomOutMapIcon
 } from '@mui/icons-material';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { detectionSourceLabels } from '../utils/detectionSources';
+
+/** Fullscreen-ish preview for detection images (data-URLs or http). */
+function ImageLightbox({ open, url, title, onClose }) {
+  return (
+    <Dialog
+      open={Boolean(open && url)}
+      onClose={onClose}
+      maxWidth={false}
+      fullWidth
+      // Must sit above DetectionDetailDialog (which uses modal+2)
+      sx={{ zIndex: (theme) => theme.zIndex.modal + 20 }}
+      PaperProps={{
+        sx: {
+          m: { xs: 1, sm: 2 },
+          width: 'calc(100% - 16px)',
+          maxWidth: '96vw',
+          maxHeight: '96vh',
+          bgcolor: '#111',
+          color: '#fff'
+        }
+      }}
+    >
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1, pr: 1 }}>
+        <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 0 }} noWrap>
+          {title || 'Bild'}
+        </Typography>
+        <IconButton onClick={onClose} aria-label="Schließen" sx={{ color: '#fff' }}>
+          <CloseIcon />
+        </IconButton>
+      </DialogTitle>
+      <DialogContent
+        sx={{
+          p: { xs: 1, sm: 2 },
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'auto',
+          bgcolor: '#000'
+        }}
+      >
+        {url && (
+          <Box
+            component="img"
+            src={url}
+            alt={title || 'Bild'}
+            sx={{
+              display: 'block',
+              maxWidth: '100%',
+              maxHeight: 'calc(96vh - 96px)',
+              width: 'auto',
+              height: 'auto',
+              objectFit: 'contain'
+            }}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Clickable image frame with expand affordance. */
+function ExpandableImageFrame({
+  src,
+  alt,
+  title,
+  onOpen,
+  sx,
+  imgSx,
+  children
+}) {
+  if (!src) return null;
+  const open = () => {
+    if (typeof onOpen === 'function') onOpen(src, title || alt || 'Bild');
+  };
+  return (
+    <Box
+      onClick={open}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
+      }}
+      title="Klicken zum Vergrößern"
+      sx={{
+        position: 'relative',
+        cursor: 'zoom-in',
+        ...sx
+      }}
+    >
+      <Box
+        component="img"
+        src={src}
+        alt={alt || title || 'Bild'}
+        sx={imgSx}
+      />
+      {children}
+      <Tooltip title="Bild vergrößern">
+        <IconButton
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation();
+            open();
+          }}
+          sx={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            bgcolor: 'rgba(0,0,0,0.55)',
+            color: '#fff',
+            '&:hover': { bgcolor: 'rgba(0,0,0,0.75)' },
+            zIndex: 2
+          }}
+          aria-label="Bild vergrößern"
+        >
+          <OpenInFullIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  );
+}
 
 export function DetectionSourceChips({ detection, size = 'small' }) {
   const labels = detectionSourceLabels(detection);
@@ -180,7 +305,7 @@ export function ShootActiveIcons({ detection, size = 'small', sx }) {
   );
 }
 
-function CompanionPhotoCard({ photo, titlePrefix, cardKey }) {
+function CompanionPhotoCard({ photo, titlePrefix, cardKey, onOpenImage }) {
   const src = photo?.image?.url;
   if (!src) return null;
   const titleParts = [
@@ -188,24 +313,31 @@ function CompanionPhotoCard({ photo, titlePrefix, cardKey }) {
     photo.cameraName || photo.cameraType,
     photo.role === 'master' ? 'Master' : photo.role === 'slave' ? 'Slave' : null
   ].filter(Boolean);
+  const title = titleParts.join(' · ');
   return (
     <Card key={cardKey} sx={{ mb: 1.5 }}>
       <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
         <Typography variant="subtitle2" gutterBottom>
-          {titleParts.join(' · ')}
+          {title}
         </Typography>
         <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-          <Box
-            component="img"
+          <ExpandableImageFrame
             src={src}
             alt={photo.cameraName || titlePrefix || 'Foto'}
+            title={title}
+            onOpen={onOpenImage}
             sx={{
-              display: 'block',
-              maxWidth: '100%',
-              height: 'auto',
               border: '1px solid #e0e0e0',
               borderRadius: 1,
-              backgroundColor: '#000'
+              overflow: 'hidden',
+              backgroundColor: '#000',
+              maxWidth: '100%',
+              lineHeight: 0
+            }}
+            imgSx={{
+              display: 'block',
+              maxWidth: '100%',
+              height: 'auto'
             }}
           />
         </Box>
@@ -262,8 +394,23 @@ function getModelRunsForTab(detection) {
 const OVERVIEW_BOX = {
   confirmed: '#00e676',
   rejected: '#ff1744',
+  tooFar: '#9c27b0',
   unknown: '#9e9e9e'
 };
+
+function reviewColor(status) {
+  if (status === 'confirmed_pigeon') return OVERVIEW_BOX.confirmed;
+  if (status === 'no_pigeon') return OVERVIEW_BOX.rejected;
+  if (status === 'too_far') return OVERVIEW_BOX.tooFar;
+  return OVERVIEW_BOX.unknown;
+}
+
+function reviewLabel(status) {
+  if (status === 'confirmed_pigeon') return 'Taube';
+  if (status === 'no_pigeon') return 'Keine Taube';
+  if (status === 'too_far') return 'Zu weit';
+  return 'Offen';
+}
 
 /** Border style for Übersicht overlays: Main thicker; color by bird review / classification. */
 function getOverviewDetectionBoxStyle(doc, det) {
@@ -283,12 +430,10 @@ function getOverviewDetectionBoxStyle(doc, det) {
   }
   if (!reviewStatus && isMain) {
     const cs = doc?.classification_status;
-    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon') reviewStatus = cs;
+    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon' || cs === 'too_far') reviewStatus = cs;
   }
 
-  let color = OVERVIEW_BOX.unknown;
-  if (reviewStatus === 'confirmed_pigeon') color = OVERVIEW_BOX.confirmed;
-  else if (reviewStatus === 'no_pigeon') color = OVERVIEW_BOX.rejected;
+  const color = reviewColor(reviewStatus);
 
   return {
     border: `${isMain ? 4 : 2}px solid ${color}`,
@@ -299,10 +444,12 @@ function getOverviewDetectionBoxStyle(doc, det) {
 
 function birdReviewStatus(bird, doc) {
   const fromBird = bird?.review?.status;
-  if (fromBird === 'confirmed_pigeon' || fromBird === 'no_pigeon') return fromBird;
+  if (fromBird === 'confirmed_pigeon' || fromBird === 'no_pigeon' || fromBird === 'too_far') {
+    return fromBird;
+  }
   if (bird?.role === 'main') {
     const cs = doc?.classification_status;
-    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon') return cs;
+    if (cs === 'confirmed_pigeon' || cs === 'no_pigeon' || cs === 'too_far') return cs;
   }
   return null;
 }
@@ -334,7 +481,7 @@ function birdOverlayPercents(bbox, detection) {
   };
 }
 
-function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId }) {
+function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId, onOpenImage }) {
   const birds = Array.isArray(detection?.birds) ? detection.birds.filter(Boolean) : [];
   const sorted = [...birds].sort((a, b) => {
     if (a.role === 'main' && b.role !== 'main') return -1;
@@ -351,7 +498,15 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
         status
       });
       if (response.data?.detection) onUpdated(response.data.detection);
-      toast.success(status === 'confirmed_pigeon' ? 'Als Taube gespeichert' : status === 'no_pigeon' ? 'Als keine Taube gespeichert' : 'Review zurückgesetzt');
+      toast.success(
+        status === 'confirmed_pigeon'
+          ? 'Als Taube gespeichert'
+          : status === 'no_pigeon'
+            ? 'Als keine Taube gespeichert'
+            : status === 'too_far'
+              ? 'Als zu weit gespeichert'
+              : 'Review zurückgesetzt'
+      );
     } catch (err) {
       toast.error(err.response?.data?.error || 'Speichern fehlgeschlagen');
     } finally {
@@ -378,9 +533,12 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
       </Typography>
 
       {imgUrl && (
-        <Box
+        <ExpandableImageFrame
+          src={imgUrl}
+          alt="Vögel"
+          title="Vögel"
+          onOpen={onOpenImage}
           sx={{
-            position: 'relative',
             display: 'inline-block',
             maxWidth: '100%',
             mb: 2.5,
@@ -390,13 +548,8 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
             backgroundColor: '#000',
             lineHeight: 0
           }}
+          imgSx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
         >
-          <Box
-            component="img"
-            src={imgUrl}
-            alt="Vögel"
-            sx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
-          />
           {hasSize && sorted.map((bird, index) => {
             const n = index + 1;
             const bbox = birdBoxForOverlay(bird, detection);
@@ -404,11 +557,7 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
             if (!pct) return null;
             const status = birdReviewStatus(bird, detection);
             const isMain = bird.role === 'main';
-            const color = status === 'confirmed_pigeon'
-              ? OVERVIEW_BOX.confirmed
-              : status === 'no_pigeon'
-                ? OVERVIEW_BOX.rejected
-                : OVERVIEW_BOX.unknown;
+            const color = reviewColor(status);
             return (
               <Box
                 key={`bird-overlay-${bird.bird_id}`}
@@ -447,7 +596,7 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
               </Box>
             );
           })}
-        </Box>
+        </ExpandableImageFrame>
       )}
 
       <Grid container spacing={2}>
@@ -456,11 +605,7 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
           const status = birdReviewStatus(bird, detection);
           const isMain = bird.role === 'main';
           const busy = savingBirdId === bird.bird_id;
-          const color = status === 'confirmed_pigeon'
-            ? OVERVIEW_BOX.confirmed
-            : status === 'no_pigeon'
-              ? OVERVIEW_BOX.rejected
-              : OVERVIEW_BOX.unknown;
+          const color = reviewColor(status);
           return (
             <Grid item xs={12} md={6} key={bird.bird_id}>
               <Paper variant="outlined" sx={{ p: 2, borderColor: color, borderWidth: isMain ? 2 : 1 }}>
@@ -492,19 +637,15 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
                   </Typography>
                   <Chip
                     size="small"
-                    label={
-                      status === 'confirmed_pigeon'
-                        ? 'Taube'
-                        : status === 'no_pigeon'
-                          ? 'Keine Taube'
-                          : 'Offen'
-                    }
+                    label={reviewLabel(status)}
                     sx={{
                       bgcolor: status === 'confirmed_pigeon'
                         ? 'rgba(0,230,118,0.15)'
                         : status === 'no_pigeon'
                           ? 'rgba(255,23,68,0.12)'
-                          : undefined,
+                          : status === 'too_far'
+                            ? 'rgba(156,39,176,0.12)'
+                            : undefined,
                       borderColor: color
                     }}
                     variant="outlined"
@@ -538,6 +679,16 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
                   </Button>
                   <Button
                     size="small"
+                    variant={status === 'too_far' ? 'contained' : 'outlined'}
+                    color="secondary"
+                    disabled={busy}
+                    startIcon={<ZoomOutMapIcon />}
+                    onClick={() => setStatus(bird.bird_id, 'too_far')}
+                  >
+                    Zu weit
+                  </Button>
+                  <Button
+                    size="small"
                     variant={status == null ? 'contained' : 'outlined'}
                     disabled={busy}
                     onClick={() => setStatus(bird.bird_id, null)}
@@ -555,7 +706,7 @@ function BirdsReviewPanel({ detection, onUpdated, savingBirdId, setSavingBirdId 
   );
 }
 
-function ModelRunOverlayCard({ detection, run, color }) {
+function ModelRunOverlayCard({ detection, run, color, onOpenImage }) {
   const preferZoomed = run?.image === 'zoomed_image' && detection?.zoomed_image?.url;
   const imgSrc = preferZoomed
     ? detection.zoomed_image.url
@@ -606,9 +757,12 @@ function ModelRunOverlayCard({ detection, run, color }) {
             Kein Bild für diesen Lauf vorhanden.
           </Typography>
         ) : (
-          <Box
+          <ExpandableImageFrame
+            src={imgSrc}
+            alt={modelName}
+            title={modelName}
+            onOpen={onOpenImage}
             sx={{
-              position: 'relative',
               display: 'inline-block',
               maxWidth: '100%',
               border: '1px solid #e0e0e0',
@@ -617,13 +771,8 @@ function ModelRunOverlayCard({ detection, run, color }) {
               backgroundColor: '#000',
               lineHeight: 0
             }}
+            imgSx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
           >
-            <Box
-              component="img"
-              src={imgSrc}
-              alt={modelName}
-              sx={{ display: 'block', maxWidth: '100%', height: 'auto' }}
-            />
             {size && boxes.map((box, idx) => {
               const b = box?.bbox;
               if (!b || b.x == null || b.y == null) return null;
@@ -646,7 +795,7 @@ function ModelRunOverlayCard({ detection, run, color }) {
                 />
               );
             })}
-          </Box>
+          </ExpandableImageFrame>
         )}
         {boxes.length > 0 && (
           <Box sx={{ mt: 1.5, display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
@@ -694,11 +843,21 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
   const [deviceRouteCoordinates, setDeviceRouteCoordinates] = useState([]);
   const [cameraPositionSaving, setCameraPositionSaving] = useState(false);
   const [nearestAtPosition, setNearestAtPosition] = useState({ before: null, after: null });
+  const [lightbox, setLightbox] = useState({ open: false, url: null, title: '' });
 
   const selectedRef = useRef(null);
   selectedRef.current = selectedDetection;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  const openImageLightbox = useCallback((url, title) => {
+    if (!url) return;
+    setLightbox({ open: true, url, title: title || 'Bild' });
+  }, []);
+
+  const closeImageLightbox = useCallback(() => {
+    setLightbox({ open: false, url: null, title: '' });
+  }, []);
 
   const idKey = detectionId == null || detectionId === '' ? null : String(detectionId);
   const currentId = navState.forId === idKey && navState.id ? navState.id : idKey;
@@ -718,6 +877,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
       setDeviceRouteCoordinates([]);
       setNearestAtPosition({ before: null, after: null });
       setBirdReviewSavingId(null);
+      setLightbox({ open: false, url: null, title: '' });
     }
   }, [open, idKey]);
 
@@ -878,6 +1038,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
   };
 
   return (
+    <>
     <Dialog
       open={Boolean(open)}
       onClose={onClose}
@@ -981,9 +1142,12 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                       boxSizing: 'border-box'
                     }}
                   >
-                    <Box
+                    <ExpandableImageFrame
+                      src={selectedDetection.image.url}
+                      alt="Original Detection"
+                      title="Original-Bild"
+                      onOpen={openImageLightbox}
                       sx={{
-                        position: 'relative',
                         display: 'block',
                         width: '100%',
                         border: '1px solid #e0e0e0',
@@ -991,17 +1155,12 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                         overflow: 'visible',
                         backgroundColor: '#000'
                       }}
+                      imgSx={{
+                        display: 'block',
+                        width: '100%',
+                        height: 'auto'
+                      }}
                     >
-                      <Box
-                        component="img"
-                        src={selectedDetection.image.url}
-                        alt="Original Detection"
-                        sx={{
-                          display: 'block',
-                          width: '100%',
-                          height: 'auto'
-                        }}
-                      />
                       {selectedDetection.image_info?.original_size &&
                         Array.isArray(selectedDetection.detections) &&
                         selectedDetection.detections.map((detection, index) => {
@@ -1044,7 +1203,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                             />
                           );
                         })}
-                    </Box>
+                    </ExpandableImageFrame>
                   </Box>
                 )}
 
@@ -1422,9 +1581,12 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                       Gezoomtes Bild {selectedDetection.zoom_factor && `(${selectedDetection.zoom_factor}x)`}
                     </Typography>
                     <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-                    <Box
+                    <ExpandableImageFrame
+                      src={selectedDetection.zoomed_image.url}
+                      alt="Zoomed Detection"
+                      title={`Gezoomtes Bild${selectedDetection.zoom_factor ? ` (${selectedDetection.zoom_factor}x)` : ''}`}
+                      onOpen={openImageLightbox}
                       sx={{
-                        position: 'relative',
                         display: 'inline-block',
                         maxWidth: '100%',
                         border: '1px solid #e0e0e0',
@@ -1432,18 +1594,13 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                         overflow: 'visible',
                         backgroundColor: '#000'
                       }}
+                      imgSx={{
+                        display: 'block',
+                        maxWidth: '100%',
+                        height: 'auto',
+                        verticalAlign: 'middle'
+                      }}
                     >
-                      <Box
-                        component="img"
-                        src={selectedDetection.zoomed_image.url}
-                        alt="Zoomed Detection"
-                        sx={{
-                          display: 'block',
-                          maxWidth: '100%',
-                          height: 'auto',
-                          verticalAlign: 'middle'
-                        }}
-                      />
                       {selectedDetection.image_info?.zoomed_size &&
                         Array.isArray(selectedDetection.detections) &&
                         selectedDetection.detections.map((detection, index) => {
@@ -1478,7 +1635,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                             />
                           );
                         })}
-                    </Box>
+                    </ExpandableImageFrame>
                     </Box>
                     {selectedDetection.image_info?.zoomed_size && (
                       <Typography
@@ -1506,6 +1663,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                 savingBirdId={birdReviewSavingId}
                 setSavingBirdId={setBirdReviewSavingId}
                 onUpdated={handleBirdReviewUpdated}
+                onOpenImage={openImageLightbox}
               />
             )}
 
@@ -1535,6 +1693,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                           photo={photo}
                           titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
                           cardKey={`master-${idx}`}
+                          onOpenImage={openImageLightbox}
                         />
                       ))
                     )}
@@ -1554,6 +1713,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                           photo={photo}
                           titlePrefix={photo._kind === 'scan' ? 'Scan' : 'Foto vor Vertreibung'}
                           cardKey={`slave-${idx}`}
+                          onOpenImage={openImageLightbox}
                         />
                       ))
                     )}
@@ -1582,6 +1742,7 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
                       detection={selectedDetection}
                       run={run}
                       color={MODEL_RUN_BOX_COLORS[idx % MODEL_RUN_BOX_COLORS.length]}
+                      onOpenImage={openImageLightbox}
                     />
                   ))}
                 </Box>
@@ -1605,6 +1766,14 @@ function DetectionDetailDialog({ open, detectionId, neighborIds, onClose, onDele
         )}
       </DialogActions>
     </Dialog>
+
+    <ImageLightbox
+      open={lightbox.open}
+      url={lightbox.url}
+      title={lightbox.title}
+      onClose={closeImageLightbox}
+    />
+    </>
   );
 }
 

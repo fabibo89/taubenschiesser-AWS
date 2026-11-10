@@ -605,8 +605,14 @@ const LReviewTinder = ({
       setError('');
     }
     try {
+      // Stagger the three review variants so they don't stampede Mongo at once.
+      const staggerMs = isNew ? 700 : isSide ? 350 : 0;
+      if (staggerMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, staggerMs));
+      }
       const response = await axios.get(apiPath, {
-        params: { modelId, limit: 40 }
+        params: { modelId, limit: 40 },
+        timeout: 180000
       });
       const nextItems = response.data.items || [];
       if (response.data.cases) {
@@ -634,7 +640,13 @@ const LReviewTinder = ({
       });
     } catch (err) {
       if (!silent || itemsRef.current.length === 0) {
-        setError(err.response?.data?.error || 'Review-Liste fehlgeschlagen');
+        const timedOut = err.code === 'ECONNABORTED' || err.message?.includes('timeout');
+        setError(
+          err.response?.data?.error
+          || (timedOut
+            ? 'Review-Liste Timeout — Mongo ist mit den großen Detection-Bildern überlastet. Bitte erneut versuchen.'
+            : 'Review-Liste fehlgeschlagen')
+        );
       }
       if (!silent) {
         setItems([]);
@@ -644,7 +656,7 @@ const LReviewTinder = ({
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [apiPath, caseOrder, enabled, modelId]);
+  }, [apiPath, caseOrder, enabled, isNew, isSide, modelId]);
 
   useEffect(() => {
     loadQueue();

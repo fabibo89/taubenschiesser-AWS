@@ -421,8 +421,7 @@ function SizeFilterReview({ enabled = true, tooFarBirds = 0, onDecided }) {
     setError('');
     try {
       const response = await axios.post('/api/models/dataset/size-filter/mark-all', {
-        minShortSide,
-        limit: 200
+        minShortSide
       });
       const marked = response.data?.marked || 0;
       setLastUndo(null);

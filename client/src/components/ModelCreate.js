@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -20,9 +23,11 @@ import {
   Tooltip,
   Typography
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ShootProgressBar from './ShootProgressBar';
 import LReviewTinder from './LReviewTinder';
 import SizeFilterReview from './SizeFilterReview';
+import { NegativeDupesTabs } from './NegativeDupesReview';
 
 const LIVE_VAL = '__live__';
 
@@ -169,9 +174,10 @@ const TABS = [
 
 const STATS = [
   { key: 'images', label: 'Bilder' },
-  { key: 'birds', label: 'Vögel' },
+  { key: 'imagesWithBirds', label: 'Bilder mit Vögeln' },
   { key: 'confirmedBirds', label: 'Bestätigte Vögel' },
-  { key: 'tooFarBirds', label: 'Zu weit' }
+  { key: 'unconfirmedBirds', label: 'Unbestätigt' },
+  { key: 'noPigeonBirds', label: 'Kein Vogel' }
 ];
 
 /** Colab: Script unter Meine Ablage/taubentraining, ZIPs in …/Trainingsdata */
@@ -226,6 +232,16 @@ const ModelCreate = () => {
   const [actionError, setActionError] = useState('');
   const [starting, setStarting] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState('');
+  /** Review steps 2–6: expand to load (lazy). Once mounted, stay mounted. */
+  const [dataStepOpen, setDataStepOpen] = useState({});
+  const [dataStepMounted, setDataStepMounted] = useState({});
+
+  const toggleDataStep = useCallback((step) => (_event, isExpanded) => {
+    setDataStepOpen((prev) => ({ ...prev, [step]: isExpanded }));
+    if (isExpanded) {
+      setDataStepMounted((prev) => (prev[step] ? prev : { ...prev, [step]: true }));
+    }
+  }, []);
   const [nowMs, setNowMs] = useState(Date.now());
   const [valRatio, setValRatio] = useState(0.2);
   const [exportPreview, setExportPreview] = useState(null);
@@ -949,7 +965,7 @@ const ModelCreate = () => {
 
           <Grid container spacing={2} sx={{ mb: 3 }}>
             {STATS.map((item) => (
-              <Grid item xs={6} sm={3} key={item.key}>
+              <Grid item xs={6} sm={4} md key={item.key}>
                 <Paper sx={{ p: 2, textAlign: 'center' }}>
                   {statsLoading ? (
                     <CircularProgress size={28} />
@@ -1032,145 +1048,233 @@ const ModelCreate = () => {
             </Button>
           </Paper>
 
-          <Paper sx={{ p: 3, mb: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              2. Mensch ↔ {modelLabel} abgleichen
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Tinder mit Fall-Filter (Default A&B). C optional dazuwählen.
-            </Typography>
-            <Grid container spacing={2} sx={{ mb: 3 }}>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainMatched || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">{modelLabel} trifft Main</Typography>
-                </Paper>
-              </Grid>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainMissed || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">bestätigte Vögel ohne L-Match</Typography>
-                </Paper>
-              </Grid>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainPendingL || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">noch ohne {modelLabel}-Lauf</Typography>
-                </Paper>
-              </Grid>
-            </Grid>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Stufen 2–6 laden erst beim Aufklappen — so bleibt der Seitenstart schnell.
+          </Alert>
 
-            {selectedModel?.id ? (
-              <LReviewTinder
-                modelId={selectedModel.id}
-                modelName={selectedModel.name || modelLabel}
-                variant="main"
-                defaultCases={['A', 'B']}
-                enabled={tab === 'data'}
-                liveRefresh={jobRunning}
-                onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
-              />
-            ) : (
-              <Alert severity="info">
-                Wähle oben ein Nebenmodell, dann erscheinen die Abgleich-Fälle.
-              </Alert>
-            )}
-          </Paper>
-
-          <Paper sx={{ p: 3, mb: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              3. Übrige Vögel (schon da)
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Side-Vögel aus dem Live-Lauf. Fall A: Nebenmodell trifft · Fall B: Nebenmodell verfehlt.
-              Tinder-Default A&B.
-            </Typography>
-            <Grid container spacing={2} sx={{ mb: 3 }}>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(stats?.sideBirds || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">Side gesamt</Typography>
-                </Paper>
+          <Accordion
+            disableGutters
+            expanded={Boolean(dataStepOpen[2])}
+            onChange={toggleDataStep(2)}
+            sx={{ mb: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, '&:before': { display: 'none' } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box>
+                <Typography variant="h6">2. Mensch ↔ {modelLabel} abgleichen</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Tinder A/B/C · {numberFormat.format(lReplay.confirmedMainMissed || 0)} ohne Match ·{' '}
+                  {numberFormat.format(lReplay.confirmedMainPendingL || 0)} ohne Lauf
+                  {!dataStepMounted[2] ? ' · noch nicht geladen' : ''}
+                </Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Tinder mit Fall-Filter (Default A&B). C optional dazuwählen.
+              </Typography>
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainMatched || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">{modelLabel} trifft Main</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainMissed || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">bestätigte Vögel ohne L-Match</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.confirmedMainPendingL || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">noch ohne {modelLabel}-Lauf</Typography>
+                  </Paper>
+                </Grid>
               </Grid>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.sideMatched || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">Fall A · trifft Side</Typography>
-                </Paper>
+              {selectedModel?.id ? (
+                dataStepMounted[2] ? (
+                  <LReviewTinder
+                    modelId={selectedModel.id}
+                    modelName={selectedModel.name || modelLabel}
+                    variant="main"
+                    defaultCases={['A', 'B']}
+                    enabled={tab === 'data'}
+                    liveRefresh={jobRunning && Boolean(dataStepOpen[2])}
+                    onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
+                  />
+                ) : null
+              ) : (
+                <Alert severity="info">
+                  Wähle oben ein Nebenmodell, dann erscheinen die Abgleich-Fälle.
+                </Alert>
+              )}
+            </AccordionDetails>
+          </Accordion>
+
+          <Accordion
+            disableGutters
+            expanded={Boolean(dataStepOpen[3])}
+            onChange={toggleDataStep(3)}
+            sx={{ mb: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, '&:before': { display: 'none' } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box>
+                <Typography variant="h6">3. Übrige Vögel (schon da)</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Side · {numberFormat.format(stats?.sideBirds || 0)} gesamt ·{' '}
+                  {numberFormat.format(lReplay.sideUnmatched || 0)} verfehlt
+                  {!dataStepMounted[3] ? ' · noch nicht geladen' : ''}
+                </Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Side-Vögel aus dem Live-Lauf. Fall A: Nebenmodell trifft · Fall B: Nebenmodell verfehlt.
+                Tinder-Default A&B.
+              </Typography>
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(stats?.sideBirds || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">Side gesamt</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.sideMatched || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">Fall A · trifft Side</Typography>
+                  </Paper>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.sideUnmatched || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">Fall B · verfehlt Side</Typography>
+                  </Paper>
+                </Grid>
               </Grid>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.sideUnmatched || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">Fall B · verfehlt Side</Typography>
-                </Paper>
+              {selectedModel?.id ? (
+                dataStepMounted[3] ? (
+                  <LReviewTinder
+                    modelId={selectedModel.id}
+                    modelName={selectedModel.name || modelLabel}
+                    variant="side"
+                    defaultCases={['A', 'B']}
+                    enabled={tab === 'data'}
+                    liveRefresh={jobRunning && Boolean(dataStepOpen[3])}
+                    onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
+                  />
+                ) : null
+              ) : (
+                <Alert severity="info">
+                  Wähle oben ein Nebenmodell, dann erscheinen die Side-Fälle.
+                </Alert>
+              )}
+            </AccordionDetails>
+          </Accordion>
+
+          <Accordion
+            disableGutters
+            expanded={Boolean(dataStepOpen[4])}
+            onChange={toggleDataStep(4)}
+            sx={{ mb: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, '&:before': { display: 'none' } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box>
+                <Typography variant="h6">4. Neue Vögel vom Nebenmodell</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {numberFormat.format(lReplay.newLBoxes || 0)} neue Boxen offen
+                  {!dataStepMounted[4] ? ' · noch nicht geladen' : ''}
+                </Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Boxen ohne Live-Match — neu ist neu. Rechts = als Side-Vogel übernehmen · Links = verwerfen.
+              </Typography>
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={12} sm={4}>
+                  <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
+                    <Typography variant="h4">{numberFormat.format(lReplay.newLBoxes || 0)}</Typography>
+                    <Typography variant="body2" color="text.secondary">Neue Boxen offen</Typography>
+                  </Paper>
+                </Grid>
               </Grid>
-            </Grid>
+              {selectedModel?.id ? (
+                dataStepMounted[4] ? (
+                  <LReviewTinder
+                    modelId={selectedModel.id}
+                    modelName={selectedModel.name || modelLabel}
+                    variant="new"
+                    defaultCases={['Neu']}
+                    enabled={tab === 'data'}
+                    liveRefresh={jobRunning && Boolean(dataStepOpen[4])}
+                    onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
+                  />
+                ) : null
+              ) : (
+                <Alert severity="info">
+                  Wähle oben ein Nebenmodell, dann erscheinen die neuen Boxen.
+                </Alert>
+              )}
+            </AccordionDetails>
+          </Accordion>
 
-            {selectedModel?.id ? (
-              <LReviewTinder
-                modelId={selectedModel.id}
-                modelName={selectedModel.name || modelLabel}
-                variant="side"
-                defaultCases={['A', 'B']}
-                enabled={tab === 'data'}
-                liveRefresh={jobRunning}
-                onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
-              />
-            ) : (
-              <Alert severity="info">
-                Wähle oben ein Nebenmodell, dann erscheinen die Side-Fälle.
-              </Alert>
-            )}
-          </Paper>
+          <Accordion
+            disableGutters
+            expanded={Boolean(dataStepOpen[5])}
+            onChange={toggleDataStep(5)}
+            sx={{ mb: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, '&:before': { display: 'none' } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box>
+                <Typography variant="h6">5. Zu weit / zu klein</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {numberFormat.format(stats?.tooFarBirds || 0)} als zu weit
+                  {!dataStepMounted[5] ? ' · noch nicht geladen' : ''}
+                </Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Bestätigte Vögel mit sehr kleiner Box (kurze Seite relativ zur Bildseite).
+                Die Box bleibt erhalten, der Status wird <code>too_far</code> — sie fällt aus dem Training-Export.
+                {' '}Links = Zu weit · Rechts = Behalten.
+              </Typography>
+              {dataStepMounted[5] ? (
+                <SizeFilterReview
+                  enabled={tab === 'data'}
+                  tooFarBirds={stats?.tooFarBirds || 0}
+                  onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
+                />
+              ) : null}
+            </AccordionDetails>
+          </Accordion>
 
-          <Paper sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              4. Neue Vögel vom Nebenmodell
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Boxen ohne Live-Match — neu ist neu. Rechts = als Side-Vogel übernehmen · Links = verwerfen.
-            </Typography>
-            <Grid container spacing={2} sx={{ mb: 3 }}>
-              <Grid item xs={12} sm={4}>
-                <Paper variant="outlined" sx={{ p: 2, textAlign: 'center' }}>
-                  <Typography variant="h4">{numberFormat.format(lReplay.newLBoxes || 0)}</Typography>
-                  <Typography variant="body2" color="text.secondary">Neue Boxen offen</Typography>
-                </Paper>
-              </Grid>
-            </Grid>
-
-            {selectedModel?.id ? (
-              <LReviewTinder
-                modelId={selectedModel.id}
-                modelName={selectedModel.name || modelLabel}
-                variant="new"
-                defaultCases={['Neu']}
-                enabled={tab === 'data'}
-                liveRefresh={jobRunning}
-                onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
-              />
-            ) : (
-              <Alert severity="info">
-                Wähle oben ein Nebenmodell, dann erscheinen die neuen Boxen.
-              </Alert>
-            )}
-          </Paper>
-
-          <Paper sx={{ p: 3, mt: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              5. Zu weit / zu klein
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Bestätigte Vögel mit sehr kleiner Box (kurze Seite relativ zur Bildseite).
-              Die Box bleibt erhalten, der Status wird <code>too_far</code> — sie fällt aus dem Training-Export.
-              {' '}Links = Zu weit · Rechts = Behalten.
-            </Typography>
-            <SizeFilterReview
-              enabled={tab === 'data'}
-              tooFarBirds={stats?.tooFarBirds || 0}
-              onDecided={() => loadStats(selectedModelId || undefined, { quiet: true })}
-            />
-          </Paper>
+          <Accordion
+            disableGutters
+            expanded={Boolean(dataStepOpen[6])}
+            onChange={toggleDataStep(6)}
+            sx={{ mb: 1.5, border: 1, borderColor: 'divider', borderRadius: 1, '&:before': { display: 'none' } }}
+          >
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Box>
+                <Typography variant="h6">6. „Keine Taube“-Duplikate</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Klassisch + Box-Objekte
+                  {!dataStepMounted[6] ? ' · noch nicht geladen' : ''}
+                </Typography>
+              </Box>
+            </AccordionSummary>
+            <AccordionDetails>
+              {dataStepMounted[6] ? (
+                <NegativeDupesTabs
+                  enabled={tab === 'data'}
+                  onChanged={() => loadStats(selectedModelId || undefined, { quiet: true })}
+                />
+              ) : null}
+            </AccordionDetails>
+          </Accordion>
         </Box>
       ) : tab === 'training' ? (
         <Box>
