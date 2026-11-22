@@ -3358,20 +3358,14 @@ class HardwareMonitor:
         # Legacy single camera: no per-cam flag → nothing
         return []
 
-    def _build_http_still_url(self, pi_config: Dict, zoom_factor: float = 1.0) -> Optional[str]:
-        """Build PiCam / ESP-P4 still URL from config (square/resolution defaults)."""
+    def _resolve_http_cam_host(self, pi_config: Dict) -> Optional[tuple]:
+        """Return (resolved_ip, port) for PiCam / ESP-P4 HTTP still API."""
         if not isinstance(pi_config, dict):
             return None
         pi_ip = pi_config.get('ip')
         if not pi_ip:
             return None
         pi_port = pi_config.get('port', 8080)
-        pi_endpoint = pi_config.get('endpoint', '/image.jpg')
-        pi_flip = pi_config.get('flip', False)
-        pi_angle = pi_config.get('angle', 0)
-        pi_square = bool(pi_config.get('square', True))
-        pi_resolution = pi_config.get('resolution')
-
         resolved_ip = pi_ip
         try:
             socket.inet_aton(pi_ip)
@@ -3380,6 +3374,19 @@ class HardwareMonitor:
                 resolved_ip = socket.gethostbyname(pi_ip)
             except socket.gaierror:
                 resolved_ip = pi_ip
+        return resolved_ip, pi_port
+
+    def _build_http_still_url(self, pi_config: Dict, zoom_factor: float = 1.0) -> Optional[str]:
+        """Build PiCam / ESP-P4 still URL from config (square/resolution defaults)."""
+        host = self._resolve_http_cam_host(pi_config)
+        if not host:
+            return None
+        resolved_ip, pi_port = host
+        pi_endpoint = pi_config.get('endpoint', '/image.jpg')
+        pi_flip = pi_config.get('flip', False)
+        pi_angle = pi_config.get('angle', 0)
+        pi_square = bool(pi_config.get('square', True))
+        pi_resolution = pi_config.get('resolution')
 
         resolution_param = self._device_resolution_param(pi_resolution)
         base_url = f"http://{resolved_ip}:{pi_port}{pi_endpoint}"
@@ -3391,6 +3398,35 @@ class HardwareMonitor:
         query_params.append("square=true" if pi_square else "square=false")
         query_params.append(f"resolution={resolution_param}")
         return f"{base_url}?{'&'.join(query_params)}" if query_params else base_url
+
+    def _build_http_health_url(self, pi_config: Dict) -> Optional[str]:
+        """ESP-P4 / PiCam health JSON (sensor chip etc.)."""
+        host = self._resolve_http_cam_host(pi_config)
+        if not host:
+            return None
+        resolved_ip, pi_port = host
+        return f"http://{resolved_ip}:{pi_port}/health"
+
+    async def fetch_http_cam_sensor(self, pi_config: Dict) -> Optional[str]:
+        """GET /health and return sensor chip name (e.g. SC2336, OV5647, IMX708)."""
+        health_url = self._build_http_health_url(pi_config)
+        if not health_url:
+            return None
+        try:
+            timeout = aiohttp.ClientTimeout(total=5, connect=3)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(health_url) as response:
+                    if response.status != 200:
+                        logger.warning(f"HTTP cam /health status {response.status}: {health_url}")
+                        return None
+                    data = await response.json(content_type=None)
+                    sensor = (data or {}).get('sensor')
+                    if isinstance(sensor, str) and sensor.strip():
+                        return sensor.strip()
+                    return None
+        except Exception as e:
+            logger.warning(f"HTTP cam /health failed ({health_url}): {e}")
+            return None
 
     def _slave_cameras(self, device: Dict) -> list:
         """Non-master cameras from cameras[] (scan companion stills)."""
@@ -3479,9 +3515,16 @@ class HardwareMonitor:
                 logger.warning(f"{event_label} capture failed for {cam_name}")
                 continue
 
+            sensor = None
+            if cam_type == 'esp32-p4':
+                pi_cfg = cam.get('esp32P4') or cam.get('raspberryPi') or {}
+                sensor = await self.fetch_http_cam_sensor(pi_cfg)
+                if sensor:
+                    logger.info(f"📷 {cam_name} sensor from /health: {sensor}")
+
             _, buffer = cv2.imencode('.jpg', frame)
             image_b64 = base64.b64encode(buffer).decode('utf-8')
-            photos.append({
+            entry = {
                 'cameraId': cam_id,
                 'cameraName': cam_name,
                 'cameraType': cam_type,
@@ -3489,7 +3532,10 @@ class HardwareMonitor:
                 'image': f'data:image/jpeg;base64,{image_b64}',
                 'pose': pose or {},
                 'capturedAt': datetime.now().isoformat(),
-            })
+            }
+            if sensor:
+                entry['sensor'] = sensor
+            photos.append(entry)
         return photos
 
     async def capture_scan_photos(

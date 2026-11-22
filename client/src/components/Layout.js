@@ -21,6 +21,7 @@ import {
   Devices as DevicesIcon,
   Visibility as VisibilityIcon,
   Favorite as FavoriteIcon,
+  PhotoCamera as PhotoCameraIcon,
   CloudUpload as UploadIcon,
   Person as PersonIcon,
   Logout as LogoutIcon,
@@ -66,6 +67,7 @@ const Layout = ({ children }) => {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Erkennungen', icon: <VisibilityIcon />, path: '/detections' },
     { text: 'Tauben-Tinder', icon: <FavoriteIcon />, path: '/tauben-tinder' },
+    { text: 'Slave-Bilder', icon: <PhotoCameraIcon />, path: '/slave-photos' },
   ];
 
   const toolMenuItems = [

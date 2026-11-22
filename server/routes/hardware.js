@@ -196,6 +196,7 @@ router.post('/detection', async (req, res) => {
           cameraId: p.cameraId || '',
           cameraName: p.cameraName || '',
           cameraType: p.cameraType || 'unknown',
+          sensor: typeof p.sensor === 'string' && p.sensor.trim() ? p.sensor.trim() : undefined,
           role: p.role || 'slave',
           image: {
             url: imageUrl,
@@ -285,6 +286,7 @@ router.post('/detection/:id/pre-shoot-photos', async (req, res) => {
         cameraId: p.cameraId || '',
         cameraName: p.cameraName || '',
         cameraType: p.cameraType || 'unknown',
+        sensor: typeof p.sensor === 'string' && p.sensor.trim() ? p.sensor.trim() : undefined,
         role: p.role || 'slave',
         image: {
           url: imageUrl,

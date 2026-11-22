@@ -248,6 +248,8 @@ const detectionSchema = new mongoose.Schema({
     cameraId: String,
     cameraName: String,
     cameraType: String,
+    /** ESP-P4 chip from /health (SC2336, OV5647, IMX708, …) */
+    sensor: String,
     role: String,
     image: {
       url: String,
@@ -268,6 +270,7 @@ const detectionSchema = new mongoose.Schema({
     cameraId: String,
     cameraName: String,
     cameraType: String,
+    sensor: String,
     role: String,
     image: {
       url: String,
@@ -336,5 +339,7 @@ detectionSchema.index({ processedAt: -1 });
 detectionSchema.index({ device: 1, classification_status: 1, processedAt: -1 });
 // Covering index for GET /detections/statistics (30-day dashboard) – avoids reading full ~3MB docs
 detectionSchema.index({ device: 1, processedAt: -1, classification_status: 1, temperature: 1 });
+// Review queues (Modell erstellen): filter by replay model without full collection scan
+detectionSchema.index({ device: 1, 'model_runs.model.name': 1, processedAt: -1 });
 
 module.exports = mongoose.model('Detection', detectionSchema);
