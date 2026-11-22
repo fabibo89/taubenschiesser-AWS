@@ -130,7 +130,7 @@ const Devices = () => {
     name: '',
     deviceLayout: 'separate',
     location: { name: '', coordinates: { lat: 0, lng: 0 } },
-    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
+    taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootUseFlash: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
     ...emptyCameraForm()
   });
   const navigate = useNavigate();
@@ -204,6 +204,7 @@ const Devices = () => {
           shootLaserBlinkMs: device.taubenschiesser?.shootLaserBlinkMs ?? 100,
           shootUseLaser: device.taubenschiesser?.shootUseLaser !== false,
           shootUseAudio: device.taubenschiesser?.shootUseAudio ?? false,
+          shootUseFlash: device.taubenschiesser?.shootUseFlash ?? false,
           postShotFovCalibrate: !!device.taubenschiesser?.postShotFovCalibrate
         },
         ...camState
@@ -214,7 +215,7 @@ const Devices = () => {
         name: '',
         deviceLayout: 'separate',
         location: { name: '', coordinates: { lat: 0, lng: 0 } },
-        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
+        taubenschiesser: { ip: '', invertRotation: false, invertTilt: false, shootingTimeMs: 500, stabilizeTimeMs: 500, maxWaitBetweenMovesSeconds: 20, shootUseLaser: true, shootUseAudio: false, shootUseFlash: false, shootLaserBlink: false, shootLaserBlinkMs: 100, postShotFovCalibrate: false },
         ...emptyCameraForm()
       });
     }
@@ -359,6 +360,7 @@ const Devices = () => {
     const laserBlink = !!formData.taubenschiesser.shootLaserBlink;
     const useLaser = formData.taubenschiesser.shootUseLaser !== false;
     const useAudio = !!formData.taubenschiesser.shootUseAudio;
+    const useFlash = !!formData.taubenschiesser.shootUseFlash;
     let laserBlinkMs = Number(formData.taubenschiesser.shootLaserBlinkMs ?? 100);
     if (laserBlink && useLaser) {
       if (!Number.isFinite(laserBlinkMs)) laserBlinkMs = 100;
@@ -371,12 +373,14 @@ const Devices = () => {
         durationMs,
         useLaser,
         useAudio,
+        useFlash,
         ...(useLaser && laserBlink ? { laserBlink: true, laserBlinkMs } : {})
       });
       const parts = [`${durationMs} ms`];
       if (useLaser) parts.push(laserBlink ? `Laser blinkend ${laserBlinkMs} ms` : 'Laser fest');
       else parts.push('Laser aus');
       if (useAudio) parts.push('Audio an');
+      if (useFlash) parts.push('Blitz an');
       toast.success(`Test-Schuss gesendet (${parts.join(', ')})`);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Test-Schuss fehlgeschlagen');
@@ -830,6 +834,21 @@ const Devices = () => {
                   />
                 }
                 label="Akustische Signale"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={!!formData.taubenschiesser.shootUseFlash}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      taubenschiesser: {
+                        ...formData.taubenschiesser,
+                        shootUseFlash: e.target.checked
+                      }
+                    })}
+                  />
+                }
+                label="Blitzlicht"
               />
               <FormControlLabel
                 control={

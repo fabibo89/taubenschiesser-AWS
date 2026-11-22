@@ -108,12 +108,13 @@ router.post('/detection', async (req, res) => {
       detectionData.shootActive = {
         water: active.water === true,
         laser: active.laser === true,
-        audio: active.audio === true
+        audio: active.audio === true,
+        flash: active.flash === true
       };
     } else if (detectionData.shotFired) {
-      detectionData.shootActive = { water: true, laser: false, audio: false };
+      detectionData.shootActive = { water: true, laser: false, audio: false, flash: false };
     } else {
-      detectionData.shootActive = { water: false, laser: false, audio: false };
+      detectionData.shootActive = { water: false, laser: false, audio: false, flash: false };
     }
 
     // Tank state when water shoot was intended (true=OK, false=empty)

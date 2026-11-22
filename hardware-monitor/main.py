@@ -71,11 +71,17 @@ def build_shoot_command(taubenschiesser: Optional[Dict] = None, overrides: Optio
     else:
         use_audio = bool(config.get("shootUseAudio", False))
 
+    if isinstance(overrides.get("useFlash"), bool):
+        use_flash = overrides["useFlash"]
+    else:
+        use_flash = bool(config.get("shootUseFlash", False))
+
     payload = {
         "type": "shoot",
         "duration": duration_ms,
         "useLaser": bool(use_laser),
         "useAudio": use_audio,
+        "useFlash": use_flash,
         "useWater": True,
     }
 

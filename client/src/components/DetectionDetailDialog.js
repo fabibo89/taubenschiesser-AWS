@@ -32,6 +32,7 @@ import {
   WaterDrop as WaterDropIcon,
   FlashOn as FlashOnIcon,
   VolumeUp as VolumeUpIcon,
+  Flare as FlareIcon,
   Block as BlockIcon,
   OpenInFull as OpenInFullIcon,
   ZoomOutMap as ZoomOutMapIcon
@@ -240,16 +241,17 @@ function resolveShootActive(detection) {
       water: active.water === true,
       laser: active.laser === true,
       audio: active.audio === true,
+      flash: active.flash === true,
       known: true
     };
   }
   if (detection?.shotFired === true) {
-    return { water: true, laser: false, audio: false, known: true };
+    return { water: true, laser: false, audio: false, flash: false, known: true };
   }
   if (detection?.shotFired === false) {
-    return { water: false, laser: false, audio: false, known: true };
+    return { water: false, laser: false, audio: false, flash: false, known: true };
   }
-  return { water: false, laser: false, audio: false, known: false };
+  return { water: false, laser: false, audio: false, flash: false, known: false };
 }
 
 /** Compact icons for water / laser / audio (or „kein Schuss“). */
@@ -262,7 +264,7 @@ export function ShootActiveIcons({ detection, size = 'small', sx }) {
   }
 
   const fontSize = size === 'small' ? 'small' : 'medium';
-  const anyActive = flags.water || flags.laser || flags.audio;
+  const anyActive = flags.water || flags.laser || flags.audio || flags.flash;
   if (!anyActive) {
     return (
       <Box display="flex" alignItems="center" gap={0.25} sx={sx}>
@@ -299,6 +301,11 @@ export function ShootActiveIcons({ detection, size = 'small', sx }) {
       {flags.audio && (
         <Tooltip title="Audio">
           <VolumeUpIcon fontSize={fontSize} color="primary" />
+        </Tooltip>
+      )}
+      {flags.flash && (
+        <Tooltip title="Blitz">
+          <FlareIcon fontSize={fontSize} color="warning" />
         </Tooltip>
       )}
     </Box>

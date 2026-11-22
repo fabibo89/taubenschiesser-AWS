@@ -74,6 +74,7 @@ router.post('/:id/control', authenticateToken, async (req, res) => {
         laserBlink: typeof req.body.laserBlink === 'boolean' ? req.body.laserBlink : undefined,
         laserBlinkMs: typeof req.body.laserBlinkMs === 'number' ? req.body.laserBlinkMs : undefined,
         useAudio: typeof req.body.useAudio === 'boolean' ? req.body.useAudio : undefined,
+        useFlash: typeof req.body.useFlash === 'boolean' ? req.body.useFlash : undefined,
         useWater: typeof req.body.useWater === 'boolean' ? req.body.useWater : undefined
       });
       message = JSON.stringify(shootPayload);

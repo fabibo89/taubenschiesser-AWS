@@ -107,8 +107,13 @@ const deviceSchema = new mongoose.Schema({
       type: Boolean,
       default: true
     },
-    // Akustisches Signal beim Schuss (ESP Audio-Stack)
+    // Akustisches Signal beim Schuss (ESP Audio-Stack / Slave)
     shootUseAudio: {
+      type: Boolean,
+      default: false
+    },
+    // Blitzlicht beim Schuss (Slave LED3 / useFlash)
+    shootUseFlash: {
       type: Boolean,
       default: false
     },

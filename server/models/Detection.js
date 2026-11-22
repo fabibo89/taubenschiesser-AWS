@@ -235,7 +235,8 @@ const detectionSchema = new mongoose.Schema({
   shootActive: {
     water: { type: Boolean, default: false },
     laser: { type: Boolean, default: false },
-    audio: { type: Boolean, default: false }
+    audio: { type: Boolean, default: false },
+    flash: { type: Boolean, default: false }
   },
   // Wassertank-Sensor zum Schusszeitpunkt (true=OK, false=leer). Nur gesetzt wenn Wasser geplant war.
   watertank: {

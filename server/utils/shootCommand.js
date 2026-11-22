@@ -1,7 +1,7 @@
 /**
  * Build ESP shoot MQTT payload from device taubenschiesser settings.
  * @param {object} taubenschiesser - device.taubenschiesser
- * @param {{ durationMs?: number, useLaser?: boolean, laserBlink?: boolean, laserBlinkMs?: number, useAudio?: boolean, useWater?: boolean }} [overrides]
+ * @param {{ durationMs?: number, useLaser?: boolean, laserBlink?: boolean, laserBlinkMs?: number, useAudio?: boolean, useFlash?: boolean, useWater?: boolean }} [overrides]
  */
 function buildShootCommand(taubenschiesser = {}, overrides = {}) {
   const durationMs = typeof overrides.durationMs === 'number' && overrides.durationMs >= 0
@@ -16,6 +16,10 @@ function buildShootCommand(taubenschiesser = {}, overrides = {}) {
     ? overrides.useAudio
     : !!taubenschiesser.shootUseAudio;
 
+  const useFlash = typeof overrides.useFlash === 'boolean'
+    ? overrides.useFlash
+    : !!taubenschiesser.shootUseFlash;
+
   const useWater = typeof overrides.useWater === 'boolean'
     ? overrides.useWater
     : true;
@@ -25,6 +29,7 @@ function buildShootCommand(taubenschiesser = {}, overrides = {}) {
     duration: durationMs,
     useLaser,
     useAudio,
+    useFlash,
     useWater
   };
 

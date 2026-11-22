@@ -26,6 +26,7 @@ import {
   WaterDrop as WaterDropIcon,
   FlashOn as FlashOnIcon,
   VolumeUp as VolumeUpIcon,
+  Flare as FlareIcon,
   Block as BlockIcon,
   Visibility as VisibilityIcon,
   VisibilityOff as VisibilityOffIcon,
@@ -72,22 +73,23 @@ function resolveShootActive(detection) {
       water: active.water === true,
       laser: active.laser === true,
       audio: active.audio === true,
+      flash: active.flash === true,
       known: true
     };
   }
   if (detection?.shotFired === true) {
-    return { water: true, laser: false, audio: false, known: true };
+    return { water: true, laser: false, audio: false, flash: false, known: true };
   }
   if (detection?.shotFired === false) {
-    return { water: false, laser: false, audio: false, known: true };
+    return { water: false, laser: false, audio: false, flash: false, known: true };
   }
-  return { water: false, laser: false, audio: false, known: false };
+  return { water: false, laser: false, audio: false, flash: false, known: false };
 }
 
 function ShootActiveIcons({ detection }) {
   const flags = resolveShootActive(detection);
   if (!flags.known) return null;
-  const any = flags.water || flags.laser || flags.audio;
+  const any = flags.water || flags.laser || flags.audio || flags.flash;
   if (!any) {
     return (
       <Tooltip title="Kein Schuss">
@@ -113,6 +115,9 @@ function ShootActiveIcons({ detection }) {
       )}
       {flags.audio && (
         <Tooltip title="Audio"><VolumeUpIcon fontSize="small" color="primary" /></Tooltip>
+      )}
+      {flags.flash && (
+        <Tooltip title="Blitz"><FlareIcon fontSize="small" color="warning" /></Tooltip>
       )}
     </Box>
   );

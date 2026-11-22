@@ -192,12 +192,14 @@ def resolve_shoot_actions_for_detection(
 ) -> Dict[str, bool]:
     """Water/laser/audio flags as they would be sent on shoot for this detection."""
     if not shot_fired:
-        return {"water": False, "laser": False, "audio": False}
+        return {"water": False, "laser": False, "audio": False, "flash": False}
     use_laser = resolve_shoot_use_laser(
         taubenschiesser, route_coordinate, target_bird, zoom_factor, image_info
     )
     use_audio = resolve_shoot_use_audio(taubenschiesser, route_coordinate)
-    return {"water": True, "laser": use_laser, "audio": use_audio}
+    config = taubenschiesser if isinstance(taubenschiesser, dict) else {}
+    use_flash = bool(config.get("shootUseFlash", False))
+    return {"water": True, "laser": use_laser, "audio": use_audio, "flash": use_flash}
 
 
 def resolve_route_point_audio_enabled(route_coordinate: Optional[Dict]) -> bool:
